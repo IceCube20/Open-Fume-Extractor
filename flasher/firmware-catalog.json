@@ -74,26 +74,26 @@
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.3.56beta",
+    "version": "1.3.57beta",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.3.56beta-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.3.56beta.bin",
-    "mergedSha256": "895c22eb91c53d2b2ba3964cb500ac17bf278479c8d8c21e5dd661d1aa55b6a1"
+    "merged": "firmware/Display-320x480/Display-320x480-1.3.57beta-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.3.57beta.bin",
+    "mergedSha256": "118b522f104761cacf149ad053c0fab0417e57f61df18d5e6b4d4415646ec0f4"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.3.63beta",
+    "version": "1.3.64beta",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.3.63beta-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.3.63beta.bin",
-    "mergedSha256": "b76c2b69ee5660fc6c11d125e259643c1d67053074331a815ca54eead2c7a5fc"
+    "merged": "firmware/Display-800x480/Display-800x480-1.3.64beta-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.3.64beta.bin",
+    "mergedSha256": "412fb999da1ee706851d8d5184ce3c554470f934afaaebdf2ae20f21b0b114e3"
   },
   {
     "id": "Universal-RS232",

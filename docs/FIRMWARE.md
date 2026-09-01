@@ -2,7 +2,7 @@
 
 Install a complete merged image with the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/).
 
-Release tree generated: **2026-09-01**
+Release tree generated: **2026-09-02**
 
 The normal `.bin` files are Ed25519-signed OTA packages for the master web updater.
 The `*-merged.bin` files are complete images for an initial USB flash at address `0x0`.
@@ -15,8 +15,8 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 | Fan-IO | `1.1.53beta` | `FAN_IO` | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta.bin) | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin) |
 | Fan-IO-Pro | `1.1.40beta` | `FAN_IO_PRO` | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta.bin) | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta-merged.bin) |
 | Weller-Zero-Smog | `1.1.73beta` | `WELLER_ZERO_SMOG` | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta.bin) | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta-merged.bin) |
-| Display-320x480 | `1.3.56beta` | `DISPLAY_320X480` | [download](../firmware/Display-320x480/Display-320x480-1.3.56beta.bin) | [download](../firmware/Display-320x480/Display-320x480-1.3.56beta-merged.bin) |
-| Display-800x480 | `1.3.63beta` | `DISPLAY_800X480` | [download](../firmware/Display-800x480/Display-800x480-1.3.63beta.bin) | [download](../firmware/Display-800x480/Display-800x480-1.3.63beta-merged.bin) |
+| Display-320x480 | `1.3.57beta` | `DISPLAY_320X480` | [download](../firmware/Display-320x480/Display-320x480-1.3.57beta.bin) | [download](../firmware/Display-320x480/Display-320x480-1.3.57beta-merged.bin) |
+| Display-800x480 | `1.3.64beta` | `DISPLAY_800X480` | [download](../firmware/Display-800x480/Display-800x480-1.3.64beta.bin) | [download](../firmware/Display-800x480/Display-800x480-1.3.64beta-merged.bin) |
 | Universal-RS232 | `1.0.65alpha` | `UNIVERSAL_RS232` | [download](../firmware/Universal-RS232/Universal-RS232-1.0.65alpha.bin) | [download](../firmware/Universal-RS232/Universal-RS232-1.0.65alpha-merged.bin) |
 | Modbus-RTU | `1.0.51alpha` | `MODBUS_RTU` | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha.bin) | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha-merged.bin) |
 
@@ -34,10 +34,10 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 - `7fc68156caacd12a4e05cc82aa0a78eee939510371477b5297ec6a1482d17185`  `Fan-IO-Pro-1.1.40beta-merged.bin`
 - `384f1b373296317671d863fa1c519e0de95b5f62f1171b4a6ed3ca3fff133f30`  `Weller-Zero-Smog-1.1.73beta.bin`
 - `13374fe2acd47508a001f092a34677017f67bbb3854f500b198166ae78fad366`  `Weller-Zero-Smog-1.1.73beta-merged.bin`
-- `1e280de3f23b969a745d00e3f816274f36272287dd34ef14636e689dd91a087c`  `Display-320x480-1.3.56beta.bin`
-- `895c22eb91c53d2b2ba3964cb500ac17bf278479c8d8c21e5dd661d1aa55b6a1`  `Display-320x480-1.3.56beta-merged.bin`
-- `19e434ed31a16cfdf51706a8f00f77b092475b751ecb3b595cbbd1ec940de586`  `Display-800x480-1.3.63beta.bin`
-- `b76c2b69ee5660fc6c11d125e259643c1d67053074331a815ca54eead2c7a5fc`  `Display-800x480-1.3.63beta-merged.bin`
+- `207351994e9059be037d3cee88ecd08e28313dcc2d8169740822ae2a8674cf3d`  `Display-320x480-1.3.57beta.bin`
+- `118b522f104761cacf149ad053c0fab0417e57f61df18d5e6b4d4415646ec0f4`  `Display-320x480-1.3.57beta-merged.bin`
+- `8948f484c9f989ecaf31caf2254bbad405bc794326ad1792a811ce37dbbe36c6`  `Display-800x480-1.3.64beta.bin`
+- `412fb999da1ee706851d8d5184ce3c554470f934afaaebdf2ae20f21b0b114e3`  `Display-800x480-1.3.64beta-merged.bin`
 - `2ebad7e0d8650d2c00369c809ba409467ca9fbd8d9d2c35536a1037511475e63`  `Universal-RS232-1.0.65alpha.bin`
 - `7d7c66796dcb3e7b428d277957690f17a615b91adc1283d8e6946d87ef410b3a`  `Universal-RS232-1.0.65alpha-merged.bin`
 - `256ffefbf0c421a2dacb82f08b6bac8e588058795c5b561723f7b225489bfbf0`  `Modbus-RTU-1.0.51alpha.bin`

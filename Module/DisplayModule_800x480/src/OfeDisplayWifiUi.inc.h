@@ -3,6 +3,7 @@
 class OfeDisplayWifiUi {
 public:
   static void openEvent(lv_event_t*) { instance().open(); }
+  static void openPanel() { instance().open(); }
   static bool isOpen() { return instance().root_!=nullptr; }
   static void closePanel() { instance().close(); }
 private:

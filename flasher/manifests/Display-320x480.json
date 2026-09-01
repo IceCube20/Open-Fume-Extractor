@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Display 320x480",
-  "version": "1.3.56beta",
+  "version": "1.3.57beta",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Display-320x480/Display-320x480-1.3.56beta-merged.bin",
+          "path": "../../firmware/Display-320x480/Display-320x480-1.3.57beta-merged.bin",
           "offset": 0
         }
       ]

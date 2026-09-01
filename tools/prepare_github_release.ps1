@@ -166,7 +166,7 @@ $catalog | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $flashe
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('# Firmware Files')
 $lines.Add('')
-$lines.Add('Install a complete merged image with the [GitHub Pages web flasher](../).')
+$lines.Add('Install a complete merged image with the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/).')
 $lines.Add('')
 $lines.Add("Release tree generated: **$(Get-Date -Format 'yyyy-MM-dd')**")
 $lines.Add('')

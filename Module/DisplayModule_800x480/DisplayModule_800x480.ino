@@ -300,7 +300,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 3
-#define OFE_MODULE_FW_PATCH 63
+#define OFE_MODULE_FW_PATCH 64
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -664,6 +664,9 @@ static uint8_t display_language = 0; // 0 = English, 1 = Deutsch
 static uint8_t display_theme = 0; // 0 = dark, 1 = light
 static uint8_t screensaver_timeout_min = 2; // 0 = disabled
 static uint32_t last_user_activity_ms = 0;
+static const uint32_t DISPLAY_FIRST_SETUP_DELAY_MS = 8000UL;
+static uint32_t display_boot_setup_started_ms = 0;
+static bool display_boot_setup_prompted = false;
 static bool screensaver_active = false;
 static bool screensaver_wait_release = false;
 static bool screensaver_wake_deferred = false;
@@ -3736,6 +3739,13 @@ static void lv_io_out2_event(lv_event_t* e) {
   queue_display_event(DISPLAY_EVENT_IO_OUT_TOGGLE, 1);
 }
 
+static void lv_open_boot_connection_setup(lv_event_t*) {
+  display_boot_setup_prompted = true;
+  last_user_activity_ms = millis();
+  OfeDisplayWifiUi::openPanel();
+  display_wifi.scan();
+}
+
 static void lv_create_boot_screen() {
   ui_boot_screen = lv_obj_create(NULL);
   lv_style_screen(ui_boot_screen);
@@ -3753,7 +3763,9 @@ static void lv_create_boot_screen() {
   ui_boot_fw = lv_label(card, "", 112, 104, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 190);
   ui_boot_addr = lv_label(card, "", 330, 104, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 190);
   lv_obj_t* wait_card = lv_card(ui_boot_screen, 120, 256, 560, 38, ui_theme_color(0x151B23, 0xF7FAFC));
-  lv_label(wait_card, tr("Connecting to master...", "Verbinde mit Master..."), 16, 10, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 510);
+  lv_label(wait_card, tr("Connecting to master... Tap for setup", "Verbinde mit Master... Antippen zum Einrichten"), 16, 10, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 528);
+  lv_obj_add_flag(wait_card, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(wait_card, lv_open_boot_connection_setup, LV_EVENT_CLICKED, nullptr);
 }
 
 static void lv_create_update_screen() {
@@ -9966,6 +9978,7 @@ void setup() {
     pending_display_event_value = 0;
     ui_defer_flags(UI_DEFER_MASTER_LINK | UI_DEFER_APP_VALUES);
   });
+  display_boot_setup_started_ms = millis();
   start_rs485_task_if_enabled();
 }
 
@@ -10002,9 +10015,16 @@ void loop() {
       // on the boot screen. This runs in the LVGL loop task, so lv_screen_active()
       // and show_dashboard() are safe here.
       if (status.valid && master_link_online() && ui_boot_screen && lv_screen_active() == ui_boot_screen) {
+        OfeDisplayWifiUi::closePanel();
         display_view_mode = DISPLAY_VIEW_HOME;
         display_view_arg = 0;
         show_dashboard();
+      } else if (!display_boot_setup_prompted && display_boot_setup_started_ms &&
+                 ui_boot_screen && lv_screen_active() == ui_boot_screen &&
+                 !master_link_online() && !OfeDisplayWifiUi::isOpen() &&
+                 (uint32_t)(millis() - display_boot_setup_started_ms) >= DISPLAY_FIRST_SETUP_DELAY_MS &&
+                 !ofe_wifi::configured(display_wifi.view().config)) {
+        lv_open_boot_connection_setup(nullptr);
       }
       screensaver_tick();
     }
