@@ -9,14 +9,14 @@ address `0x0`.
 1. Push the complete contents of `GitHub-Release` to the repository root.
 2. Open the repository on GitHub.
 3. Select **Settings**, then **Pages**.
-4. Under **Build and deployment**, select **Deploy from a branch**.
-5. Select the release branch and the `/ (root)` folder, then save.
+4. Under **Build and deployment**, select **GitHub Actions**.
+5. The included `.github/workflows/pages.yml` workflow deploys the static site.
 6. Open the HTTPS address shown by GitHub after deployment completes.
 
 The expected address is usually:
 
 ```text
-https://OWNER.github.io/REPOSITORY/
+https://icecube20.github.io/Open-Fume-Extractor/
 ```
 
 ESP Web Tools requires HTTPS and Web Serial. Use a current desktop version of

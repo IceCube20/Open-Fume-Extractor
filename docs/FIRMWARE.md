@@ -1,6 +1,6 @@
 # Firmware Files
 
-Install a complete merged image with the [GitHub Pages web flasher](../).
+Install a complete merged image with the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/).
 
 Release tree generated: **2026-09-01**
 

@@ -24,7 +24,7 @@ file through the web updater.
 
 ## First flash
 
-The recommended method is the [GitHub Pages web flasher](../). Open it in a
+The recommended method is the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/). Open it in a
 current desktop version of Chrome or Edge, select the exact target and connect
 the device over USB. See [GITHUB-PAGES.md](GITHUB-PAGES.md) when publishing a
 new repository.

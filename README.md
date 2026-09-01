@@ -9,7 +9,7 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Start here
 
-1. Open the [browser-based USB flasher](./) on the GitHub Pages site.
+1. Open the [browser-based USB flasher](https://icecube20.github.io/Open-Fume-Extractor/) in desktop Chrome or Edge.
 2. Read [Installation](docs/INSTALLATION.md).
 3. Check the [hardware pinout](docs/PINOUT.md) before wiring anything.
 4. Select the exact target in the [firmware index](docs/FIRMWARE.md).
@@ -74,4 +74,3 @@ The firmware and pinout describe 3.3 V logic and low-voltage controller wiring.
 They are not a certified mains or motor-power design. Use suitable fusing,
 isolation, level shifting, flyback/overvoltage protection and an enclosure for
 the actual load. Never connect RS232 voltage levels directly to an ESP32 GPIO.
-
