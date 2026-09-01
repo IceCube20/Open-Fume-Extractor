@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#111518">
+    <title>Open Fume Extractor Web Flasher</title>
+    <meta name="description" content="Install Open Fume Extractor firmware from the browser.">
+    <link rel="icon" href="flasher/assets/IceCube20_96.png">
+    <link rel="stylesheet" href="flasher/styles.css">
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <script type="module" src="flasher/app.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand">
+        <img src="flasher/assets/IceCube20_96.png" width="48" height="48" alt="IceCube20 logo">
+        <div>
+          <strong>Open Fume Extractor</strong>
+          <span>Firmware Web Flasher</span>
+        </div>
+      </div>
+      <nav aria-label="Project navigation">
+        <a href="README.md">Documentation</a>
+        <a href="docs/FIRMWARE.md">Firmware index</a>
+        <a href="docs/BUILDING.md">Source build</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">USB INSTALLATION AND RECOVERY</p>
+        <h1 id="page-title">Flash an OFE device</h1>
+        <p>Select the exact hardware target, connect it by USB and install the complete merged firmware image.</p>
+      </section>
+
+      <section class="flasher" aria-labelledby="target-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step">STEP 1</p>
+            <h2 id="target-heading">Select the device</h2>
+          </div>
+          <span id="catalog-status" class="status" role="status">Loading firmware catalog</span>
+        </div>
+
+        <label class="field" for="target-select">
+          <span>Hardware target</span>
+          <select id="target-select" disabled>
+            <option>Loading available firmware...</option>
+          </select>
+        </label>
+
+        <dl class="device-data" aria-live="polite">
+          <div><dt>Version</dt><dd id="firmware-version">-</dd></div>
+          <div><dt>Processor</dt><dd id="chip-family">-</dd></div>
+          <div><dt>Flash</dt><dd id="flash-size">-</dd></div>
+          <div><dt>Signature target</dt><dd id="signature-target">-</dd></div>
+        </dl>
+
+        <div class="warning" role="note">
+          <strong>Confirm the target before continuing.</strong>
+          <span>The web flasher writes the complete image at address <code>0x0</code>. Erase the device for a first installation, a firmware-family change or a partition-layout change.</span>
+        </div>
+
+        <div class="install-area">
+          <div>
+            <p class="step">STEP 2</p>
+            <h2>Connect and install</h2>
+            <p>Disconnect the OFE bus and attached equipment before connecting USB.</p>
+          </div>
+          <esp-web-install-button id="install-button">
+            <button class="install-button" slot="activate" type="button">
+              <span aria-hidden="true">&#9889;</span>
+              Connect device
+            </button>
+            <p class="browser-message" slot="unsupported">Web Serial is not available. Open this page in a current desktop version of Chrome or Edge.</p>
+            <p class="browser-message" slot="not-allowed">The flasher requires HTTPS or localhost access.</p>
+          </esp-web-install-button>
+        </div>
+
+        <div class="downloads">
+          <span>Manual files</span>
+          <a id="merged-download" href="#" download>Download merged image</a>
+          <a id="ota-download" href="#" download>Download signed OTA package</a>
+        </div>
+      </section>
+
+      <section class="checks" aria-labelledby="checks-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step">BEFORE POWER-UP</p>
+            <h2 id="checks-heading">Commissioning checks</h2>
+          </div>
+        </div>
+        <ol>
+          <li>Verify the selected module family and display resolution.</li>
+          <li>Use a stable USB cable and keep the OFE RS485 bus disconnected while flashing.</li>
+          <li>After installation, open the serial console at 115200 baud and confirm a clean boot.</li>
+          <li>Reconnect the bus only after the target starts with the expected firmware name and version.</li>
+        </ol>
+        <p class="checksum">Merged image SHA-256: <code id="merged-sha">-</code></p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Open Fume Extractor firmware by IceCube20</span>
+      <a href="docs/INSTALLATION.md">Installation guide</a>
+      <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a>
+      <a href="TRADEMARKS.md">Legal notice</a>
+      <a href="LICENSE">GPL-3.0-or-later</a>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,95 @@
+# Open Fume Extractor Universal RS232 Profile v1
+# Demo profile showing all supported entity types.
+
+profile=Universal UI All Types Demo
+station=Demo Station
+baud=1200
+frame=8N1
+protocol=WELLER_ASCII
+checksum=WELLER_SUM8
+line_end=NONE
+
+# number -> Master shows slider + number input
+entity.1.type=number
+entity.1.name=Leistung
+entity.1.key=speed
+entity.1.role=main_output_power
+entity.1.unit=%
+entity.1.min=30
+entity.1.max=100
+entity.1.step=1
+entity.1.access=rw
+entity.1.poll=S
+entity.1.match=S###
+entity.1.set=d{value:03}
+
+# switch -> Master shows on/off switch
+entity.2.type=switch
+entity.2.name=Arbeitslicht
+entity.2.key=light
+entity.2.access=rw
+entity.2.value_on=100
+entity.2.value_off=0
+entity.2.poll=A
+entity.2.match=A###
+entity.2.set_on=a100A
+entity.2.set_off=a000A
+
+# sensor -> Master shows read-only value
+entity.3.type=sensor
+entity.3.name=Drehzahl
+entity.3.key=rpm
+entity.3.unit=rpm
+entity.3.access=ro
+entity.3.poll=D
+entity.3.match=D###
+
+# binary_sensor -> Master shows read-only status
+entity.4.type=binary_sensor
+entity.4.name=Station aktiv
+entity.4.key=active
+entity.4.role=main_input
+entity.4.access=ro
+entity.4.value_on=100
+entity.4.value_off=0
+entity.4.poll=A
+entity.4.match=A###
+
+# select -> Master shows dropdown. values are what gets inserted into {value}.
+entity.5.type=select
+entity.5.name=Modus
+entity.5.key=mode
+entity.5.access=rw
+entity.5.options=Aus|Auto|Manuell
+entity.5.values=0|1|2
+entity.5.poll=M
+entity.5.match=M#
+entity.5.set=m{value}
+
+# button -> Master shows action button, no persistent state required
+entity.6.type=button
+entity.6.name=Filter zurücksetzen
+entity.6.key=filter_reset
+entity.6.access=wo
+entity.6.set=r001
+
+# text wo -> Master shows text input + send button
+entity.7.type=text
+entity.7.name=Rohbefehl senden
+entity.7.key=raw_command
+entity.7.access=wo
+entity.7.set={value}
+
+# text ro -> Master shows read-only text value
+entity.8.type=text
+entity.8.name=Firmware
+entity.8.key=firmware
+entity.8.access=ro
+entity.8.poll=V
+entity.8.match=V{value}
+
+# Optional roles for generic extractor routing:
+# entity.x.role=main_input           -> can start the extractor
+# entity.x.role=main_output_enable   -> on/off entity for the main extractor output
+# entity.x.role=main_output_power    -> percent/power entity for the main extractor output
+# Short aliases are also accepted: input, output, output_enable, output_power

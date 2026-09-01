@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OFE Firmware Signer</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b0e12;--panel:#151a21;--panel2:#10151b;--line:#303a46;--text:#f4f7fa;--muted:#93a2b1;--blue:#368bd0;--green:#57d68a;--red:#ef6b70}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 "Segoe UI",Arial,sans-serif}.shell{width:min(920px,calc(100% - 32px));margin:36px auto 60px}.brand{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}.brand h1{font-size:30px;margin:0;letter-spacing:0}.brand p{color:var(--muted);margin:3px 0 0}.quit{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px}.drop{min-height:170px;border:2px dashed #3c78a7;background:#10161d;display:flex;align-items:center;justify-content:center;text-align:center;padding:28px;cursor:pointer;transition:.15s}.drop:hover,.drop.over{border-color:#63a8dc;background:#131d26}.drop strong{font-size:20px;display:block;margin-bottom:5px}.drop span{color:var(--muted)}.grid{display:grid;grid-template-columns:1.25fr .75fr;gap:14px;margin-top:14px}.card{background:var(--panel);border:1px solid #252e38;padding:18px}.card h2{font-size:15px;margin:0 0 13px}.identity{font-size:23px;font-weight:700;color:var(--green);margin-bottom:5px}.muted{color:var(--muted)}.facts{display:grid;grid-template-columns:110px 1fr;gap:7px 12px;margin-top:16px}.facts dt{color:var(--muted)}.facts dd{margin:0;overflow-wrap:anywhere}.key-ok{color:var(--green)}.key-bad{color:var(--red)}button,.button{appearance:none;border:1px solid #3a4653;background:#252d37;color:var(--text);padding:10px 14px;font-weight:650;cursor:pointer;border-radius:4px}button:hover,.button:hover{background:#303b47}.primary{background:var(--blue);border-color:#4b9ddd}.primary:hover{background:#4299dc}.primary:disabled,button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.status{min-height:24px;margin-top:13px;color:var(--muted)}.status.error{color:var(--red)}.status.success{color:var(--green)}input[type=file]{display:none}.security{margin-top:14px;color:var(--muted);font-size:13px}.hash{font-family:Consolas,monospace;font-size:12px}.spinner{width:16px;height:16px;border:2px solid #ffffff42;border-top-color:white;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-3px;margin-right:7px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:700px){.grid{grid-template-columns:1fr}.brand{align-items:flex-start}.shell{margin-top:20px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand"><div><h1>OFE Firmware Signer</h1><p>Firmware erkennen, mit Ed25519 signieren und direkt herunterladen.</p></div><button class="quit" id="quit">App beenden</button></header>
+    <section class="drop" id="drop"><div><strong>Firmware-BIN hier ablegen</strong><span>oder klicken und eine .bin-Datei auswählen</span></div></section>
+    <input id="firmwareFile" type="file" accept=".bin,application/octet-stream">
+    <input id="keyFile" type="file" accept=".pem,application/x-pem-file">
+    <div class="grid">
+      <section class="card">
+        <h2>Firmware</h2>
+        <div class="identity" id="identity">Noch keine Firmware ausgewählt</div>
+        <div class="muted" id="firmwareState">Ziel und Version erscheinen nach der Prüfung.</div>
+        <dl class="facts">
+          <dt>Datei</dt><dd id="fileName">-</dd>
+          <dt>Größe</dt><dd id="fileSize">-</dd>
+          <dt>SHA-256</dt><dd class="hash" id="sha">-</dd>
+        </dl>
+      </section>
+      <section class="card">
+        <h2>Signierschlüssel</h2>
+        <div id="keyState" class="key-bad">Kein Schlüssel geladen</div>
+        <dl class="facts">
+          <dt>Quelle</dt><dd id="keySource">-</dd>
+          <dt>Key-ID</dt><dd class="hash" id="keyId">-</dd>
+        </dl>
+        <div class="actions"><button id="chooseKey">Schlüssel auswählen</button></div>
+      </section>
+    </div>
+    <section class="card" style="margin-top:14px">
+      <h2>Ausgabe</h2>
+      <div class="actions">
+        <button class="primary" id="sign" disabled>Signieren und herunterladen</button>
+        <button id="verify" disabled>Vorhandene Signatur prüfen</button>
+      </div>
+      <div class="status" id="status">Bereit</div>
+    </section>
+    <div class="security">Die App läuft ausschließlich lokal auf 127.0.0.1. Firmware und privater Schlüssel verlassen deinen Rechner nicht.</div>
+  </main>
+  <script>
+    const TOKEN="__OFE_TOKEN__";let firmware=null,info=null,busy=false;
+    const $=id=>document.getElementById(id),drop=$("drop"),fileInput=$("firmwareFile"),keyInput=$("keyFile");
+    const targetLabels={MASTER:"Master",JBC_BUS:"JBC Bus",WELLER:"Weller",FAN_IO:"Fan/IO",FAN_IO_PRO:"Fan/IO Pro",DISPLAY_320X480:"Display 320x480",DISPLAY_800X480:"Display 800x480",UNIVERSAL_RS232:"Universal RS232",MODBUS_RTU:"Modbus RTU"};
+    function size(n){return n>=1048576?(n/1048576).toFixed(2)+" MB":(n/1024).toFixed(1)+" KB"}
+    function outputName(name){return name.toLowerCase().endsWith(".signed.bin")?name:name.replace(/\.bin$/i,"")+".signed.bin"}
+    function setStatus(text,type=""){const el=$("status");el.className="status "+type;el.innerHTML=text}
+    function setBusy(value,text){busy=value;$("sign").disabled=value||!firmware;$("verify").disabled=value||!firmware;if(text)setStatus(value?'<span class="spinner"></span>'+text:text)}
+    async function api(path,body,headers={}){const response=await fetch(path,{method:"POST",headers:{"X-OFE-Token":TOKEN,...headers},body});if(!response.ok){let msg="Vorgang fehlgeschlagen";try{msg=(await response.json()).error||msg}catch{}throw new Error(msg)}return response}
+    async function inspect(file){firmware=file;info=null;$("fileName").textContent=file.name;$("fileSize").textContent=size(file.size);$("sha").textContent="wird berechnet…";setBusy(true,"Firmware wird geprüft…");try{const r=await api("/api/inspect",file,{"Content-Type":"application/octet-stream","X-File-Name":encodeURIComponent(file.name)}),j=await r.json();info=j.firmware;$("identity").textContent=info.version+" · "+(targetLabels[info.target]||info.target);$("firmwareState").textContent=info.signed?"Bereits als OFE-Update signiert":"Noch nicht signiert";$("fileSize").textContent=size(info.image_bytes);$("sha").textContent=info.sha256;setStatus("Firmware erkannt und bereit.","success")}catch(e){firmware=null;$("identity").textContent="Keine gültige OFE-Firmware";$("firmwareState").textContent=e.message;$("sha").textContent="-";setStatus(e.message,"error")}finally{setBusy(false)}}
+    async function refreshKey(){const r=await fetch("/api/status"),j=await r.json(),k=j.key;$("keyState").textContent=k.loaded?"Ed25519-Schlüssel geladen":"Kein Schlüssel geladen";$("keyState").className=k.loaded?"key-ok":"key-bad";$("keySource").textContent=k.source||"-";$("keyId").textContent=k.key_id||"-"}
+    drop.onclick=()=>fileInput.click();fileInput.onchange=()=>fileInput.files[0]&&inspect(fileInput.files[0]);
+    for(const event of ["dragenter","dragover"]){drop.addEventListener(event,e=>{e.preventDefault();drop.classList.add("over")})}for(const event of ["dragleave","drop"]){drop.addEventListener(event,e=>{e.preventDefault();drop.classList.remove("over")})}drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0];if(f)inspect(f)});
+    $("chooseKey").onclick=()=>keyInput.click();keyInput.onchange=async()=>{const f=keyInput.files[0];if(!f)return;setBusy(true,"Schlüssel wird geprüft…");try{await api("/api/key",f,{"Content-Type":"application/x-pem-file","X-File-Name":encodeURIComponent(f.name)});await refreshKey();setStatus("Privater Ed25519-Schlüssel geladen.","success")}catch(e){setStatus(e.message,"error")}finally{setBusy(false)}};
+    $("sign").onclick=async()=>{if(!firmware||busy)return;setBusy(true,"Firmware wird signiert und gegengeprüft…");try{const name=outputName(firmware.name),r=await api("/api/sign",firmware,{"Content-Type":"application/octet-stream","X-Output-Name":encodeURIComponent(name)}),blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);setStatus("Signierte Firmware wurde erstellt und heruntergeladen.","success")}catch(e){setStatus(e.message,"error")}finally{setBusy(false)}};
+    $("verify").onclick=async()=>{if(!firmware||busy)return;setBusy(true,"SHA-256 und Ed25519 werden geprüft…");try{const r=await api("/api/verify",firmware,{"Content-Type":"application/octet-stream"}),j=await r.json();setStatus("Signatur gültig: "+j.firmware.version+" · "+(targetLabels[j.firmware.target]||j.firmware.target)+" · Key-ID "+j.firmware.key_id,"success")}catch(e){setStatus(e.message,"error")}finally{setBusy(false)}};
+    $("quit").onclick=async()=>{try{await api("/api/shutdown",new Uint8Array([1]))}catch{}window.close();document.body.innerHTML='<main class="shell"><h1>OFE Firmware Signer beendet</h1><p class="muted">Dieses Fenster kann geschlossen werden.</p></main>'};
+    refreshKey();
+  </script>
+</body>
+</html>

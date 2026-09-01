@@ -1,0 +1,18 @@
+{
+  "name": "Open Fume Extractor - JBC USB",
+  "version": "1.1.75beta",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/JBC-USB/JBC-USB-1.1.75beta-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

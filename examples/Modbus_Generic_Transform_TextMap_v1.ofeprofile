@@ -1,0 +1,72 @@
+# Open Fume Extractor - generic Modbus RTU transform example
+# Manufacturer-neutral example for derived text/status/time entities.
+# The OFE Modbus bridge is the local Modbus master.
+
+profile=Generic Modbus Transform + Text Map
+station=Generic Modbus Device
+baud=9600
+frame=8N1
+protocol=MODBUS_RTU
+checksum=CRC16_MODBUS_LE
+slave=1
+poll_ms=500
+
+# Exact register value -> text.
+entity.1.type=text
+entity.1.name=Operating state
+entity.1.key=operating_state
+entity.1.access=ro
+entity.1.func=read_holding
+entity.1.reg=0x0010
+entity.1.map_mode=exact
+entity.1.map=0=Off|1=Standby|2=Heating|3=Ready|4=Fault
+entity.1.map_default=Unknown
+
+# One status register -> one combined text entity from several flags.
+entity.2.type=text
+entity.2.name=Status flags
+entity.2.key=status_flags
+entity.2.access=ro
+entity.2.func=read_input
+entity.2.reg=0x0011
+entity.2.map_mode=flags
+entity.2.map=0=OK|0x0001=Filter|0x0002=Motor|0x0004=Service|0x0008=Temperature
+entity.2.map_default=Unknown
+
+# Extract bits 4..7 and convert the resulting field to an enum-like text.
+entity.3.type=text
+entity.3.name=Mode field
+entity.3.key=mode_field
+entity.3.access=ro
+entity.3.func=read_holding
+entity.3.reg=0x0012
+entity.3.bitmask=0x00F0
+entity.3.bit_shift=4
+entity.3.map_mode=exact
+entity.3.map=0=Off|1=Standby|2=Run|10=Service
+entity.3.map_default=Reserved
+
+# Runtime register in 10-hour units -> day/hour/minute text.
+# Raw 960 -> 9600 hours -> "400d 0h 0m".
+entity.4.type=text
+entity.4.name=Filter runtime
+entity.4.key=filter_runtime
+entity.4.access=ro
+entity.4.func=read_holding
+entity.4.reg=0x0013
+entity.4.scale=10
+entity.4.divisor=1
+entity.4.offset=0
+entity.4.time_base=h
+entity.4.time_display=dhm
+
+# Generic numeric conversion.
+entity.5.type=sensor
+entity.5.name=Converted value
+entity.5.key=converted_value
+entity.5.access=ro
+entity.5.func=read_input
+entity.5.reg=0x0014
+entity.5.scale=1
+entity.5.divisor=10
+entity.5.offset=-20

@@ -1,0 +1,17 @@
+build/
+.arduino-high-perf/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.elf
+*.map
+*.o
+*.d
+*.a
+*.hex
+*.cache
+.DS_Store
+Open Fume Extractor Signing Key/
+*private*.pem
+*private*.key
+

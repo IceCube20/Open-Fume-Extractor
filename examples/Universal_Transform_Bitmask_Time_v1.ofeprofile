@@ -1,0 +1,43 @@
+# Open Fume Extractor - transform example
+# Demonstrates Weller-style decimal status masks and runtime conversion.
+profile=Transform Demo
+station=Weller style device
+baud=9600
+frame=8N1
+protocol=WELLER_ASCII
+checksum=WELLER_SUM8
+line_end=NONE
+
+entity.1.type=binary_sensor
+entity.1.name=Filterstatus 100
+entity.1.key=filter_status_100
+entity.1.access=ro
+entity.1.poll=L
+entity.1.match=L###
+entity.1.bitmask=100
+
+entity.2.type=binary_sensor
+entity.2.name=Filterstatus 010
+entity.2.key=filter_status_010
+entity.2.access=ro
+entity.2.poll=L
+entity.2.match=L###
+entity.2.bitmask=010
+
+entity.3.type=binary_sensor
+entity.3.name=Filterstatus 001
+entity.3.key=filter_status_001
+entity.3.access=ro
+entity.3.poll=L
+entity.3.match=L###
+entity.3.bitmask=001
+
+entity.4.type=sensor
+entity.4.name=Filterlaufzeit
+entity.4.key=filter_runtime
+entity.4.access=ro
+entity.4.poll=G
+entity.4.match=G###
+entity.4.scale=10
+entity.4.time_base=h
+entity.4.time_display=dhm

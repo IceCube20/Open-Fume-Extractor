@@ -1,0 +1,122 @@
+[
+  {
+    "id": "OpenFumeExtractor-Master",
+    "label": "Open Fume Extractor Master",
+    "version": "1.9.23beta",
+    "signatureTarget": "MASTER",
+    "chipFamily": "ESP32-S3",
+    "flashSize": "16 MB",
+    "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta.bin",
+    "mergedSha256": "8a9caf7d9afb60fc0dc46bb78147cfdbcd53148da907ea7abc52d4f0c87321bb"
+  },
+  {
+    "id": "JBC-FAE-Bus",
+    "label": "JBC FAE Bus",
+    "version": "1.1.59beta",
+    "signatureTarget": "JBC_BUS",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/JBC-FAE-Bus.json",
+    "merged": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta-merged.bin",
+    "ota": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta.bin",
+    "mergedSha256": "e1a86075db172feb81583b5ba3c8376964fa9ca1acbbb92f061d5762e9edecfb"
+  },
+  {
+    "id": "JBC-USB",
+    "label": "JBC USB",
+    "version": "1.1.75beta",
+    "signatureTarget": "JBC_USB",
+    "chipFamily": "ESP32-S3",
+    "flashSize": "16 MB",
+    "manifest": "flasher/manifests/JBC-USB.json",
+    "merged": "firmware/JBC-USB/JBC-USB-1.1.75beta-merged.bin",
+    "ota": "firmware/JBC-USB/JBC-USB-1.1.75beta.bin",
+    "mergedSha256": "0ef1047418720d6df24c04e169d1aed07e8bcf65d9e2af0d83162b6cef248e00"
+  },
+  {
+    "id": "Fan-IO",
+    "label": "Fan/IO",
+    "version": "1.1.53beta",
+    "signatureTarget": "FAN_IO",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/Fan-IO.json",
+    "merged": "firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin",
+    "ota": "firmware/Fan-IO/Fan-IO-1.1.53beta.bin",
+    "mergedSha256": "241992f29f63c5bef49b132b8322a9589b00b4e0fcc9604e0816b3222423c14e"
+  },
+  {
+    "id": "Fan-IO-Pro",
+    "label": "Fan/IO Pro",
+    "version": "1.1.40beta",
+    "signatureTarget": "FAN_IO_PRO",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/Fan-IO-Pro.json",
+    "merged": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta-merged.bin",
+    "ota": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta.bin",
+    "mergedSha256": "7fc68156caacd12a4e05cc82aa0a78eee939510371477b5297ec6a1482d17185"
+  },
+  {
+    "id": "Weller-Zero-Smog",
+    "label": "Weller Zero Smog",
+    "version": "1.1.73beta",
+    "signatureTarget": "WELLER_ZERO_SMOG",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/Weller-Zero-Smog.json",
+    "merged": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta-merged.bin",
+    "ota": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta.bin",
+    "mergedSha256": "13374fe2acd47508a001f092a34677017f67bbb3854f500b198166ae78fad366"
+  },
+  {
+    "id": "Display-320x480",
+    "label": "Display 320x480",
+    "version": "1.3.56beta",
+    "signatureTarget": "DISPLAY_320X480",
+    "chipFamily": "ESP32-S3",
+    "flashSize": "16 MB",
+    "manifest": "flasher/manifests/Display-320x480.json",
+    "merged": "firmware/Display-320x480/Display-320x480-1.3.56beta-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.3.56beta.bin",
+    "mergedSha256": "895c22eb91c53d2b2ba3964cb500ac17bf278479c8d8c21e5dd661d1aa55b6a1"
+  },
+  {
+    "id": "Display-800x480",
+    "label": "Display 800x480",
+    "version": "1.3.63beta",
+    "signatureTarget": "DISPLAY_800X480",
+    "chipFamily": "ESP32-S3",
+    "flashSize": "16 MB",
+    "manifest": "flasher/manifests/Display-800x480.json",
+    "merged": "firmware/Display-800x480/Display-800x480-1.3.63beta-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.3.63beta.bin",
+    "mergedSha256": "b76c2b69ee5660fc6c11d125e259643c1d67053074331a815ca54eead2c7a5fc"
+  },
+  {
+    "id": "Universal-RS232",
+    "label": "Universal RS232",
+    "version": "1.0.65alpha",
+    "signatureTarget": "UNIVERSAL_RS232",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/Universal-RS232.json",
+    "merged": "firmware/Universal-RS232/Universal-RS232-1.0.65alpha-merged.bin",
+    "ota": "firmware/Universal-RS232/Universal-RS232-1.0.65alpha.bin",
+    "mergedSha256": "7d7c66796dcb3e7b428d277957690f17a615b91adc1283d8e6946d87ef410b3a"
+  },
+  {
+    "id": "Modbus-RTU",
+    "label": "Modbus RTU",
+    "version": "1.0.51alpha",
+    "signatureTarget": "MODBUS_RTU",
+    "chipFamily": "ESP32",
+    "flashSize": "4 MB",
+    "manifest": "flasher/manifests/Modbus-RTU.json",
+    "merged": "firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha-merged.bin",
+    "ota": "firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha.bin",
+    "mergedSha256": "2d69e433500a37295cd543ab927f7ff1007180f13b186a96898d3de7a3fd6f50"
+  }
+]

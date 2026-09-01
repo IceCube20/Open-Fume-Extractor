@@ -1,0 +1,99 @@
+# Open Fume Extractor Universal RS232 profile v1
+# Example: Weller Zero Smog style ASCII bus
+# Upload this file in the Universal RS232 module card and save it into the module.
+
+profile=Weller Zero Smog Shield Pro
+station=Weller Zero Smog
+baud=1200
+frame=8N1
+protocol=WELLER_ASCII
+checksum=WELLER_SUM8
+line_end=NONE
+poll_ms=1000
+
+entity.1.name=Lüfter
+entity.1.de=Lüfter
+entity.1.en=Fan
+entity.1.type=switch
+entity.1.access=rw
+entity.1.command_on=N
+entity.1.command_off=M
+entity.1.repeat_on_ms=5000
+entity.1.repeat_off_ms=5000
+entity.1.role=main_output_enable
+entity.1.group=control
+
+entity.2.name=Drehzahl
+entity.2.de=Drehzahl
+entity.2.en=Speed
+entity.2.type=number
+entity.2.access=rw
+entity.2.query=S
+entity.2.command=S%03d
+entity.2.min=30
+entity.2.max=100
+entity.2.step=1
+entity.2.unit=%
+entity.2.role=main_output_power
+entity.2.group=control
+entity.2.poll_ms=1000
+
+entity.3.name=RPM
+entity.3.de=RPM
+entity.3.en=RPM
+entity.3.type=sensor
+entity.3.access=ro
+entity.3.query=D
+entity.3.unit=rpm
+entity.3.role=main_output_rpm
+entity.3.group=status
+entity.3.poll_ms=1000
+
+entity.4.name=Arbeitslicht
+entity.4.de=Arbeitslicht
+entity.4.en=Work light
+entity.4.type=switch
+entity.4.access=rw
+entity.4.query=A
+entity.4.command_on=A100
+entity.4.command_off=A000
+entity.4.role=output
+entity.4.group=control
+entity.4.poll_ms=2000
+
+entity.5.name=Filterstatus
+entity.5.de=Filterstatus
+entity.5.en=Filter status
+entity.5.type=sensor
+entity.5.access=ro
+entity.5.query=L
+entity.5.group=status
+entity.5.poll_ms=2000
+
+entity.6.name=Filterlaufzeit
+entity.6.de=Filterlaufzeit
+entity.6.en=Filter time
+entity.6.type=select
+entity.6.access=rw
+entity.6.query=F
+entity.6.options=1 hour|2 hours|3 hours|4 hours|5 hours|6 hours|12 hours|1 day|2 days|3 days|4 days|5 days|6 days 16 hours
+entity.6.values=F006|F012|F018|F024|F030|F036|F072|F144|F288|F432|F576|F720|F960
+entity.6.group=service
+entity.6.poll_ms=5000
+
+entity.7.name=Filter zurücksetzen
+entity.7.de=Filter zurücksetzen
+entity.7.en=Reset filter
+entity.7.type=button
+entity.7.access=wo
+entity.7.command=R
+entity.7.group=service
+
+entity.8.name=Software
+entity.8.de=Software
+entity.8.en=Software
+entity.8.type=sensor
+entity.8.access=ro
+entity.8.query=V
+entity.8.group=status
+entity.8.poll_ms=10000

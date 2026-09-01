@@ -1,0 +1,47 @@
+# Fixed settings matching the verified 3.2.0-h display build.
+menu.UploadSpeed=Upload Speed
+ofe800.name=OFE Display 800x480 (High Performance)
+ofe800.bootloader.tool=esptool_py
+ofe800.bootloader.tool.default=esptool_py
+ofe800.upload.tool=esptool_py
+ofe800.upload.tool.default=esptool_py
+ofe800.upload.maximum_size=3342336
+ofe800.upload.maximum_data_size=327680
+ofe800.upload.flags=
+ofe800.upload.extra_flags=
+ofe800.upload.erase_cmd=
+ofe800.upload.use_1200bps_touch=false
+ofe800.upload.wait_for_upload_port=false
+ofe800.serial.disableDTR=false
+ofe800.serial.disableRTS=false
+ofe800.build.tarch=xtensa
+ofe800.build.target=esp32s3
+ofe800.build.mcu=esp32s3
+ofe800.build.core=esp32
+ofe800.build.variant=esp32s3
+ofe800.build.board=ESP32S3_DEV
+ofe800.build.bootloader_addr=0x0
+ofe800.build.usb_mode=1
+ofe800.build.cdc_on_boot=0
+ofe800.build.msc_on_boot=0
+ofe800.build.dfu_on_boot=0
+ofe800.build.f_cpu=240000000L
+ofe800.build.flash_size=16MB
+ofe800.build.flash_freq=80m
+ofe800.build.flash_mode=dio
+ofe800.build.boot=qio
+ofe800.build.boot_freq=80m
+ofe800.build.partitions=default_8MB
+ofe800.build.defines=-DBOARD_HAS_PSRAM -DOFE_REQUIRE_RGB_HIGH_PERF_SDK=1
+ofe800.build.psram_type=opi
+ofe800.build.memory_type={build.boot}_{build.psram_type}
+ofe800.build.loop_core=-DARDUINO_RUNNING_CORE=1
+ofe800.build.event_core=-DARDUINO_EVENT_RUNNING_CORE=1
+ofe800.build.copy_jtag_files=0
+ofe800.build.code_debug=0
+ofe800.menu.UploadSpeed.921600=921600
+ofe800.menu.UploadSpeed.921600.upload.speed=921600
+ofe800.menu.UploadSpeed.460800=460800
+ofe800.menu.UploadSpeed.460800.upload.speed=460800
+ofe800.menu.UploadSpeed.115200=115200
+ofe800.menu.UploadSpeed.115200.upload.speed=115200

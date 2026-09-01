@@ -1,0 +1,18 @@
+{
+  "name": "Open Fume Extractor - Fan/IO",
+  "version": "1.1.53beta",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

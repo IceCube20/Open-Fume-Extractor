@@ -1,0 +1,18 @@
+{
+  "name": "Open Fume Extractor - Open Fume Extractor Master",
+  "version": "1.9.23beta",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

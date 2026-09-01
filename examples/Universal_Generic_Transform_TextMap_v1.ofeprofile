@@ -1,0 +1,75 @@
+# Open Fume Extractor - generic Universal/RS232 transform example
+# Manufacturer-neutral example for derived text/status/time entities.
+# Transform order: raw -> bitmask -> right shift -> scale/divisor -> offset -> time/text mapping.
+
+profile=Generic Transform + Text Map
+station=Generic ASCII Device
+baud=9600
+frame=8N1
+protocol=ASCII
+checksum=NONE
+line_end=CR
+
+# Exact value -> one text entity.
+# Example replies: S0, S1, S2, S3, S4
+entity.1.type=text
+entity.1.name=Operating state
+entity.1.key=operating_state
+entity.1.access=ro
+entity.1.poll=S
+entity.1.match=S{value}
+entity.1.map_mode=exact
+entity.1.map=0=Off|1=Standby|2=Heating|3=Ready|4=Fault
+entity.1.map_default=Unknown
+
+# Multiple independent status bits -> one combined text entity.
+# Example F5 (= 0b0101) becomes "Filter | Service".
+entity.2.type=text
+entity.2.name=Status flags
+entity.2.key=status_flags
+entity.2.access=ro
+entity.2.poll=F
+entity.2.match=F{value}
+entity.2.map_mode=flags
+entity.2.map=0=OK|0x01=Filter|0x02=Motor|0x04=Service|0x08=Temperature
+entity.2.map_default=Unknown
+
+# Extract a multi-bit field from a larger integer and map it to text.
+# Example M160 (= 0xA0), mask 0xF0, shift 4 -> value 10 -> "Service".
+entity.3.type=text
+entity.3.name=Mode field
+entity.3.key=mode_field
+entity.3.access=ro
+entity.3.poll=M
+entity.3.match=M{value}
+entity.3.bitmask=0x000000F0
+entity.3.bit_shift=4
+entity.3.map_mode=exact
+entity.3.map=0=Off|1=Standby|2=Run|10=Service
+entity.3.map_default=Reserved
+
+# Numeric conversion + time formatting.
+# Example G960 with scale 10 and hours as source unit -> 9600 h -> "400d 0h 0m".
+entity.4.type=text
+entity.4.name=Filter runtime
+entity.4.key=filter_runtime
+entity.4.access=ro
+entity.4.poll=G
+entity.4.match=G{value}
+entity.4.scale=10
+entity.4.divisor=1
+entity.4.offset=0
+entity.4.time_base=h
+entity.4.time_display=dhm
+
+# Normal numeric conversion is manufacturer-neutral too.
+# Example T253 -> (253 * 1 / 10) - 20 = 5.
+entity.5.type=sensor
+entity.5.name=Converted value
+entity.5.key=converted_value
+entity.5.access=ro
+entity.5.poll=T
+entity.5.match=T{value}
+entity.5.scale=1
+entity.5.divisor=10
+entity.5.offset=-20

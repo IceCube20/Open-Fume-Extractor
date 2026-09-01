@@ -1,0 +1,168 @@
+#pragma once
+
+// Network, WiFi, MQTT and web-auth persistence helpers.
+static uint8_t status_led_raw_brightness() {
+  if (!status_led_enabled) return 0;
+  const uint8_t pct = constrain(status_led_brightness_pct, (uint8_t)10, (uint8_t)100);
+  return (uint8_t)((uint16_t)pct * 255U / 100U);
+}
+
+static void apply_status_led_config() {
+  status_led_brightness_pct = constrain(status_led_brightness_pct, (uint8_t)10, (uint8_t)100);
+  ofe_status_leds.setBrightness(status_led_raw_brightness());
+  master_cmd_set_led_config(status_led_enabled, status_led_brightness_pct);
+}
+
+static void save_status_led_config(bool enabled, uint8_t brightness_pct) {
+  status_led_enabled = enabled;
+  status_led_brightness_pct = constrain(brightness_pct, (uint8_t)10, (uint8_t)100);
+  net_prefs.begin(MasterSettingsStore::NS_NET, false);
+  net_prefs.putBool(MasterSettingsStore::KEY_LED_ENABLED, status_led_enabled);
+  net_prefs.putUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, status_led_brightness_pct);
+  net_prefs.end();
+  apply_status_led_config();
+}
+
+static void netcfg_load() {
+  net_prefs.begin(MasterSettingsStore::NS_NET, false);
+  String ssid = net_prefs.getString(MasterSettingsStore::KEY_WIFI_SSID, String(WIFI_SSID));
+  String pass = net_prefs.getString(MasterSettingsStore::KEY_WIFI_PASS, String(WIFI_PASSWORD));
+  String host = normalized_hostname(net_prefs.getString(MasterSettingsStore::KEY_HOSTNAME, String(master_hostname)));
+  String web_user = net_prefs.getString(MasterSettingsStore::KEY_WEB_USER, String(WEB_AUTH_USER));
+  String web_pass = net_prefs.getString(MasterSettingsStore::KEY_WEB_PASS, String(WEB_AUTH_PASSWORD));
+  web_user.trim();
+  if (!web_user.length()) web_user = WEB_AUTH_USER;
+  if (!web_pass.length()) web_pass = WEB_AUTH_PASSWORD;
+  if (host == "open-fume-extractor") host = master_device_id;
+  if (host.length()) host.toCharArray(master_hostname, sizeof(master_hostname));
+  ssid.toCharArray(wifi_ssid, sizeof(wifi_ssid));
+  pass.toCharArray(wifi_password, sizeof(wifi_password));
+  web_user.toCharArray(web_auth_user, sizeof(web_auth_user));
+  web_pass.toCharArray(web_auth_password, sizeof(web_auth_password));
+
+  wifi_static_enabled = net_prefs.getBool(MasterSettingsStore::KEY_STATIC_IP, false);
+  bool valid = parse_ipv4(net_prefs.getString(MasterSettingsStore::KEY_IP, ""), wifi_static_ip);
+  valid = parse_ipv4(net_prefs.getString(MasterSettingsStore::KEY_GATEWAY, ""), wifi_static_gateway) && valid;
+  valid = parse_ipv4(net_prefs.getString(MasterSettingsStore::KEY_SUBNET, "255.255.255.0"), wifi_static_subnet) && valid;
+  if (!parse_ipv4(net_prefs.getString(MasterSettingsStore::KEY_DNS1, ""), wifi_static_dns1)) wifi_static_dns1 = wifi_static_gateway;
+  if (!parse_ipv4(net_prefs.getString(MasterSettingsStore::KEY_DNS2, ""), wifi_static_dns2)) wifi_static_dns2 = IPAddress(0, 0, 0, 0);
+  if (!valid) wifi_static_enabled = false;
+
+  mqtt_enabled = net_prefs.getBool(MasterSettingsStore::KEY_MQTT_ENABLED, false);
+  mqtt_tls_enabled = net_prefs.getBool(MasterSettingsStore::KEY_MQTT_TLS, false);
+  mqtt_ha_discovery = net_prefs.getBool(MasterSettingsStore::KEY_MQTT_HA, true);
+  net_prefs.getString(MasterSettingsStore::KEY_MQTT_HOST, "").toCharArray(mqtt_host, sizeof(mqtt_host));
+  mqtt_port = net_prefs.getUShort(MasterSettingsStore::KEY_MQTT_PORT, mqtt_tls_enabled ? 8883 : 1883);
+  net_prefs.getString(MasterSettingsStore::KEY_MQTT_USER, "").toCharArray(mqtt_user, sizeof(mqtt_user));
+  net_prefs.getString(MasterSettingsStore::KEY_MQTT_PASS, "").toCharArray(mqtt_password, sizeof(mqtt_password));
+  net_prefs.getString(MasterSettingsStore::KEY_MQTT_TOPIC, "open-fume-extractor").toCharArray(mqtt_base_topic, sizeof(mqtt_base_topic));
+  net_prefs.getString(MasterSettingsStore::KEY_MQTT_DISC, "homeassistant").toCharArray(mqtt_discovery_prefix, sizeof(mqtt_discovery_prefix));
+  status_led_enabled = net_prefs.getBool(MasterSettingsStore::KEY_LED_ENABLED, true);
+  status_led_brightness_pct = (uint8_t)net_prefs.getUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, 20);
+  status_led_brightness_pct = constrain(status_led_brightness_pct, (uint8_t)10, (uint8_t)100);
+  mqtt_ca_cert = net_prefs.getString(MasterSettingsStore::KEY_MQTT_CA, "");
+  mqtt_ca_cert.replace("\r\n", "\n");
+  mqtt_ca_cert.trim();
+  mqtt_tls_verify_enabled = false;
+  net_prefs.end();
+  apply_status_led_config();
+}
+
+static void netcfg_save(const String& ssid, const String& pass, const String& hostname,
+                        const String& web_user_arg, const String& web_pass_arg,
+                        bool use_static, const IPAddress& ip, const IPAddress& gateway,
+                        const IPAddress& subnet, const IPAddress& dns1, const IPAddress& dns2,
+                        bool mqtt_en, bool mqtt_tls, const String& mqtt_host_arg, uint16_t mqtt_port_arg,
+                        const String& mqtt_user_arg, const String& mqtt_pass_arg, const String& mqtt_topic_arg,
+                        bool mqtt_ha, const String& mqtt_disc_arg, const String& mqtt_ca_arg,
+                        bool led_en, uint8_t led_pct) {
+  if (mqtt_enabled && !mqtt_en) mqtt_publish_all_availability_offline();
+  net_prefs.begin(MasterSettingsStore::NS_NET, false);
+  net_prefs.putString(MasterSettingsStore::KEY_WIFI_SSID, ssid);
+  net_prefs.putString(MasterSettingsStore::KEY_WIFI_PASS, pass);
+  net_prefs.putString(MasterSettingsStore::KEY_HOSTNAME, hostname);
+  net_prefs.putString(MasterSettingsStore::KEY_WEB_USER, web_user_arg);
+  net_prefs.putString(MasterSettingsStore::KEY_WEB_PASS, web_pass_arg);
+  net_prefs.putBool(MasterSettingsStore::KEY_STATIC_IP, use_static);
+  net_prefs.putString(MasterSettingsStore::KEY_IP, ip.toString());
+  net_prefs.putString(MasterSettingsStore::KEY_GATEWAY, gateway.toString());
+  net_prefs.putString(MasterSettingsStore::KEY_SUBNET, subnet.toString());
+  net_prefs.putString(MasterSettingsStore::KEY_DNS1, dns1.toString());
+  net_prefs.putString(MasterSettingsStore::KEY_DNS2, dns2.toString());
+  net_prefs.putBool(MasterSettingsStore::KEY_MQTT_ENABLED, mqtt_en);
+  net_prefs.putBool(MasterSettingsStore::KEY_MQTT_TLS, mqtt_tls);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_HOST, mqtt_host_arg);
+  net_prefs.putUShort(MasterSettingsStore::KEY_MQTT_PORT, mqtt_port_arg);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_USER, mqtt_user_arg);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_PASS, mqtt_pass_arg);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_TOPIC, mqtt_topic_arg);
+  net_prefs.putBool(MasterSettingsStore::KEY_MQTT_HA, mqtt_ha);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_DISC, mqtt_disc_arg);
+  net_prefs.putString(MasterSettingsStore::KEY_MQTT_CA, mqtt_ca_arg);
+  net_prefs.putBool(MasterSettingsStore::KEY_LED_ENABLED, led_en);
+  net_prefs.putUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, constrain(led_pct, (uint8_t)10, (uint8_t)100));
+  net_prefs.end();
+  ssid.toCharArray(wifi_ssid, sizeof(wifi_ssid));
+  pass.toCharArray(wifi_password, sizeof(wifi_password));
+  hostname.toCharArray(master_hostname, sizeof(master_hostname));
+  web_user_arg.toCharArray(web_auth_user, sizeof(web_auth_user));
+  web_pass_arg.toCharArray(web_auth_password, sizeof(web_auth_password));
+  wifi_static_enabled = use_static;
+  wifi_static_ip = ip;
+  wifi_static_gateway = gateway;
+  wifi_static_subnet = subnet;
+  wifi_static_dns1 = dns1;
+  wifi_static_dns2 = dns2;
+  mqtt_enabled = mqtt_en;
+  mqtt_tls_enabled = mqtt_tls;
+  mqtt_ha_discovery = mqtt_ha;
+  mqtt_port = mqtt_port_arg;
+  mqtt_host_arg.toCharArray(mqtt_host, sizeof(mqtt_host));
+  mqtt_user_arg.toCharArray(mqtt_user, sizeof(mqtt_user));
+  mqtt_pass_arg.toCharArray(mqtt_password, sizeof(mqtt_password));
+  mqtt_topic_arg.toCharArray(mqtt_base_topic, sizeof(mqtt_base_topic));
+  mqtt_disc_arg.toCharArray(mqtt_discovery_prefix, sizeof(mqtt_discovery_prefix));
+  mqtt_ca_cert = mqtt_ca_arg;
+  mqtt_ca_cert.replace("\r\n", "\n");
+  mqtt_ca_cert.trim();
+  mqtt_tls_verify_enabled = false;
+  status_led_enabled = led_en;
+  status_led_brightness_pct = constrain(led_pct, (uint8_t)10, (uint8_t)100);
+  apply_status_led_config();
+}
+
+static void netcfg_reset() {
+  net_prefs.begin(MasterSettingsStore::NS_NET, false);
+  net_prefs.clear();
+  net_prefs.putString(MasterSettingsStore::KEY_WIFI_SSID, "");
+  net_prefs.putString(MasterSettingsStore::KEY_WIFI_PASS, "");
+  net_prefs.end();
+  wifi_ssid[0] = 0;
+  wifi_password[0] = 0;
+  snprintf(web_auth_user, sizeof(web_auth_user), "%s", WEB_AUTH_USER);
+  snprintf(web_auth_password, sizeof(web_auth_password), "%s", WEB_AUTH_PASSWORD);
+  wifi_static_enabled = false;
+  mqtt_enabled = false;
+  mqtt_tls_enabled = false;
+  mqtt_ha_discovery = true;
+  mqtt_host[0] = 0;
+  mqtt_user[0] = 0;
+  mqtt_password[0] = 0;
+  snprintf(mqtt_base_topic, sizeof(mqtt_base_topic), "open-fume-extractor");
+  snprintf(mqtt_discovery_prefix, sizeof(mqtt_discovery_prefix), "homeassistant");
+  mqtt_ca_cert = "";
+  mqtt_tls_verify_enabled = false;
+  mqtt_port = 1883;
+  status_led_enabled = true;
+  status_led_brightness_pct = 20;
+  apply_status_led_config();
+  build_master_hostname();
+}
+static void webauth_reset() {
+  net_prefs.begin(MasterSettingsStore::NS_NET, false);
+  net_prefs.remove(MasterSettingsStore::KEY_WEB_USER);
+  net_prefs.remove(MasterSettingsStore::KEY_WEB_PASS);
+  net_prefs.end();
+  snprintf(web_auth_user, sizeof(web_auth_user), "%s", WEB_AUTH_USER);
+  snprintf(web_auth_password, sizeof(web_auth_password), "%s", WEB_AUTH_PASSWORD);
+}

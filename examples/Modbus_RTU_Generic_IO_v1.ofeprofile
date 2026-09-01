@@ -1,0 +1,60 @@
+# Open Fume Extractor Modbus RTU profile v1
+# Module type: Modbus RTU Bridge, address range 0x60-0x6F.
+# The OFE module is Modbus master on the local RS485/RS232 side.
+# Connect exactly one local Modbus slave per bridge module for predictable timing.
+
+profile=Generic Modbus RTU IO
+station=Community Modbus Device
+baud=9600
+frame=8N1
+protocol=MODBUS_RTU
+checksum=CRC16_MODBUS_LE
+slave=1
+poll_ms=500
+
+# Entity syntax:
+# entity.N.type = sensor | binary_sensor | switch | number | button
+# entity.N.func = read_holding | read_input | read_coil | read_discrete | write_holding | write_coil
+# entity.N.reg  = decimal or 0x-prefixed Modbus address, zero based
+# entity.N.role = main_input | main_output_enable | main_output_power | input | output | output_enable | output_power
+# role is optional, but lets the Master use the entity in signal routing.
+
+entity.1.name=Start Input
+entity.1.type=binary_sensor
+entity.1.func=read_discrete
+entity.1.reg=0x0000
+entity.1.role=main_input
+entity.1.poll_ms=100
+
+entity.2.name=Fan Enable
+entity.2.type=switch
+entity.2.func=write_coil
+entity.2.reg=0x0000
+entity.2.role=main_output_enable
+entity.2.read_func=read_coil
+entity.2.poll_ms=500
+
+entity.3.name=Fan Power
+entity.3.type=number
+entity.3.func=write_holding
+entity.3.reg=0x0001
+entity.3.role=main_output_power
+entity.3.read_func=read_holding
+entity.3.min=10
+entity.3.max=100
+entity.3.step=1
+entity.3.unit=%
+entity.3.poll_ms=500
+
+entity.4.name=RPM
+entity.4.type=sensor
+entity.4.func=read_input
+entity.4.reg=0x0002
+entity.4.unit=rpm
+entity.4.poll_ms=1000
+
+entity.5.name=Fault
+entity.5.type=binary_sensor
+entity.5.func=read_discrete
+entity.5.reg=0x0001
+entity.5.poll_ms=500
