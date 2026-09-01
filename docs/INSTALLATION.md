@@ -64,6 +64,21 @@ Address families:
 
 ## Master commissioning
 
+### Default setup credentials
+
+After a first flash or network reset, the master starts its setup access point:
+
+| Setting | Default |
+|---|---|
+| WiFi access point | `OpenFumeExtractor-XXXXXXXX` (the suffix identifies the master) |
+| WiFi password | `extractor123` |
+| Web username | `admin` |
+| Web password | `extractor123` |
+
+Change the web password under **Network Setup** during initial commissioning.
+If the web credentials are lost, connect the serial console at 115200 baud and
+enter `webauth reset` to restore the compiled defaults.
+
 1. Open the IP address printed by the serial console or use the master setup
    access point when no WiFi credentials are stored.
 2. Configure WiFi, web login and optionally MQTT under **Network Setup**.
