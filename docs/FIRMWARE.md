@@ -9,7 +9,7 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 
 | Target | Version | Signature target | OTA file | Merged file |
 |---|---:|---|---|---|
-| OpenFumeExtractor-Master | `1.9.23beta` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta-merged.bin) |
+| OpenFumeExtractor-Master | `1.9.24beta` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta-merged.bin) |
 | JBC-FAE-Bus | `1.1.59beta` | `JBC_BUS` | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta.bin) | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta-merged.bin) |
 | JBC-USB | `1.1.75beta` | `JBC_USB` | [download](../firmware/JBC-USB/JBC-USB-1.1.75beta.bin) | [download](../firmware/JBC-USB/JBC-USB-1.1.75beta-merged.bin) |
 | Fan-IO | `1.1.53beta` | `FAN_IO` | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta.bin) | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin) |
@@ -22,8 +22,8 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 
 ## SHA-256 checksums
 
-- `0d578875fb86fb71ef8e135cac2af29c9f3d63dcdc0c572fd5699680a30d4a0b`  `OpenFumeExtractor-Master-1.9.23beta.bin`
-- `8a9caf7d9afb60fc0dc46bb78147cfdbcd53148da907ea7abc52d4f0c87321bb`  `OpenFumeExtractor-Master-1.9.23beta-merged.bin`
+- `58ae88430dad5982e73a27d139a15d924b4550873b35ee2c2db2645c2310b0b7`  `OpenFumeExtractor-Master-1.9.24beta.bin`
+- `6248c7710c15e825033760db194fe15bd9c23f443abef9f5faddbd8d2cdbd3e5`  `OpenFumeExtractor-Master-1.9.24beta-merged.bin`
 - `12df6067f8cba44690ce1cb98328c0f4d70a53383c336cb2bc3c3f7f27dd139a`  `JBC-FAE-Bus-1.1.59beta.bin`
 - `e1a86075db172feb81583b5ba3c8376964fa9ca1acbbb92f061d5762e9edecfb`  `JBC-FAE-Bus-1.1.59beta-merged.bin`
 - `79771ec4a833e1aa6589199ff3f5fc434e72d984951aec4e57d1a7ba6458259e`  `JBC-USB-1.1.75beta.bin`

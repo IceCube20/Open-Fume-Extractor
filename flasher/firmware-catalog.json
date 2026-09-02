@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "1.9.23beta",
+    "version": "1.9.24beta",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.23beta.bin",
-    "mergedSha256": "8a9caf7d9afb60fc0dc46bb78147cfdbcd53148da907ea7abc52d4f0c87321bb"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta.bin",
+    "mergedSha256": "6248c7710c15e825033760db194fe15bd9c23f443abef9f5faddbd8d2cdbd3e5"
   },
   {
     "id": "JBC-FAE-Bus",
