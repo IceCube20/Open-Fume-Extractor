@@ -4,6 +4,7 @@
 #include "Rs485PeripheralBus.h"
 using namespace jbc_rs485;
 static constexpr uint8_t DATA=4;
+static uint32_t esp_random() { return 0x12345678u; }
 
 // Only peer lookup and network I/O are adapted; routing comes from production.
 class MasterDisplayWifi {
@@ -11,6 +12,8 @@ public:
   struct Peer { uint64_t uid=123; uint8_t addr=0x40; bool connected=true; };
   Peer peers_[1];
   bool online=true,physical_=false,firmware_wifi_=false;
+  bool firmware_bulk_available_=false,firmware_bulk_confirmed_=false;
+  uint32_t firmware_bulk_request_=0;
   std::atomic<uint8_t> firmware_addr_{0};
   uint64_t firmware_uid_=0;
   unsigned sends=0;
@@ -28,11 +31,11 @@ int main() {
   master.beginFirmware(0x40);
   assert(master.firmware_wifi_ && master.route(frame) && master.sends==1);
   master.online=false; master.peers_[0].connected=false;
-  assert(master.route(frame) && master.sends==1); // consumed, never sent to serial
+  assert(!master.route(frame) && master.sends==1); // allow bounded physical fallback
   master.physical_=true;
-  assert(master.route(frame) && master.sends==1);
+  assert(!master.route(frame) && master.sends==1);
   master.online=true; master.peers_[0].connected=true; master.peers_[0].uid=456;
-  assert(master.route(frame) && master.sends==1); // different device at same address
+  assert(!master.route(frame) && master.sends==1); // different device at same address
   master.peers_[0].uid=123;
   assert(master.route(frame) && master.sends==2);
   master.firmware_addr_.store(0); master.online=false; master.physical_=false;
@@ -44,5 +47,5 @@ int main() {
   assert(master.route(frame) && master.sends==3);
   master.physical_=true;
   assert(!master.route(frame)); // normal physical probes still work
-  puts("PASS: actual master OTA router pins transport and device identity, drops lost-WiFi retries, and resumes normal routing after release.");
+  puts("PASS: actual master OTA router pins transport and device identity, permits bounded physical fallback, and resumes normal routing after release.");
 }

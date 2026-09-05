@@ -300,7 +300,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 3
-#define OFE_MODULE_FW_PATCH 64
+#define OFE_MODULE_FW_PATCH 67
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -2454,7 +2454,7 @@ static String fmt_uptime(uint32_t seconds) {
   return String(m) + "m";
 }
 
-static String fmt_dhm(uint16_t minutes) {
+static String fmt_dhm(uint32_t minutes) {
   const uint16_t d = minutes / 1440U;
   minutes %= 1440U;
   const uint8_t h = minutes / 60U;
@@ -3999,30 +3999,30 @@ static void lv_create_screensaver_screen() {
   lv_obj_set_style_bg_opa(ui_screensaver_screen, LV_OPA_COVER, 0);
   lv_obj_clear_flag(ui_screensaver_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-  ui_screensaver_brand = lv_label(ui_screensaver_screen, "Open Fume Extractor", 0, 22,
+  ui_screensaver_brand = lv_label(ui_screensaver_screen, "Open Fume Extractor", 0, 34,
     lv_color_hex(0xB5C2D1), UI_FONT_DEFAULT, DISPLAY_RGB_WIDTH);
   lv_obj_set_style_text_align(ui_screensaver_brand, LV_TEXT_ALIGN_CENTER, 0);
-  ui_screensaver_clock = lv_label(ui_screensaver_screen, "--:--", 0, 54,
+  ui_screensaver_clock = lv_label(ui_screensaver_screen, "--:--", 0, 82,
     lv_color_hex(0xFFFFFF), UI_FONT_28, DISPLAY_RGB_WIDTH);
   lv_obj_set_style_text_align(ui_screensaver_clock, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(ui_screensaver_clock, 4, 0);
-  ui_screensaver_state = lv_label(ui_screensaver_screen, "", 0, 142,
+  ui_screensaver_state = lv_label(ui_screensaver_screen, "", 0, 176,
     lv_color_hex(0x55D98A), UI_FONT_DEFAULT, DISPLAY_RGB_WIDTH);
   lv_obj_set_style_text_align(ui_screensaver_state, LV_TEXT_ALIGN_CENTER, 0);
-  ui_screensaver_power = lv_label(ui_screensaver_screen, "", 102, 196,
+  ui_screensaver_power = lv_label(ui_screensaver_screen, "", 102, 264,
     lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 260);
-  ui_screensaver_modules = lv_label(ui_screensaver_screen, "", 438, 196,
+  ui_screensaver_modules = lv_label(ui_screensaver_screen, "", 438, 264,
     lv_color_hex(0xD8E2EE), UI_FONT_DEFAULT, 260);
   lv_obj_set_style_text_align(ui_screensaver_modules, LV_TEXT_ALIGN_RIGHT, 0);
-  ui_screensaver_alarm = lv_label(ui_screensaver_screen, "", 60, 164,
+  ui_screensaver_alarm = lv_label(ui_screensaver_screen, "", 60, 212,
     lv_color_hex(0xFF6B78), UI_FONT_DEFAULT, 680);
   lv_obj_set_style_text_align(ui_screensaver_alarm, LV_TEXT_ALIGN_CENTER, 0);
-  ui_screensaver_power_bar = lv_mini_bar(ui_screensaver_screen, 102, 224, 596, 7, lv_color_hex(0x2DFF88));
-  ui_screensaver_info = lv_label(ui_screensaver_screen, "", 60, 238,
+  ui_screensaver_power_bar = lv_mini_bar(ui_screensaver_screen, 102, 294, 596, 7, lv_color_hex(0x2DFF88));
+  ui_screensaver_info = lv_label(ui_screensaver_screen, "", 60, 322,
     lv_color_hex(0xB5C2D1), UI_FONT_DEFAULT, 680);
   lv_obj_set_style_text_align(ui_screensaver_info, LV_TEXT_ALIGN_CENTER, 0);
   ui_screensaver_hint = lv_label(ui_screensaver_screen,
-    tr("Touch to wake", "Zum Aufwecken ber\303\274hren"), 0, 284,
+    tr("Touch to wake", "Zum Aufwecken ber\303\274hren"), 0, 412,
     lv_color_hex(0x91A0B2), UI_FONT_DEFAULT, DISPLAY_RGB_WIDTH);
   lv_obj_set_style_text_align(ui_screensaver_hint, LV_TEXT_ALIGN_CENTER, 0);
 }
@@ -4243,15 +4243,15 @@ static void screensaver_update_values() {
   // Shift the central block slightly each minute to avoid a permanent panel pattern.
   const int16_t shift_x = status.clock_valid ? ((int16_t)(status.clock_minute % 3) - 1) * 8 : 0;
   const int16_t shift_y = status.clock_valid ? ((int16_t)((status.clock_minute / 3) % 3) - 1) * 4 : 0;
-  if (ui_screensaver_brand) lv_obj_set_pos(ui_screensaver_brand, shift_x, 22 + shift_y);
-  lv_obj_set_pos(ui_screensaver_clock, shift_x, 54 + shift_y);
-  lv_obj_set_pos(ui_screensaver_state, shift_x, 142 + shift_y);
-  lv_obj_set_pos(ui_screensaver_alarm, 60 + shift_x, 164 + shift_y);
-  lv_obj_set_pos(ui_screensaver_power, 102 + shift_x, 196 + shift_y);
-  lv_obj_set_pos(ui_screensaver_modules, 438 + shift_x, 196 + shift_y);
-  if (ui_screensaver_power_bar) lv_obj_set_pos(ui_screensaver_power_bar, 102 + shift_x, 224 + shift_y);
-  lv_obj_set_pos(ui_screensaver_info, 60 + shift_x, 238 + shift_y);
-  lv_obj_set_pos(ui_screensaver_hint, shift_x, 284 + shift_y);
+  if (ui_screensaver_brand) lv_obj_set_pos(ui_screensaver_brand, shift_x, 34 + shift_y);
+  lv_obj_set_pos(ui_screensaver_clock, shift_x, 82 + shift_y);
+  lv_obj_set_pos(ui_screensaver_state, shift_x, 176 + shift_y);
+  lv_obj_set_pos(ui_screensaver_alarm, 60 + shift_x, 212 + shift_y);
+  lv_obj_set_pos(ui_screensaver_power, 102 + shift_x, 264 + shift_y);
+  lv_obj_set_pos(ui_screensaver_modules, 438 + shift_x, 264 + shift_y);
+  if (ui_screensaver_power_bar) lv_obj_set_pos(ui_screensaver_power_bar, 102 + shift_x, 294 + shift_y);
+  lv_obj_set_pos(ui_screensaver_info, 60 + shift_x, 322 + shift_y);
+  lv_obj_set_pos(ui_screensaver_hint, shift_x, 412 + shift_y);
 }
 
 static bool screensaver_can_start() {
@@ -5647,7 +5647,7 @@ static void lv_create_app_screens() {
   lv_add_header(ui_module_list_screen, "bus modules");
   ui_module_list = lv_obj_create(ui_module_list_screen);
   lv_obj_set_pos(ui_module_list, 10, 58);
-  lv_obj_set_size(ui_module_list, 780, 330);
+  lv_obj_set_size(ui_module_list, 780, 364);
   lv_obj_set_style_bg_opa(ui_module_list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(ui_module_list, 0, 0);
   lv_obj_set_style_pad_all(ui_module_list, 0, 0);
@@ -5990,6 +5990,7 @@ static void lv_update_module_list() {
     if (ui_module_row_status_stripes[i]) lv_obj_set_style_bg_color(ui_module_row_status_stripes[i], accent, 0);
   }
 
+  bool show_update_notice = false;
   if (ui_module_update_notice) {
     if (master_lost_now) {
       // The cached/master-lost state is already visible in every module row.
@@ -6000,11 +6001,15 @@ static void lv_update_module_list() {
       const String name = status.update_name[0] ? String(status.update_name) : update_target_name(status.update_target);
       lv_set_text(ui_module_update_notice, String(tr("Update: ", "Update: ")) + name + "  " + bus_update_progress_text(status.update_progress));
       lv_obj_clear_flag(ui_module_update_notice, LV_OBJ_FLAG_HIDDEN);
+      show_update_notice = true;
     } else {
       lv_obj_add_flag(ui_module_update_notice, LV_OBJ_FLAG_HIDDEN);
     }
   }
-  if (ui_module_list) lv_obj_update_layout(ui_module_list);
+  if (ui_module_list) {
+    lv_obj_set_height(ui_module_list, show_update_notice ? 330 : 364);
+    lv_obj_update_layout(ui_module_list);
+  }
 }
 static uint16_t lv_detail_controls_y() {
   uint16_t y = 0;
@@ -6710,7 +6715,7 @@ static void lv_update_module_detail() {
   String values;
   if (m.addr == ADDR_MASTER) {
     values = String("IP: ") + (m.master_ip[0] ? m.master_ip : "-") +
-      "\n" + tr("Uptime: ", "Laufzeit: ") + fmt_dhm((uint16_t)(m.uptime_s / 60UL)) +
+      "\n" + tr("Uptime: ", "Laufzeit: ") + fmt_dhm(m.uptime_s / 60UL) +
       "\nHeap: " + String((m.heap_free + 512UL) / 1024UL) + " KB" +
       "\nCPU: " + String(m.cpu_load) + "%  Loop max: " + String(m.loop_max_ms) + " ms";
   } else if (detail_fields_is_jbc_usb(m.type, m.caps)) {
@@ -7385,7 +7390,7 @@ static void lv_update_dashboard_values() {
   lv_set_text(ui_weller_detail_runtime, fmt_dhm(home_weller_runtime_min) + "/" + fmt_dhm(home_weller_programmed_min));
   lv_set_text(ui_weller_detail_sw, weller_sw_name(home_weller_version));
   lv_set_text(ui_heap, fmt_bytes(ESP.getFreeHeap()));
-  lv_set_text(ui_uptime, fmt_uptime(millis() / 1000UL));
+  lv_set_text(ui_uptime, fmt_uptime(monotonic_uptime_seconds()));
   lv_set_text(ui_loop,
     String("CPU ") + String(cpu_load_pct) + "%  " +
     String(perf_fps_x10 / 10) + "." + String(perf_fps_x10 % 10) + " fps  " +
@@ -8473,7 +8478,7 @@ static void send_telemetry(const Frame& req) {
   resp.payload[o++] = MODULE_DISPLAY;
   put_u32_le(resp.payload + o, ESP.getFreeHeap()); o += 4;
   put_u32_le(resp.payload + o, ESP.getMinFreeHeap()); o += 4;
-  put_u32_le(resp.payload + o, millis() / 1000UL); o += 4;
+  put_u32_le(resp.payload + o, monotonic_uptime_seconds()); o += 4;
   resp.payload[o++] = cpu_load_pct;
   put_u16_le(resp.payload + o, loop_max_ms); o += 2;
   resp.payload[o++] = status.valid ? 1 : 0;
@@ -8658,6 +8663,29 @@ static void handle_fw_chunk(const Frame& req) {
   const uint8_t progress = (uint8_t)pct;
   send_status_response(req, STATUS_OK);
   draw_update_progress_throttled(module_addr, progress, "Writing firmware");
+}
+
+static uint8_t handle_wifi_fw_bulk(uint32_t offset, const uint8_t* data, uint16_t n,
+                                   uint32_t& accepted) {
+  accepted = fw_update_offset;
+  if (!fw_update_active || !data || !n || n > ofe_wifi::BULK_DATA_MAX) return STATUS_BUSY;
+  if (offset != fw_update_offset) {
+    // A lost UDP acknowledgement may resend an already committed block.
+    if (offset < fw_update_offset && offset + n <= fw_update_offset) {
+      fw_update_touch();
+      accepted = fw_update_offset;
+      return STATUS_OK;
+    }
+    return STATUS_BAD_VALUE;
+  }
+  if (!fw_update_buffer_append(data, n)) return STATUS_BUSY;
+  fw_update_offset += n;
+  fw_update_touch();
+  accepted = fw_update_offset;
+  uint32_t pct = fw_update_size ? (fw_update_offset * 100UL) / fw_update_size : 0;
+  if (pct > 99) pct = 99;
+  draw_update_progress_throttled(module_addr, (uint8_t)pct, "Writing firmware");
+  return STATUS_OK;
 }
 
 static void handle_fw_status(const Frame& req) {
@@ -9977,7 +10005,7 @@ void setup() {
     pending_display_event = DISPLAY_EVENT_NONE;
     pending_display_event_value = 0;
     ui_defer_flags(UI_DEFER_MASTER_LINK | UI_DEFER_APP_VALUES);
-  });
+  }, handle_wifi_fw_bulk);
   display_boot_setup_started_ms = millis();
   start_rs485_task_if_enabled();
 }

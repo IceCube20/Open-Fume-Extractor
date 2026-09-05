@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Universal RS232",
-  "version": "1.0.65alpha",
+  "version": "1.0.66alpha",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Universal-RS232/Universal-RS232-1.0.65alpha-merged.bin",
+          "path": "../../firmware/Universal-RS232/Universal-RS232-1.0.66alpha-merged.bin",
           "offset": 0
         }
       ]

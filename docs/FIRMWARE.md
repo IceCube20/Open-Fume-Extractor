@@ -2,46 +2,46 @@
 
 Install a complete merged image with the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/).
 
-Release tree generated: **2026-09-02**
+Release tree generated: **2026-09-05**
 
 The normal `.bin` files are Ed25519-signed OTA packages for the master web updater.
 The `*-merged.bin` files are complete images for an initial USB flash at address `0x0`.
 
 | Target | Version | Signature target | OTA file | Merged file |
 |---|---:|---|---|---|
-| OpenFumeExtractor-Master | `1.9.24beta` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta-merged.bin) |
-| JBC-FAE-Bus | `1.1.59beta` | `JBC_BUS` | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta.bin) | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta-merged.bin) |
-| JBC-USB | `1.1.75beta` | `JBC_USB` | [download](../firmware/JBC-USB/JBC-USB-1.1.75beta.bin) | [download](../firmware/JBC-USB/JBC-USB-1.1.75beta-merged.bin) |
-| Fan-IO | `1.1.53beta` | `FAN_IO` | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta.bin) | [download](../firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin) |
-| Fan-IO-Pro | `1.1.40beta` | `FAN_IO_PRO` | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta.bin) | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.40beta-merged.bin) |
-| Weller-Zero-Smog | `1.1.73beta` | `WELLER_ZERO_SMOG` | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta.bin) | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.73beta-merged.bin) |
-| Display-320x480 | `1.3.57beta` | `DISPLAY_320X480` | [download](../firmware/Display-320x480/Display-320x480-1.3.57beta.bin) | [download](../firmware/Display-320x480/Display-320x480-1.3.57beta-merged.bin) |
-| Display-800x480 | `1.3.64beta` | `DISPLAY_800X480` | [download](../firmware/Display-800x480/Display-800x480-1.3.64beta.bin) | [download](../firmware/Display-800x480/Display-800x480-1.3.64beta-merged.bin) |
-| Universal-RS232 | `1.0.65alpha` | `UNIVERSAL_RS232` | [download](../firmware/Universal-RS232/Universal-RS232-1.0.65alpha.bin) | [download](../firmware/Universal-RS232/Universal-RS232-1.0.65alpha-merged.bin) |
-| Modbus-RTU | `1.0.51alpha` | `MODBUS_RTU` | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha.bin) | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.51alpha-merged.bin) |
+| OpenFumeExtractor-Master | `1.9.29beta` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.29beta.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.29beta-merged.bin) |
+| JBC-FAE-Bus | `1.1.60beta` | `JBC_BUS` | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.60beta.bin) | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.60beta-merged.bin) |
+| JBC-USB | `1.1.76beta` | `JBC_USB` | [download](../firmware/JBC-USB/JBC-USB-1.1.76beta.bin) | [download](../firmware/JBC-USB/JBC-USB-1.1.76beta-merged.bin) |
+| Fan-IO | `1.1.54beta` | `FAN_IO` | [download](../firmware/Fan-IO/Fan-IO-1.1.54beta.bin) | [download](../firmware/Fan-IO/Fan-IO-1.1.54beta-merged.bin) |
+| Fan-IO-Pro | `1.1.41beta` | `FAN_IO_PRO` | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.41beta.bin) | [download](../firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.41beta-merged.bin) |
+| Weller-Zero-Smog | `1.1.74beta` | `WELLER_ZERO_SMOG` | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.74beta.bin) | [download](../firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.74beta-merged.bin) |
+| Display-320x480 | `1.3.59beta` | `DISPLAY_320X480` | [download](../firmware/Display-320x480/Display-320x480-1.3.59beta.bin) | [download](../firmware/Display-320x480/Display-320x480-1.3.59beta-merged.bin) |
+| Display-800x480 | `1.3.67beta` | `DISPLAY_800X480` | [download](../firmware/Display-800x480/Display-800x480-1.3.67beta.bin) | [download](../firmware/Display-800x480/Display-800x480-1.3.67beta-merged.bin) |
+| Universal-RS232 | `1.0.66alpha` | `UNIVERSAL_RS232` | [download](../firmware/Universal-RS232/Universal-RS232-1.0.66alpha.bin) | [download](../firmware/Universal-RS232/Universal-RS232-1.0.66alpha-merged.bin) |
+| Modbus-RTU | `1.0.52alpha` | `MODBUS_RTU` | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.52alpha.bin) | [download](../firmware/Modbus-RTU/Modbus-RTU-1.0.52alpha-merged.bin) |
 
 ## SHA-256 checksums
 
-- `58ae88430dad5982e73a27d139a15d924b4550873b35ee2c2db2645c2310b0b7`  `OpenFumeExtractor-Master-1.9.24beta.bin`
-- `6248c7710c15e825033760db194fe15bd9c23f443abef9f5faddbd8d2cdbd3e5`  `OpenFumeExtractor-Master-1.9.24beta-merged.bin`
-- `12df6067f8cba44690ce1cb98328c0f4d70a53383c336cb2bc3c3f7f27dd139a`  `JBC-FAE-Bus-1.1.59beta.bin`
-- `e1a86075db172feb81583b5ba3c8376964fa9ca1acbbb92f061d5762e9edecfb`  `JBC-FAE-Bus-1.1.59beta-merged.bin`
-- `79771ec4a833e1aa6589199ff3f5fc434e72d984951aec4e57d1a7ba6458259e`  `JBC-USB-1.1.75beta.bin`
-- `0ef1047418720d6df24c04e169d1aed07e8bcf65d9e2af0d83162b6cef248e00`  `JBC-USB-1.1.75beta-merged.bin`
-- `117fe11c6ae8bf9af130f913a91b5291d0b5109aa44d1213e71773239adb1f53`  `Fan-IO-1.1.53beta.bin`
-- `241992f29f63c5bef49b132b8322a9589b00b4e0fcc9604e0816b3222423c14e`  `Fan-IO-1.1.53beta-merged.bin`
-- `9be5098b4290e6f7ae75e63ad3816d744ffed912f1d39cb9d687261b1380e22a`  `Fan-IO-Pro-1.1.40beta.bin`
-- `7fc68156caacd12a4e05cc82aa0a78eee939510371477b5297ec6a1482d17185`  `Fan-IO-Pro-1.1.40beta-merged.bin`
-- `384f1b373296317671d863fa1c519e0de95b5f62f1171b4a6ed3ca3fff133f30`  `Weller-Zero-Smog-1.1.73beta.bin`
-- `13374fe2acd47508a001f092a34677017f67bbb3854f500b198166ae78fad366`  `Weller-Zero-Smog-1.1.73beta-merged.bin`
-- `207351994e9059be037d3cee88ecd08e28313dcc2d8169740822ae2a8674cf3d`  `Display-320x480-1.3.57beta.bin`
-- `118b522f104761cacf149ad053c0fab0417e57f61df18d5e6b4d4415646ec0f4`  `Display-320x480-1.3.57beta-merged.bin`
-- `8948f484c9f989ecaf31caf2254bbad405bc794326ad1792a811ce37dbbe36c6`  `Display-800x480-1.3.64beta.bin`
-- `412fb999da1ee706851d8d5184ce3c554470f934afaaebdf2ae20f21b0b114e3`  `Display-800x480-1.3.64beta-merged.bin`
-- `2ebad7e0d8650d2c00369c809ba409467ca9fbd8d9d2c35536a1037511475e63`  `Universal-RS232-1.0.65alpha.bin`
-- `7d7c66796dcb3e7b428d277957690f17a615b91adc1283d8e6946d87ef410b3a`  `Universal-RS232-1.0.65alpha-merged.bin`
-- `256ffefbf0c421a2dacb82f08b6bac8e588058795c5b561723f7b225489bfbf0`  `Modbus-RTU-1.0.51alpha.bin`
-- `2d69e433500a37295cd543ab927f7ff1007180f13b186a96898d3de7a3fd6f50`  `Modbus-RTU-1.0.51alpha-merged.bin`
+- `b6a183a0e00277355daa7fb57fca907c99f4622cc6ecdf51d26dbdc4ad66f5cd`  `OpenFumeExtractor-Master-1.9.29beta.bin`
+- `1f10f4c32b036cc3e50f3ec60cdcc4d0c243b493ee0f7a8e174974a80b025353`  `OpenFumeExtractor-Master-1.9.29beta-merged.bin`
+- `2c9960d083e14ddb7d5b91c65b5c1271b4a49b7a79367fa9118d3c53ab960df2`  `JBC-FAE-Bus-1.1.60beta.bin`
+- `317701bc6b3d47dbe6c974f03d9a1817ab05d9c03bb7b35330c999a3f5e85794`  `JBC-FAE-Bus-1.1.60beta-merged.bin`
+- `db8ae15ce4f4006b68ba370fa9605cf107c474d4efc502532e92274ad5b6adeb`  `JBC-USB-1.1.76beta.bin`
+- `48467b93b7ed429003adecc5a4ff872d144ab4e2e9b82835cf0aea23df87551d`  `JBC-USB-1.1.76beta-merged.bin`
+- `b1ba793f2dd0325038c10f9e6902a3a4ec3bc658227f79a77a06b0d6d2d3cb2f`  `Fan-IO-1.1.54beta.bin`
+- `37ca363aeb3e8f13662d8b939ec058f8bb625d661c0e8cf3b729b24fe67eb47e`  `Fan-IO-1.1.54beta-merged.bin`
+- `7b47a2aa56dcf630cb74baaf74a4dba0b36744725e86809be3564a92d7bea6da`  `Fan-IO-Pro-1.1.41beta.bin`
+- `a547c5713431acf7f253d4ca675fc7e9f8338ec024cea090dbda75c33f84f7ff`  `Fan-IO-Pro-1.1.41beta-merged.bin`
+- `3d71cde8a98afb1874d14ac373067f43f8b0d6e89bdb702b1e573470d35ff13e`  `Weller-Zero-Smog-1.1.74beta.bin`
+- `4205079ee895b82060d0856eb2bbbe72cd1291b6d386bf54bd0b70af6bb519c9`  `Weller-Zero-Smog-1.1.74beta-merged.bin`
+- `a0abab6f8c2ed6d85377923be7d53d845a37426802b310a7eed0e6764e811617`  `Display-320x480-1.3.59beta.bin`
+- `43d682387e8f8f8e92e4b37a7eeb05d033065f4fc16593c778c5b477f4939ac3`  `Display-320x480-1.3.59beta-merged.bin`
+- `7e8b63fe2edee82b31ec9a35fcb9232c75cba7638d197c5fe80c1a4e58f1ed5d`  `Display-800x480-1.3.67beta.bin`
+- `1ad5cf602b3a6e756e95dc4afb6f3f49e58c3d85f8265c68da0191a2567bfb32`  `Display-800x480-1.3.67beta-merged.bin`
+- `244fdd3e2f90c558b3b5f7e8d42e22ca64d8c1afcdaed4fd0945ae7c3f87704e`  `Universal-RS232-1.0.66alpha.bin`
+- `0c35b9e235c7d6f07da47f1f7eab967d7b1180c728e6433187e2411fb6688c2b`  `Universal-RS232-1.0.66alpha-merged.bin`
+- `13fcbde73316e22034ae0d0e7122cd5a70f56fe5a310f0564529c0434be917aa`  `Modbus-RTU-1.0.52alpha.bin`
+- `287b89b1767abc542b6c09e9036b68671be92d90aba8c37bd3814c3ba51eb246`  `Modbus-RTU-1.0.52alpha-merged.bin`
 
 ## Update rules
 

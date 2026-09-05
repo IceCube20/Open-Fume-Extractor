@@ -1,5 +1,8 @@
 #pragma once
 
+static_assert(sizeof(module_update_wifi_bulk) == ofe_wifi::BULK_DATA_MAX,
+              "WiFi OTA bulk buffer must match the tunnel protocol");
+
 // Firmware update pages and handlers. Included from the master sketch so it can
 // use the existing static WebServer, Update state and scheduler objects.
 static bool firmware_signature_allowed(const String& sig, const char* expected);
@@ -56,7 +59,7 @@ static String update_page(const String& msg = String()) {
   html += F("</select><label>"); html += web_text("Modul-Firmware (.bin)", "Module firmware (.bin)"); html += F("</label><input id='module_fw_file' type='file' name='firmware' accept='.bin'><div id='module_fw_info' class='muted' style='margin-top:8px'></div><label class='dev-fw-override' style='display:none;margin-top:10px;padding:10px;border:1px solid #5b4a22;border-radius:8px;background:#211b10;color:#f4c25b'><input type='checkbox' name='unsafe' value='1' style='width:auto;min-height:0;margin-right:8px'><span>"); html += web_text("Entwicklermodus: Modultyp-Prüfung überspringen", "Developer mode: skip module type check"); html += F("</span></label><button id='module_update_btn' type='submit' style='margin-top:16px'>"); html += web_text("Modul aktualisieren", "Update Module"); html += F("</button><div class='progress'><div id='moduleBar' class='bar'></div></div><div id='moduleStat' class='upload-stat'></div></form></section></div>");
   html += F("<script>");
   html += web_is_german() ? F("const UI_DE=true;") : F("const UI_DE=false;");
-  html += developer_mode_enabled ? F("let DEV_MODE=true;") : F("let DEV_MODE=false;");
+  html += developer_override_active() ? F("let DEV_MODE=true;") : F("let DEV_MODE=false;");
   html += F("localStorage.setItem('ofe_dev_mode',DEV_MODE?'1':'0');function applyUpdateDevMode(){document.querySelectorAll('.dev-fw-override').forEach(function(e){e.style.display=DEV_MODE?'block':'none';});}applyUpdateDevMode();fetch('/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){if(typeof d.developer_mode==='boolean'){DEV_MODE=!!d.developer_mode;localStorage.setItem('ofe_dev_mode',DEV_MODE?'1':'0');applyUpdateDevMode();}}).catch(function(){});const RS485_FW_CHUNK=" OFE_STR(MODULE_FW_CHUNK_SIZE) ";const RS485_FW_CHUNK_DISPLAY=" OFE_STR(MODULE_FW_DISPLAY_CHUNK_SIZE) ";const MODULE_FW_HTTP_CHUNK=" OFE_STR(MODULE_FW_HTTP_CHUNK_SIZE) ";const MASTER_FW_CHUNK=" OFE_STR(MASTER_FW_WEB_CHUNK_SIZE) ";");
   html += F("function u(de,en){return UI_DE?de:en;}function fmt(n){if(!n)return'0 B';var uu=['B','KB','MB'];var i=0;while(n>=1024&&i<uu.length-1){n/=1024;i++;}return n.toFixed(i?1:0)+' '+uu[i];}");
   html += F("function fmtSpeed(bps){if(!bps||bps<1)return'-';return (bps/1024).toFixed(1)+' kB/s';}function fmtEta(sec){if(!isFinite(sec)||sec<0)return'-';sec=Math.ceil(sec);var m=Math.floor(sec/60),s=sec%60;return m?m+'m '+String(s).padStart(2,'0')+'s':s+'s';}");
@@ -192,7 +195,7 @@ static String module_update_stats_json() {
 static void web_handle_module_update_stats() {
   // Update timing diagnostics are intentionally developer-only. Keep normal
   // mode responses small and do not expose internal timing/queue telemetry.
-  if (!developer_mode_enabled) {
+  if (!developer_override_active()) {
     web.send(404, "text/plain; charset=utf-8", "Not found");
     return;
   }
@@ -408,7 +411,7 @@ static void web_handle_master_chunk_begin() {
   master_update_speed_sample_offset = 0;
   update_status_msg[0] = 0;
   master_update_signature_reset();
-  master_update_unsafe_fw_type = developer_mode_enabled && web.hasArg("unsafe") && web.arg("unsafe") == "1";
+  master_update_unsafe_fw_type = developer_override_active() && web.hasArg("unsafe") && web.arg("unsafe") == "1";
   scheduler.notifyDisplayUpdate(true, ADDR_MASTER, 0, 0);
   if (!master_update_unsafe_fw_type && !firmware_signature_allowed(web.arg("sig"), "OFE_FW_SIG:v1;target=MASTER;")) {
     snprintf(update_status_msg, sizeof(update_status_msg), "Firmware signature mismatch. Expected MASTER");
@@ -663,6 +666,25 @@ static uint32_t module_update_sample_speed(bool force = false) {
   return module_update_speed_bps;
 }
 
+// Serialize synchronous FW_CHUNK/FW_END/FW_ABORT transactions across the
+// HTTP task and loop task. The LED tick and ordinary status handling remain
+// independent while one OTA request waits for a module ACK.
+static void module_update_io_init() {
+  if (!module_update_io_mutex) {
+    module_update_io_mutex = xSemaphoreCreateMutexStatic(&module_update_io_mutex_storage);
+  }
+}
+
+static bool module_update_io_lock(uint32_t timeout_ms) {
+  module_update_io_init();
+  return module_update_io_mutex &&
+    xSemaphoreTake(module_update_io_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+static void module_update_io_unlock() {
+  if (module_update_io_mutex) xSemaphoreGive(module_update_io_mutex);
+}
+
 static bool module_update_queue_push(const uint8_t* data, size_t len, uint32_t timeout_ms) {
   if (!data && len) return false;
   const uint32_t start = millis();
@@ -695,9 +717,9 @@ static bool module_update_queue_push(const uint8_t* data, size_t len, uint32_t t
   return true;
 }
 
-static uint8_t module_update_queue_pop(uint8_t* out, uint8_t max_len) {
+static size_t module_update_queue_pop(uint8_t* out, size_t max_len) {
   if (!out || !max_len) return 0;
-  uint8_t n = 0;
+  size_t n = 0;
   portENTER_CRITICAL(&module_update_queue_mux);
   while (n < max_len && module_update_queue_count > 0) {
     out[n++] = module_update_queue[module_update_queue_tail];
@@ -730,6 +752,17 @@ static uint8_t module_update_queue_pop(uint8_t* out, uint8_t max_len) {
     portEXIT_CRITICAL(&module_update_queue_mux);
   }
   return n;
+}
+
+static bool module_update_send_legacy_chunks(uint8_t addr, uint32_t offset,
+                                             const uint8_t* data, size_t len) {
+  size_t pos=0;
+  while (pos<len) {
+    const uint8_t n=(uint8_t)min(len-pos,(size_t)(MAX_PAYLOAD-4));
+    if (!scheduler.moduleFwChunk(addr,offset+(uint32_t)pos,data+pos,n)) return false;
+    pos+=n;
+  }
+  return true;
 }
 
 static void module_update_fail_from_pump(const char* prefix) {
@@ -782,17 +815,54 @@ static void module_update_pump() {
 
   ModuleRecord* rec = registry.find(module_update_addr);
   const bool display_target = rec && rec->type == MODULE_DISPLAY;
-  const uint8_t max_frames = display_target ? (uint8_t)MODULE_FW_DISPLAY_PUMP_FRAMES_PER_LOOP : (uint8_t)MODULE_FW_PUMP_FRAMES_PER_LOOP;
+  const bool wifi_display_target = display_target && master_display_wifi.firmwareWireless(module_update_addr);
+  const bool wifi_bulk_target = wifi_display_target && master_display_wifi.firmwareBulkAvailable(module_update_addr);
+  const uint8_t max_frames = wifi_bulk_target
+    ? 1
+    : (display_target ? (uint8_t)MODULE_FW_DISPLAY_PUMP_FRAMES_PER_LOOP : (uint8_t)MODULE_FW_PUMP_FRAMES_PER_LOOP);
+  const uint32_t pump_budget_ms = wifi_display_target
+    ? (uint32_t)MODULE_FW_WIFI_PUMP_BUDGET_MS
+    : (uint32_t)MODULE_FW_PUMP_BUDGET_MS;
   const uint32_t start_ms = millis();
 
   for (uint8_t sent = 0; sent < max_frames; ++sent) {
-    uint8_t frame[MAX_PAYLOAD - 4];
-    const uint8_t fw_chunk_size = module_update_fw_chunk_size(module_update_addr);
-    const uint8_t n = module_update_queue_pop(frame, fw_chunk_size);
-    if (!n) return;
-
+    const uint8_t target_addr = module_update_addr;
+    if (!target_addr || update_status_msg[0]) return;
+    if (!module_update_io_lock(1000UL)) return;
+    // The HTTP task may have completed/aborted the session while the frame was
+    // waiting in the queue. Never send a stale chunk into a new session.
+    if (!module_update_addr || module_update_addr != target_addr || update_status_msg[0]) {
+      module_update_io_unlock();
+      return;
+    }
+    const bool use_bulk = master_display_wifi.firmwareBulkAvailable(target_addr);
+    const size_t chunk_size = use_bulk
+      ? (master_display_wifi.firmwareBulkConfirmed(target_addr)
+          ? (size_t)ofe_wifi::BULK_DATA_MAX
+          : (size_t)module_update_fw_chunk_size(target_addr))
+      : (size_t)module_update_fw_chunk_size(target_addr);
+    uint8_t* frame = module_update_wifi_bulk;
+    const size_t n = module_update_queue_pop(frame, chunk_size);
+    if (!n) {
+      module_update_io_unlock();
+      return;
+    }
+    const uint32_t target_offset = module_update_offset;
     const uint32_t ack_start = millis();
-    if (!scheduler.moduleFwChunk(module_update_addr, module_update_offset, frame, n)) {
+    bool chunk_ok=false;
+    if (use_bulk) {
+      chunk_ok=master_display_wifi.firmwareBulkChunk(target_addr,target_offset,frame,(uint16_t)n);
+      if (!chunk_ok) {
+        // Bulk is an optimization only. Its first failure permanently falls
+        // back to authenticated OFE frames for this update, including peers
+        // running an older display firmware.
+        chunk_ok=module_update_send_legacy_chunks(target_addr,target_offset,frame,n);
+      }
+    } else {
+      chunk_ok=module_update_send_legacy_chunks(target_addr,target_offset,frame,n);
+    }
+    module_update_io_unlock();
+    if (!chunk_ok) {
       module_update_fail_from_pump("FW_CHUNK failed");
       return;
     }
@@ -802,7 +872,8 @@ static void module_update_pump() {
     if (ack_ms > module_update_max_ack_ms) module_update_max_ack_ms = ack_ms;
     module_update_frames_sent++;
 
-    module_update_offset += n;
+    if (module_update_addr != target_addr) return;
+    module_update_offset = target_offset + n;
     module_update_sample_speed();
     if (module_update_size) {
       uint8_t progress = (uint8_t)((module_update_offset * 100UL) / module_update_size);
@@ -813,7 +884,7 @@ static void module_update_pump() {
       }
     }
 
-    if ((uint32_t)(millis() - start_ms) >= MODULE_FW_PUMP_BUDGET_MS) return;
+    if ((uint32_t)(millis() - start_ms) >= pump_budget_ms) return;
   }
 }
 
@@ -830,6 +901,10 @@ static bool module_update_wait_sent(uint32_t target_offset, uint32_t timeout_ms)
   return module_update_addr && !update_status_msg[0] && module_update_offset >= target_offset;
 }
 static bool module_update_abort_active() {
+  if (!module_update_io_lock(8000UL)) {
+    snprintf(update_status_msg, sizeof(update_status_msg), "OTA control lock timeout");
+    return false;
+  }
   const uint8_t abort_addr = module_update_addr
       ? module_update_addr
       : (scheduler.moduleFirmwareUpdateActive() ? scheduler.moduleFirmwareUpdateTarget() : ADDR_INVALID);
@@ -855,10 +930,13 @@ static bool module_update_abort_active() {
   module_update_queue_count = 0;
   portEXIT_CRITICAL(&module_update_queue_mux);
 
-  const bool acknowledged = abort_addr != ADDR_INVALID
+  // FW_CHUNK/FW_BEGIN may already have aborted the scheduler on a transport
+  // error. Avoid a second abort burst while the HTTP request is completing.
+  const bool acknowledged = abort_addr != ADDR_INVALID && scheduler.moduleFirmwareUpdateActive()
       ? scheduler.moduleFwAbort(abort_addr)
       : true;
   if (abort_addr == ADDR_INVALID) scheduler.notifyDisplayUpdate(false, ADDR_INVALID, 0);
+  module_update_io_unlock();
   module_update_unsafe_fw_type = false;
   module_update_signature_checked = false;
   module_update_signature_reset();
@@ -1074,7 +1152,7 @@ static void web_handle_module_chunk_begin() {
     web.send(400, "text/plain; charset=utf-8", "Module is not online or not firmware-update capable");
     return;
   }
-  const bool unsafe_fw_type = developer_mode_enabled && web.hasArg("unsafe") && web.arg("unsafe") == "1";
+  const bool unsafe_fw_type = developer_override_active() && web.hasArg("unsafe") && web.arg("unsafe") == "1";
   module_update_unsafe_fw_type = unsafe_fw_type;
   if (!unsafe_fw_type && !module_firmware_filename_allowed(rec->type, filename)) {
     String msg = F("Firmware filename does not match target module type. Expected: ");
@@ -1103,7 +1181,15 @@ static void web_handle_module_chunk_begin() {
   }
 
   module_update_addr = target_addr;
-  if (!scheduler.moduleFwBegin(module_update_addr, module_update_size)) {
+  if (!module_update_io_lock(8000UL)) {
+    module_update_addr = 0;
+    snprintf(update_status_msg, sizeof(update_status_msg), "OTA control lock timeout");
+    web.send(500, "text/plain; charset=utf-8", update_status_msg);
+    return;
+  }
+  const bool begin_ok = scheduler.moduleFwBegin(target_addr, module_update_size);
+  module_update_io_unlock();
+  if (!begin_ok) {
     snprintf(update_status_msg, sizeof(update_status_msg), "FW_BEGIN failed: %s", scheduler.lastModuleFwError());
     module_update_abort_active();
     web.send(500, "text/plain; charset=utf-8", update_status_msg);
@@ -1114,7 +1200,7 @@ static void web_handle_module_chunk_begin() {
 
 static void web_handle_module_chunk_done() {
   if (module_chunk_ok) {
-    if (developer_mode_enabled) {
+    if (developer_override_active()) {
       // Piggy-back developer diagnostics on the chunk response already in the
       // critical upload path. No extra HTTP stats request is needed per chunk.
       web.send(200, "application/json; charset=utf-8", module_update_stats_json());
@@ -1194,7 +1280,14 @@ static void web_handle_module_chunk_end() {
     web.send(500, "text/plain; charset=utf-8", update_status_msg);
     return;
   }
-  module_update_ok = scheduler.moduleFwEnd(module_update_addr);
+  const uint8_t end_addr = module_update_addr;
+  if (!module_update_io_lock(8000UL)) {
+    snprintf(update_status_msg, sizeof(update_status_msg), "OTA control lock timeout");
+    web.send(500, "text/plain; charset=utf-8", update_status_msg);
+    return;
+  }
+  module_update_ok = scheduler.moduleFwEnd(end_addr);
+  module_update_io_unlock();
   if (!module_update_ok) {
     snprintf(update_status_msg, sizeof(update_status_msg), "FW_END failed: %s", scheduler.lastModuleFwError());
     module_update_abort_active();
@@ -1243,7 +1336,7 @@ static void web_handle_module_update_upload() {
       snprintf(update_status_msg, sizeof(update_status_msg), "Module is not online or not firmware-update capable");
       return;
     }
-    const bool unsafe_fw_type = developer_mode_enabled && web.hasArg("unsafe") && web.arg("unsafe") == "1";
+    const bool unsafe_fw_type = developer_override_active() && web.hasArg("unsafe") && web.arg("unsafe") == "1";
     module_update_queue_reset();
     module_update_unsafe_fw_type = unsafe_fw_type;
     if (!unsafe_fw_type && !module_firmware_filename_allowed(rec->type, upload.filename)) {

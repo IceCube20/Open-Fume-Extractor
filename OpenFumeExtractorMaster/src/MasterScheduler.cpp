@@ -1519,10 +1519,15 @@ uint16_t MasterScheduler::ofeWireBytesApprox(const Frame& frame) {
 }
 
 void MasterScheduler::busDiagRecordTx(const Frame& frame) {
-  if (link_.lastTxWasNetwork()) return;
+  const bool network = link_.lastTxWasNetwork();
   const uint16_t wire = ofeWireBytesApprox(frame);
-  ++ofe_tx_frames_;
-  ofe_tx_wire_bytes_ += wire;
+  // The top OFE counter represents the physical RS485 wire. Per-module
+  // counters also include authenticated WLAN traffic so hybrid displays stay
+  // visible in the topology and retain meaningful request/rate diagnostics.
+  if (!network) {
+    ++ofe_tx_frames_;
+    ofe_tx_wire_bytes_ += wire;
+  }
   const int16_t idx = busDiagIndex(frame.dst);
   if (idx >= 0) {
     BusModuleDiag& d = bus_module_diag_[idx];
@@ -1533,10 +1538,12 @@ void MasterScheduler::busDiagRecordTx(const Frame& frame) {
 }
 
 void MasterScheduler::busDiagRecordRx(const Frame& frame) {
-  if (link_.lastRxWasNetwork()) return;
+  const bool network = link_.lastRxWasNetwork();
   const uint16_t wire = ofeWireBytesApprox(frame);
-  ++ofe_rx_frames_;
-  ofe_rx_wire_bytes_ += wire;
+  if (!network) {
+    ++ofe_rx_frames_;
+    ofe_rx_wire_bytes_ += wire;
+  }
   const int16_t idx = busDiagIndex(frame.src);
   if (idx >= 0) {
     BusModuleDiag& d = bus_module_diag_[idx];
@@ -4253,6 +4260,36 @@ bool MasterScheduler::sendOutputPower(uint8_t addr, uint16_t power) {
   return resp.cmd == (CMD_SET_POWER | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
 }
 
+bool MasterScheduler::firmwareTargetIsDisplay(uint8_t addr) const {
+  const ModuleRecord* rec = registry_.find(addr);
+  return rec && (rec->caps & CAP_DISPLAY);
+}
+
+void MasterScheduler::invalidateModuleAfterFirmwareUpdate(uint8_t addr) {
+  ModuleRecord* rec = registry_.find(addr);
+  if (rec) {
+    rec->online = false;
+    rec->came_online = false;
+    if (rec->caps & CAP_JBC_BUS) rec->jbc_settings_valid = false;
+    rec->consecutive_timeouts = 5;
+    rec->telemetry_valid = false;
+    rec->output_status_valid = false;
+    rec->universal_descriptor_valid = false;
+    rec->universal_entities_valid = false;
+    rec->universal_entity_count = 0;
+    rec->universal_descriptor[0] = 0;
+    rec->last_seen_ms = 0;
+  }
+  last_offline_reprobe_ms_ = 0;
+  selectRoles();
+  updateJbcAggregate();
+  updateInputRouting();
+  extractor_.markOutputDirty();
+  last_system_jbc_error_ = 0xFFFF;
+  last_system_jbc_filter_life_ = 0xFFFF;
+  last_system_jbc_filter_sat_ = 0xFFFF;
+}
+
 bool MasterScheduler::moduleFwBegin(uint8_t addr, uint32_t size) {
   last_fw_error_[0] = 0;
   {
@@ -4272,8 +4309,7 @@ bool MasterScheduler::moduleFwBegin(uint8_t addr, uint32_t size) {
   last_fw_chunk_attempts_ = 0;
   fw_chunk_retry_count_ = 0;
 
-  ModuleRecord* rec = registry_.find(addr);
-  const bool display_target = rec && (rec->caps & CAP_DISPLAY);
+  const bool display_target = firmwareTargetIsDisplay(addr);
   const uint8_t attempts = display_target ? 4 : 3;
   const uint32_t timeout_ms = display_target ? 5000UL : 3000UL;
 
@@ -4308,8 +4344,7 @@ bool MasterScheduler::moduleFwChunk(uint8_t addr, uint32_t offset, const uint8_t
     moduleFwAbort(addr);
     return false;
   }
-  ModuleRecord* rec = registry_.find(addr);
-  const bool display_target = rec && (rec->caps & CAP_DISPLAY);
+  const bool display_target = firmwareTargetIsDisplay(addr);
   // Normal module FW_CHUNK responses are usually in the 10..160 ms range.
   // Waiting a fixed 3 seconds for a single lost ACK created a very visible bus
   // blackout before the idempotent same-offset retry.  Use a short first retry
@@ -4383,36 +4418,14 @@ bool MasterScheduler::moduleFwEnd(uint8_t addr) {
   module_fw_active_ = false;
   module_fw_target_ = ADDR_INVALID;
 
-  ModuleRecord* rec = registry_.find(addr);
-  if (rec) {
-    rec->online = false;
-    rec->came_online = false;
-    if (rec->caps & CAP_JBC_BUS) rec->jbc_settings_valid = false;
-    rec->consecutive_timeouts = 5;
-    rec->telemetry_valid = false;
-    rec->output_status_valid = false;
-    rec->universal_descriptor_valid = false;
-    rec->universal_entities_valid = false;
-    rec->universal_entity_count = 0;
-    rec->universal_descriptor[0] = 0;
-    rec->last_seen_ms = 0;
-  }
-  last_offline_reprobe_ms_ = 0;
-  selectRoles();
-  updateJbcAggregate();
-  updateInputRouting();
-  extractor_.markOutputDirty();
-  last_system_jbc_error_ = 0xFFFF;
-  last_system_jbc_filter_life_ = 0xFFFF;
-  last_system_jbc_filter_sat_ = 0xFFFF;
+  invalidateModuleAfterFirmwareUpdate(addr);
 
   notifyDisplayUpdate(false, addr, 100);
   return true;
 }
 
 bool MasterScheduler::moduleFwAbort(uint8_t addr) {
-  ModuleRecord* rec = registry_.find(addr);
-  const bool display_target = rec && (rec->caps & CAP_DISPLAY);
+  const bool display_target = firmwareTargetIsDisplay(addr);
   const uint32_t timeout_ms = display_target ? 1200UL : 700UL;
   bool acknowledged = false;
 
@@ -4959,7 +4972,7 @@ bool MasterScheduler::sendDisplayModuleList(uint8_t display_addr, uint8_t start_
       master_rec->fw_minor = master_fw_minor_;
       master_rec->fw_patch = master_fw_patch_;
       strncpy(master_rec->fw_suffix, master_fw_suffix_, sizeof(master_rec->fw_suffix) - 1);
-      master_rec->module_uptime_s = millis() / 1000UL;
+      master_rec->module_uptime_s = monotonic_uptime_seconds();
       master_rec->module_heap_free = ESP.getFreeHeap();
       master_rec->module_cpu_load_pct = master_cpu_load_pct_;
       master_rec->module_loop_max_ms = master_loop_max_ms_;
@@ -5016,7 +5029,7 @@ bool MasterScheduler::sendDisplayModuleDetail(uint8_t display_addr, uint8_t targ
     master_rec->fw_minor = master_fw_minor_;
     master_rec->fw_patch = master_fw_patch_;
     strncpy(master_rec->fw_suffix, master_fw_suffix_, sizeof(master_rec->fw_suffix) - 1);
-    master_rec->module_uptime_s = millis() / 1000UL;
+    master_rec->module_uptime_s = monotonic_uptime_seconds();
     master_rec->module_heap_free = ESP.getFreeHeap();
     master_rec->module_cpu_load_pct = master_cpu_load_pct_;
     master_rec->module_loop_max_ms = master_loop_max_ms_;

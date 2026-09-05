@@ -398,6 +398,9 @@ static void web_handle_diagnostics_state() {
     json += F(",\"type_name\":\""); json += module_type_name_for(m); json += '"';
     json += F(",\"name\":\""); { const String dn = module_display_name(m); json += json_escape(dn.c_str()); } json += '"';
     json += F(",\"online\":"); json += m.online ? F("true") : F("false");
+    json += F(",\"transport\":\"");
+    json += (m.type == MODULE_DISPLAY && master_display_wifi.active(m.addr)) ? F("wifi") : F("rs485");
+    json += '"';
     json += F(",\"caps\":"); json += m.caps;
     json += F(",\"device_bus\":\""); json += diagnostics_device_bus_name(m.type); json += '"';
     json += F(",\"device_detail\":\""); json += json_escape(device_detail.c_str()); json += '"';
@@ -3265,17 +3268,18 @@ function diagModuleVisual(m){
   }
 }
 let diagModuleCardSignature=null;
-function diagModuleSignature(modules){return (modules||[]).map(m=>[Number(m.addr||0),Number(m.type||0),String(m.name||''),String(m.type_name||''),String(m.device_bus||'')].join('|')).join(';')}
+function diagModuleSignature(modules){return (modules||[]).map(m=>[Number(m.addr||0),Number(m.type||0),String(m.name||''),String(m.type_name||''),String(m.device_bus||''),String(m.transport||'rs485')].join('|')).join(';')}
 function diagRenderModules(d,sec){
-  let totalRate=rateDelta(d,prevDiag,'ofe_tx_wire_bytes',sec)+rateDelta(d,prevDiag,'ofe_rx_wire_bytes',sec);
-  let modules=d.modules||[],signature=diagModuleSignature(modules),cards=document.getElementById('diag_module_cards');
+  let modules=d.modules||[],totalRate=0;
+  modules.forEach(function(m){let p=modulePrevByAddr(prevDiag,m.addr);if(p&&sec>0)totalRate+=Math.max(0,(Number(m.tx_wire_bytes)-Number(p.tx_wire_bytes))/sec)+Math.max(0,(Number(m.rx_wire_bytes)-Number(p.rx_wire_bytes))/sec)});
+  let signature=diagModuleSignature(modules),cards=document.getElementById('diag_module_cards');
   if(signature!==diagModuleCardSignature){
     let shell='';
     modules.forEach(function(m){
       let v=diagModuleVisual(m),online=m.online?'is-online':'is-offline';
       shell+='<div class="diag-module-card '+v.cls+'" id="diag_card_'+m.addr+'">';
       shell+='<div class="diag-module-head"><div class="diag-module-title">'+esc(m.name)+'</div><div class="diag-module-head-main"><div class="diag-module-identity"><span class="diag-module-icon">'+v.icon+'</span><div class="diag-module-copy"><div class="diag-module-type">'+esc(m.type_name||v.sub)+'</div><div class="diag-module-address">'+addrText(m.addr)+'</div></div></div>';
-      shell+='<div class="diag-module-statuses"><span id="diag_online_'+m.addr+'" class="diag-mini-badge diag-online-pill '+online+'"><span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?'online':'offline')+'</span></div></div></div>';
+      shell+='<div class="diag-module-statuses"><span class="diag-mini-badge">'+(m.transport==='wifi'?'WLAN':'RS485')+'</span><span id="diag_online_'+m.addr+'" class="diag-mini-badge diag-online-pill '+online+'"><span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?'online':'offline')+'</span></div></div></div>';
       shell+='<div class="diag-led-pair"><span id="diag_led_ofe_'+m.addr+'" class="diag-led-word">OFE</span><span id="diag_led_evt_'+m.addr+'" class="diag-led-word">EVT</span></div>';
       shell+='<div id="diag_dynamic_'+m.addr+'" class="diag-module-dynamic"></div></div>';
     });

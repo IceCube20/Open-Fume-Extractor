@@ -62,8 +62,9 @@ function Assert-MergedContainsApp([string]$AppPath, [string]$MergedPath) {
   }
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
-    $appHash = [Convert]::ToHexString($sha.ComputeHash($appBytes))
-    $embeddedHash = [Convert]::ToHexString($sha.ComputeHash($embedded))
+    # Keep the release helper compatible with Windows PowerShell 5.1.
+    $appHash = ([BitConverter]::ToString($sha.ComputeHash($appBytes))).Replace('-', '')
+    $embeddedHash = ([BitConverter]::ToString($sha.ComputeHash($embedded))).Replace('-', '')
   } finally {
     $sha.Dispose()
   }
@@ -147,7 +148,11 @@ foreach ($row in $rows) {
       }
     )
   }
-  $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $manifestRoot $manifestName) -Encoding utf8NoBOM
+  [IO.File]::WriteAllText(
+    (Join-Path $manifestRoot $manifestName),
+    ($manifest | ConvertTo-Json -Depth 8),
+    [Text.UTF8Encoding]::new($false)
+  )
   $catalog += [ordered]@{
     id = $row.Name
     label = $row.Label
@@ -161,7 +166,11 @@ foreach ($row in $rows) {
     mergedSha256 = $row.MergedHash
   }
 }
-$catalog | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $flasherRoot 'firmware-catalog.json') -Encoding utf8NoBOM
+[IO.File]::WriteAllText(
+  (Join-Path $flasherRoot 'firmware-catalog.json'),
+  ($catalog | ConvertTo-Json -Depth 6),
+  [Text.UTF8Encoding]::new($false)
+)
 
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('# Firmware Files')

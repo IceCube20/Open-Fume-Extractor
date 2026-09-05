@@ -20,7 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw 'LVGL profile tests failed' }
 
 $lvgl = Join-Path $env:USERPROFILE 'Documents\Arduino\libraries\lvgl'
 $display = Join-Path $root 'Module\DisplayModule_800x480'
-$configFlag = '/DLV_CONF_PATH="ofe_lv_conf.h"'
+$configFlag = '/DLV_CONF_PATH=<ofe_lv_conf.h>'
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /TC /std:c11 /utf-8 /W3 $configFlag "/I$display" "/I$lvgl" /c "$lvgl\src\stdlib\builtin\lv_tlsf.c" "/Fo$build\lv_tlsf.obj"
 if ($LASTEXITCODE -ne 0) { throw 'LVGL allocator build failed' }
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 $configFlag "/I$display" "/I$lvgl" "$PSScriptRoot\test_lvgl_pool.cpp" "$build\lv_tlsf.obj" "/Fo$build\" "/Fe$build\test_lvgl_pool.exe"

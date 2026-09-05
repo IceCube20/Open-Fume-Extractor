@@ -12,6 +12,7 @@ static TaskHandle_t master_loop_task_handle = nullptr;
 static WebServer web(80);
 static DNSServer dns;
 static Preferences net_prefs;
+static TaskHandle_t web_service_task_handle = nullptr;
 
 static bool master_extmem_malloc_enabled = false;
 static uint32_t master_extmem_malloc_threshold = MASTER_EXTMEM_MALLOC_THRESHOLD;
@@ -41,9 +42,13 @@ public:
     ++lock_depth_;
     ++begin_count_;
 
-    // Keep the lock until the matching end() even if Preferences::begin()
-    // reports an NVS error. Existing call sites are begin/end balanced.
-    return Preferences::begin(name, readOnly, partition_label);
+    const bool ok = Preferences::begin(name, readOnly, partition_label);
+    if (!ok) {
+      --lock_depth_;
+      if (!lock_depth_) owner_ = nullptr;
+      xSemaphoreGiveRecursive(mutex_);
+    }
+    return ok;
   }
 
   void end() {
@@ -80,6 +85,9 @@ static char web_auth_password[65] = WEB_AUTH_PASSWORD;
 static char web_lang[3] = "de";
 static char master_hostname[32] = "open-fume-extractor";
 static char master_ap_ssid[33] = "OpenFume";
+static char master_bootstrap_password[24] = {0};
+static char master_ap_password[24] = {0};
+static bool web_password_change_required = false;
 static char master_device_id[40] = "open-fume-extractor";
 static bool status_led_enabled = true;
 static uint8_t status_led_brightness_pct = 20;
@@ -103,6 +111,23 @@ static bool mqtt_tls_verify_enabled = false;
 static WiFiClient mqtt_plain_client;
 static WiFiClientSecure mqtt_tls_client;
 static PubSubClient mqtt_client;
+static StaticSemaphore_t mqtt_config_mutex_storage;
+static SemaphoreHandle_t mqtt_config_mutex = nullptr;
+static volatile bool mqtt_reconfigure_requested = false;
+
+class MqttConfigGuard {
+public:
+  MqttConfigGuard() {
+    if (!mqtt_config_mutex) mqtt_config_mutex = xSemaphoreCreateRecursiveMutexStatic(&mqtt_config_mutex_storage);
+    locked_ = mqtt_config_mutex && xSemaphoreTakeRecursive(mqtt_config_mutex, portMAX_DELAY) == pdTRUE;
+  }
+  ~MqttConfigGuard() {
+    if (locked_) xSemaphoreGiveRecursive(mqtt_config_mutex);
+  }
+  bool locked() const { return locked_; }
+private:
+  bool locked_ = false;
+};
 static bool mqtt_client_tls_active = false;
 static uint32_t mqtt_next_connect_ms = 0;
 static uint32_t mqtt_last_publish_ms = 0;
@@ -119,23 +144,24 @@ static uint32_t wifi_next_retry_ms = 0;
 static bool master_update_ok = false;
 static bool master_chunk_ok = false;
 static bool master_update_active = false;
-static bool module_update_ok = false;
-static bool module_chunk_ok = false;
+static volatile bool module_update_ok = false;
+static volatile bool module_chunk_ok = false;
 static uint32_t master_update_offset = 0;
 static uint32_t master_update_size = 0;
 static uint8_t master_update_progress = 0;
 static uint32_t master_update_speed_bps = 0;
 static uint32_t master_update_speed_sample_ms = 0;
 static uint32_t master_update_speed_sample_offset = 0;
-static uint8_t module_update_addr = 0;
-static uint32_t module_update_offset = 0;
-static uint32_t module_update_size = 0;
-static uint8_t module_update_progress = 0;
-static uint32_t module_update_speed_bps = 0;
-static uint32_t module_update_speed_sample_ms = 0;
-static uint32_t module_update_speed_sample_offset = 0;
+static volatile uint8_t module_update_addr = 0;
+static volatile uint32_t module_update_offset = 0;
+static volatile uint32_t module_update_size = 0;
+static volatile uint8_t module_update_progress = 0;
+static volatile uint32_t module_update_speed_bps = 0;
+static volatile uint32_t module_update_speed_sample_ms = 0;
+static volatile uint32_t module_update_speed_sample_offset = 0;
 static volatile uint32_t module_update_queued_offset = 0;
 static uint8_t module_update_queue[MODULE_FW_QUEUE_SIZE];
+static uint8_t module_update_wifi_bulk[1024];
 static volatile size_t module_update_queue_head = 0;
 static volatile size_t module_update_queue_tail = 0;
 static volatile size_t module_update_queue_count = 0;
@@ -155,6 +181,8 @@ static volatile uint32_t module_update_last_pump_gap_ms = 0;
 static volatile uint32_t module_update_max_pump_gap_ms = 0;
 static volatile bool module_update_stream_started = false;
 static portMUX_TYPE module_update_queue_mux = portMUX_INITIALIZER_UNLOCKED;
+static StaticSemaphore_t module_update_io_mutex_storage;
+static SemaphoreHandle_t module_update_io_mutex = nullptr;
 static char update_status_msg[96] = {0};
 static bool module_update_unsafe_fw_type = false;
 static bool module_update_signature_checked = false; // image-header check

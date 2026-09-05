@@ -1,8 +1,24 @@
 #pragma once
 
 #include <Arduino.h>
+#if __has_include(<esp_timer.h>)
+#include <esp_timer.h>
+#define OFE_HAS_ESP_TIMER 1
+#else
+#define OFE_HAS_ESP_TIMER 0
+#endif
 
 namespace jbc_rs485 {
+
+inline uint32_t monotonic_uptime_seconds() {
+#if OFE_HAS_ESP_TIMER
+  return (uint32_t)((uint64_t)esp_timer_get_time() / 1000000ULL);
+#elif defined(ARDUINO)
+  return millis() / 1000UL;
+#else
+  return 0;
+#endif
+}
 
 static const uint8_t SOF = 0x7E;
 static const uint8_t ESC = 0x7D;

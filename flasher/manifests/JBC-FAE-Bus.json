@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - JBC FAE Bus",
-  "version": "1.1.59beta",
+  "version": "1.1.60beta",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.59beta-merged.bin",
+          "path": "../../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.60beta-merged.bin",
           "offset": 0
         }
       ]

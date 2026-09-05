@@ -15,3 +15,7 @@ Open Fume Extractor Signing Key/
 *private*.pem
 *private*.key
 
+
+# Local developer credentials
+OpenFumeExtractorMaster/src/MasterPrivateConfig.h
+

@@ -11,6 +11,7 @@
 class OfeDisplayWifi {
 public:
   using Transition = void (*)();
+  using FirmwareChunk = uint8_t (*)(uint32_t, const uint8_t*, uint16_t, uint32_t&);
   struct View {
     ofe_wifi::Config config;
     char networks[544]={};
@@ -29,8 +30,9 @@ public:
   size_t drawBufferReserve() const {
     return boot_radio_ready_ ? ofe_display_memory::RUNTIME_RESERVE : ofe_display_memory::STARTUP_RESERVE;
   }
-  bool begin(jbc_rs485::Link& link, uint64_t uid, uint8_t& address, Transition transition) {
-    link_=&link; uid_=uid; address_=&address; transition_=transition;
+  bool begin(jbc_rs485::Link& link, uint64_t uid, uint8_t& address, Transition transition,
+             FirmwareChunk firmware_chunk=nullptr) {
+    link_=&link; uid_=uid; address_=&address; transition_=transition; firmware_chunk_=firmware_chunk;
     Preferences p;
     if (p.begin("ofe-display-net",false)) {
       ofe_wifi::Config saved;
@@ -116,6 +118,9 @@ private:
   sockaddr_in endpoint_={};
   bool connected_=false,network_origin_=false;
   Transition transition_=nullptr;
+  FirmwareChunk firmware_chunk_=nullptr;
+  uint32_t bulk_last_request_=0,bulk_last_offset_=0,bulk_last_accepted_=0;
+  uint8_t bulk_last_status_=ofe_wifi::STATUS_BUSY;
   void setActive(bool active) {
     portENTER_CRITICAL(&mux_);
     bool changed=shared_.active!=active; shared_.active=active;
@@ -125,6 +130,8 @@ private:
   void resetSession(bool leave) {
     if (leave && connected_) send(ofe_wifi::LEAVE);
     connected_=false; client_=0; server_=0; tx_=rx_=0; hello_ms_=0;
+    bulk_last_request_=bulk_last_offset_=bulk_last_accepted_=0;
+    bulk_last_status_=ofe_wifi::STATUS_BUSY;
     setActive(false);
   }
   bool send(uint8_t kind,const jbc_rs485::Frame* frame=nullptr) {
@@ -204,9 +211,29 @@ private:
       if (server_ && (uint32_t)(millis()-seen_)>5000) { server_=0; client_=nonce(); }
       send(server_ ? PROOF : HELLO); hello_ms_=millis();
     }
-    uint8_t raw[PACKET_MAX+1]; sockaddr_in from={}; socklen_t size=sizeof(from);
+    uint8_t raw[BULK_PACKET_MAX]; sockaddr_in from={}; socklen_t size=sizeof(from);
     int n=recvfrom(fd_,raw,sizeof(raw),MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&from),&size);
     if (n<=0 || !samePeer(from,endpoint_)) return false;
+    if (n >= (int)(BULK_HEADER + TAG) && (!memcmp(raw,"OFB1",4) || !memcmp(raw,"OFA1",4))) {
+      BulkPacketView bulk;
+      if (!decodeBulk(raw,n,active_config_.key,bulk) || bulk.ack || !connected_ ||
+          bulk.uid!=uid_ || bulk.client!=client_ || bulk.server!=server_ ||
+          bulk.mode!=active_config_.mode || !bulk.request) return false;
+      uint8_t status=STATUS_BUSY;
+      uint32_t accepted=bulk.offset;
+      if (bulk.request==bulk_last_request_ && bulk.offset==bulk_last_offset_) {
+        status=bulk_last_status_; accepted=bulk_last_accepted_;
+      } else if (firmware_chunk_) {
+        status=firmware_chunk_(bulk.offset,bulk.data,bulk.length,accepted);
+        bulk_last_request_=bulk.request; bulk_last_offset_=bulk.offset;
+        bulk_last_status_=status; bulk_last_accepted_=accepted;
+      }
+      seen_=millis(); network_origin_=true;
+      last_transport_wireless_.store(true,std::memory_order_relaxed);
+      sendBulkPacket(fd_,endpoint_,true,active_config_.mode,status,uid_,client_,server_,
+                     bulk.request,accepted,nullptr,0,active_config_.key);
+      return false;
+    }
     Packet p;
     if (!decode(raw,n,active_config_.key,p) || p.uid!=uid_ || p.mode!=active_config_.mode || p.client!=client_) return false;
     if (p.kind==CHALLENGE && !connected_ && p.server && !p.counter && !p.length) {

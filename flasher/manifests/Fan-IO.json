@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Fan/IO",
-  "version": "1.1.53beta",
+  "version": "1.1.54beta",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Fan-IO/Fan-IO-1.1.53beta-merged.bin",
+          "path": "../../firmware/Fan-IO/Fan-IO-1.1.54beta-merged.bin",
           "offset": 0
         }
       ]

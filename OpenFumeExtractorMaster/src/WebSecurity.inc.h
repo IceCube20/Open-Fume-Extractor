@@ -53,6 +53,20 @@ static bool web_block_captive_non_config() {
   else web.send(403, "text/plain; charset=utf-8", "setup mode: only network configuration is available");
   return true;
 }
+
+static bool web_password_change_blocked() {
+  if (!web_password_change_required) return false;
+  const String path = web.uri();
+  if (path == "/config" || path == "/config/save" || path == "/config/password") return false;
+  if (web.method() == HTTP_GET) {
+    web.sendHeader("Location", "/config", true);
+    web.send(302, "text/plain; charset=utf-8", "");
+    return true;
+  }
+  web.send(428, "text/plain; charset=utf-8", "Set a new web password on /config before continuing");
+  return true;
+}
+
 static bool web_require_auth() {
   web_security_headers();
   if (web_block_captive_non_config()) return false;
@@ -65,12 +79,15 @@ static bool web_require_auth() {
     return false;
   }
 #if WEB_AUTH_ENABLE
-  if (web.authenticate(web_auth_user, web_auth_password)) return true;
-  web.requestAuthentication(BASIC_AUTH, "Open Fume Extractor");
-  return false;
+  if (!web.authenticate(web_auth_user, web_auth_password)) {
+    web.requestAuthentication(BASIC_AUTH, "Open Fume Extractor");
+    return false;
+  }
 #else
-  return true;
+  // Authentication is disabled by the build configuration.
 #endif
+  if (web_password_change_blocked()) return false;
+  return true;
 }
 static bool web_require_config_auth() {
   web_security_headers();
@@ -82,6 +99,7 @@ static bool web_require_config_auth() {
     web.send(403, "text/plain; charset=utf-8", "bad csrf token");
     return false;
   }
+  if (web_password_change_blocked()) return false;
   if (captive_active) return true;
   return web_require_auth();
 }

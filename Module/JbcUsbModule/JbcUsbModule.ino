@@ -62,7 +62,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 75
+#define OFE_MODULE_FW_PATCH 76
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -8170,7 +8170,7 @@ static void poll_jbc_protocol() {
             }
           }
         }
-        if(!ok && next_sold_peripheral_config_poll_ms<=now) next_sold_peripheral_config_poll_ms=now+250UL;
+        if (!ok && (int32_t)(now - next_sold_peripheral_config_poll_ms) >= 0) next_sold_peripheral_config_poll_ms = now + 250UL;
       }
     }
     // ALE exposes two additional safe read APIs: Tin Feeder configuration
@@ -8609,7 +8609,7 @@ static void rs485_get_telemetry(const Frame& req) {
   resp.payload[o++] = MODULE_JBC_USB;
   put_u32_le(resp.payload + o, ESP.getFreeHeap()); o += 4;
   put_u32_le(resp.payload + o, ESP.getMinFreeHeap()); o += 4;
-  put_u32_le(resp.payload + o, millis() / 1000UL); o += 4;
+  put_u32_le(resp.payload + o, monotonic_uptime_seconds()); o += 4;
   put_u32_le(resp.payload + o, usb_rx_bytes); o += 4;
   put_u32_le(resp.payload + o, usb_tx_bytes); o += 4;
   put_u32_le(resp.payload + o, jbc_rx_frames); o += 4;

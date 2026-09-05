@@ -13,6 +13,7 @@ constexpr const char* KEY_WIFI_PASS = "pass";
 constexpr const char* KEY_HOSTNAME = "host";
 constexpr const char* KEY_WEB_USER = "web_user";
 constexpr const char* KEY_WEB_PASS = "web_pass";
+constexpr const char* KEY_AP_PASS = "ap_pass";
 constexpr const char* KEY_STATIC_IP = "static";
 constexpr const char* KEY_IP = "ip";
 constexpr const char* KEY_GATEWAY = "gateway";

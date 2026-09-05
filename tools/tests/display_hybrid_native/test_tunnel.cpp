@@ -55,6 +55,21 @@ int main() {
     key[0]^=1; assert(!decode(raw,n,key,out)); key[0]^=1;
     p.body[4]=MAX_PAYLOAD; p.length=5; assert(!getFrame(p,decoded));
   }
+  uint8_t bulkData[BULK_DATA_MAX];
+  for (size_t i=0;i<sizeof(bulkData);++i) bulkData[i]=(uint8_t)(i*17U);
+  uint8_t bulkRaw[BULK_PACKET_MAX];
+  const uint64_t bulkUid=0x4000000012345678ULL;
+  size_t bulkSize=encodeBulk(false,WIRELESS,STATUS_OK,bulkUid,42,99,1234,4096,
+                             bulkData,sizeof(bulkData),key,bulkRaw);
+  assert(bulkSize==BULK_PACKET_MAX);
+  BulkPacketView bulk;
+  assert(decodeBulk(bulkRaw,bulkSize,key,bulk));
+  assert(!bulk.ack && bulk.mode==WIRELESS && bulk.uid==bulkUid && bulk.request==1234 &&
+         bulk.offset==4096 && bulk.length==sizeof(bulkData) && !memcmp(bulk.data,bulkData,sizeof(bulkData)));
+  bulkRaw[BULK_HEADER+7]^=1; assert(!decodeBulk(bulkRaw,bulkSize,key,bulk)); bulkRaw[BULK_HEADER+7]^=1;
+  bulkSize=encodeBulk(true,WIRELESS,STATUS_OK,bulkUid,42,99,1234,5120,nullptr,0,key,bulkRaw);
+  assert(decodeBulk(bulkRaw,bulkSize,key,bulk) && bulk.ack && bulk.offset==5120 && bulk.length==0);
+  assert(!encodeBulk(false,WIRELESS,STATUS_OK,bulkUid,42,99,1,0,bulkData,BULK_DATA_MAX+1,key,bulkRaw));
   Config config; assert(valid(config) && !configured(config));
   strcpy(config.ssid,"SSID"); strcpy(config.host,"192.168.1.2"); memcpy(config.key,key,16); assert(configured(config));
   config.mode=3; assert(!valid(config)); config.mode=AUTOMATIC;
@@ -69,5 +84,5 @@ int main() {
   link.setTransportHooks(&routed,[](void* ctx,const Frame&){ ++*(int*)ctx; return true; },nullptr,nullptr);
   link.send(sent); assert(routed==1 && serial.bytes.size()==count); // no mirrored command
   link.sendPhysical(sent); assert(serial.bytes.size()>count); // explicit cable probe
-  puts("PASS: draw-buffer headroom/fragmentation/allocation rollback; 193 payload sizes, byte tampering, truncation, wrong keys, replay/session checks, config validation, serial compatibility and exclusive routing.");
+  puts("PASS: draw-buffer headroom/fragmentation/allocation rollback; control and 1024-byte bulk authentication, tampering, replay/session checks, config validation, serial compatibility and exclusive routing.");
 }

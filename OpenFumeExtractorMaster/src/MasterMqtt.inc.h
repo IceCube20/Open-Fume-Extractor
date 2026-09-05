@@ -1,11 +1,15 @@
 #pragma once
+#include <mbedtls/sha256.h>
 
 // MQTT/Home Assistant integration. Included from the master sketch so it can
 // use the sketch-local static configuration while the main file stays readable.
 static void mqtt_service_task(void* parameter) {
   (void)parameter;
   for (;;) {
-    mqtt_loop();
+    {
+      MqttConfigGuard guard;
+      if (guard.locked()) mqtt_loop();
+    }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
@@ -13,10 +17,47 @@ static void mqtt_service_task(void* parameter) {
 static void ui_config_load() {
   master_prefs.begin(MasterSettingsStore::NS_CFG, false);
   String lang = master_prefs.getString(MasterSettingsStore::KEY_LANG, "de");
+#if OFE_DEVELOPER_MODE_ENABLE
   developer_mode_enabled = master_prefs.getBool(MasterSettingsStore::KEY_DEV_MODE, false);
+#else
+  developer_mode_enabled = false;
+  master_prefs.remove(MasterSettingsStore::KEY_DEV_MODE);
+#endif
   master_prefs.end();
   if (lang != "en") lang = "de";
   lang.toCharArray(web_lang, sizeof(web_lang));
+}
+
+static bool developer_password_matches(const String& password) {
+#if !OFE_DEVELOPER_MODE_ENABLE
+  (void)password;
+  return false;
+#else
+  const char* expected = OFE_DEVELOPER_PASSWORD_SHA256;
+  if (!expected || strlen(expected) != 64) return false;
+  uint8_t digest[32];
+  mbedtls_sha256_context context;
+  mbedtls_sha256_init(&context);
+  mbedtls_sha256_starts(&context, 0);
+  mbedtls_sha256_update(&context, reinterpret_cast<const unsigned char*>(password.c_str()), password.length());
+  mbedtls_sha256_finish(&context, digest);
+  mbedtls_sha256_free(&context);
+  static const char hex[] = "0123456789abcdef";
+  uint8_t diff = 0;
+  for (uint8_t i = 0; i < sizeof(digest); ++i) {
+    diff |= (uint8_t)(hex[digest[i] >> 4] ^ expected[i * 2]);
+    diff |= (uint8_t)(hex[digest[i] & 0x0F] ^ expected[i * 2 + 1]);
+  }
+  return diff == 0;
+#endif
+}
+
+static bool developer_override_active() {
+#if OFE_DEVELOPER_MODE_ENABLE
+  return developer_mode_enabled;
+#else
+  return false;
+#endif
 }
 
 static void web_handle_state() {
@@ -38,6 +79,7 @@ static void web_handle_led_state() {
   String json;
   json.reserve(256 + registry.count() * 72);
   json += "{\"uptime_ms\":"; json += millis();
+  json += ",\"developer_mode\":"; json += developer_mode_enabled ? "true" : "false";
   json += ",\"enabled\":"; json += status_led_enabled ? "true" : "false";
   json += ",\"master_ofe\":"; json += (uint8_t)ofe_status_leds.busEvent();
   json += ",\"master_evt\":"; json += (uint8_t)ofe_status_leds.moduleEvent();
@@ -57,12 +99,16 @@ static void web_handle_led_state() {
   web.send(200, "application/json", json);
 }
 static void web_handle_developer_mode() {
+#if !OFE_DEVELOPER_MODE_ENABLE
+  web.send(404, "text/plain; charset=utf-8", "Not found");
+  return;
+#else
   if (!web.hasArg("enabled")) {
     web.send(400, "text/plain; charset=utf-8", "missing enabled");
     return;
   }
   const bool enabled = web.arg("enabled") == "1" || web.arg("enabled") == "true";
-  if (enabled && web.arg("password") != String(OFE_DEVELOPER_PASSWORD)) {
+  if (enabled && !developer_password_matches(web.arg("password"))) {
     web.send(403, "text/plain; charset=utf-8", web_is_german() ? "Falsches Entwicklerpasswort" : "Wrong developer password");
     return;
   }
@@ -73,6 +119,7 @@ static void web_handle_developer_mode() {
   prefs.end();
   if (enabled) heap_diag_enable();
   web.send(200, "application/json", enabled ? "{\"ok\":true,\"enabled\":true}" : "{\"ok\":true,\"enabled\":false}");
+#endif
 }
 static String mqtt_topic_path(const char* leaf) {
   String base = mqtt_base_topic;
@@ -2699,6 +2746,17 @@ static void mqtt_publish_state(bool force = false) {
 }
 
 static void mqtt_loop() {
+  if (mqtt_reconfigure_requested) {
+    if (mqtt_client.connected()) {
+      mqtt_publish_all_availability_offline();
+      mqtt_client.disconnect();
+    }
+    mqtt_reconfigure_requested = false;
+    mqtt_discovery_published = false;
+    mqtt_next_discovery_check_ms = 0;
+    mqtt_last_publish_ms = 0;
+    mqtt_next_connect_ms = mqtt_enabled ? millis() + 250UL : 0;
+  }
   if (!mqtt_enabled) {
     if (mqtt_client.connected()) {
       mqtt_publish_all_availability_offline();

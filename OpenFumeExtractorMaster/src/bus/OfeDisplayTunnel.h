@@ -73,6 +73,20 @@ struct Packet {
   uint8_t body[5 + MAX_PAYLOAD] = {};
 };
 constexpr size_t HEADER = 35, TAG = 16, PACKET_MAX = HEADER + 5 + MAX_PAYLOAD + TAG;
+// Firmware data is much larger than an OFE frame. Keep normal control traffic
+// byte-for-byte compatible and use a separate authenticated LAN-only envelope
+// to avoid one UDP round trip for every 188 firmware bytes.
+constexpr uint16_t BULK_DATA_MAX = 1024;
+constexpr size_t BULK_HEADER = 40;
+constexpr size_t BULK_PACKET_MAX = BULK_HEADER + BULK_DATA_MAX + TAG;
+struct BulkPacketView {
+  bool ack = false;
+  uint8_t mode = 0, status = STATUS_OK;
+  uint64_t uid = 0, client = 0, server = 0;
+  uint32_t request = 0, offset = 0;
+  uint16_t length = 0;
+  const uint8_t* data = nullptr;
+};
 inline bool inSession(const Packet& p, uint64_t uid, uint64_t client, uint64_t server, uint8_t mode, uint32_t last) {
   return server && p.uid==uid && p.client==client && p.server==server && p.mode==mode && p.counter>last;
 }
@@ -120,5 +134,44 @@ inline bool sendPacket(int fd, const sockaddr_in& to, const Packet& p, const uin
 }
 inline bool samePeer(const sockaddr_in& a, const sockaddr_in& b) {
   return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+inline size_t encodeBulk(bool ack, uint8_t mode, uint8_t status, uint64_t uid,
+                         uint64_t client, uint64_t server, uint32_t request,
+                         uint32_t offset, const uint8_t* data, uint16_t length,
+                         const uint8_t key[16], uint8_t* out) {
+  if (length > BULK_DATA_MAX || (length && !data)) return 0;
+  memcpy(out, ack ? "OFA1" : "OFB1", 4);
+  out[4] = mode; out[5] = status;
+  put_u64_le(out + 6, uid); put_u64_le(out + 14, client); put_u64_le(out + 22, server);
+  put_u32_le(out + 30, request); put_u32_le(out + 34, offset); put_u16_le(out + 38, length);
+  if (length) memcpy(out + BULK_HEADER, data, length);
+  uint8_t digest[32];
+  if (!mac(key, out, BULK_HEADER + length, digest)) return 0;
+  memcpy(out + BULK_HEADER + length, digest, TAG);
+  return BULK_HEADER + length + TAG;
+}
+inline bool decodeBulk(const uint8_t* in, size_t size, const uint8_t key[16], BulkPacketView& p) {
+  if (!in || size < BULK_HEADER + TAG) return false;
+  const bool ack = memcmp(in, "OFA1", 4) == 0;
+  if (!ack && memcmp(in, "OFB1", 4) != 0) return false;
+  const uint16_t length = get_u16_le(in + 38);
+  if (length > BULK_DATA_MAX || size != BULK_HEADER + length + TAG || in[4] > WIRELESS) return false;
+  uint8_t digest[32];
+  if (!mac(key, in, size - TAG, digest) || !equal(in + size - TAG, digest, TAG)) return false;
+  p.ack = ack; p.mode = in[4]; p.status = in[5];
+  p.uid = get_u64_le(in + 6); p.client = get_u64_le(in + 14); p.server = get_u64_le(in + 22);
+  p.request = get_u32_le(in + 30); p.offset = get_u32_le(in + 34);
+  p.length = length; p.data = length ? in + BULK_HEADER : nullptr;
+  return true;
+}
+inline bool sendBulkPacket(int fd, const sockaddr_in& to, bool ack, uint8_t mode,
+                           uint8_t status, uint64_t uid, uint64_t client,
+                           uint64_t server, uint32_t request, uint32_t offset,
+                           const uint8_t* data, uint16_t length, const uint8_t key[16]) {
+  uint8_t raw[BULK_PACKET_MAX];
+  const size_t n = encodeBulk(ack, mode, status, uid, client, server, request,
+                              offset, data, length, key, raw);
+  return n && sendto(fd, raw, n, MSG_DONTWAIT,
+                     reinterpret_cast<const sockaddr*>(&to), sizeof(to)) == (int)n;
 }
 } // namespace ofe_wifi

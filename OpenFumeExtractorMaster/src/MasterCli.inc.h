@@ -268,8 +268,8 @@ static void serial_cli_execute(String command) {
     netcfg_reset();
     Serial.println(F("Network settings cleared. Restarting in setup AP mode."));
     Serial.flush();
-    prepare_controlled_restart();
-    delay(250);
+    // Network reset must not publish through a potentially stalled MQTT socket.
+    delay(100);
     ESP.restart();
   } else if (lower == "webauth reset" || lower == "web auth reset" || lower == "auth reset" || lower == "webauth clear" || lower == "web auth clear" || lower == "auth clear") {
     Serial.println(F("Clearing custom web login. Falling back to compiled defaults."));

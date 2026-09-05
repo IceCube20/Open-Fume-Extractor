@@ -359,6 +359,8 @@ private:
   void pollOneBackgroundJob(uint32_t now);
   bool sendOutputEnable(uint8_t addr, bool enabled);
   bool sendOutputPower(uint8_t addr, uint16_t power);
+  bool firmwareTargetIsDisplay(uint8_t addr) const;
+  void invalidateModuleAfterFirmwareUpdate(uint8_t addr);
   void scanAddress(uint8_t addr);
   void selectRoles();
   void scheduleControlSettingsPersist();
@@ -480,7 +482,6 @@ private:
   bool trace_local_desired_ = false;
   bool trace_local_clear_pending_ = false;
 };
-
 
 
 

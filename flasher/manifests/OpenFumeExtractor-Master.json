@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Open Fume Extractor Master",
-  "version": "1.9.24beta",
+  "version": "1.9.29beta",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.24beta-merged.bin",
+          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.29beta-merged.bin",
           "offset": 0
         }
       ]

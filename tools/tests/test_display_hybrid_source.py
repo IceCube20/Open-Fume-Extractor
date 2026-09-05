@@ -123,9 +123,10 @@ class DisplayHybridIntegration(unittest.TestCase):
         self.assertIn("if (update_transport_.load()==1) return false;", network)
         self.assertIn("!save_pending_ && !shared_.scanning && !update_transport_.load()", network)
         route = read(MASTER / "src/MasterDisplayWifi.cpp").split("bool MasterDisplayWifi::route(", 1)[1].split("bool MasterDisplayWifi::receive", 1)[0]
-        self.assertIn("p->uid==firmware_uid_", route)
+        self.assertIn("p->uid!=firmware_uid_", route)
         self.assertLess(route.index("firmware_addr_"), route.index("if (physical_)"))
-        self.assertIn("Lost WiFi during OTA must never leak a retry", route)
+        self.assertIn("normal transport try the physical bus", route)
+        self.assertIn("return send(*p,DATA,&frame);", route)
         for display in DISPLAYS:
             sketch = read(display / (display.name + ".ino"))
             self.assertIn("fw_update_offset != fw_update_size", sketch)
@@ -267,6 +268,23 @@ class DisplayHybridIntegration(unittest.TestCase):
         discovery = scheduler.split("void MasterScheduler::noticeDiscoveryResponse", 1)[1].split("int16_t MasterScheduler::busDiagIndex", 1)[0]
         self.assertIn("link_.lastRxWasNetwork()", discovery)
         self.assertIn("rec->caps != 0 && !wifi_join", discovery)
+
+    def test_authenticated_wifi_ota_bulk_path_and_fallback(self):
+        tunnel = read(MASTER / "src/bus/OfeDisplayTunnel.h")
+        master = read(MASTER / "src/MasterDisplayWifi.cpp")
+        update = read(MASTER / "src/WebUpdate.inc.h")
+        self.assertIn("constexpr uint16_t BULK_DATA_MAX = 1024", tunnel)
+        self.assertIn('ack ? "OFA1" : "OFB1"', tunnel)
+        self.assertIn("decodeBulk(raw,n,key,ack)", master)
+        self.assertIn("firmware_bulk_confirmed_=true", master)
+        self.assertIn("module_update_send_legacy_chunks", update)
+        self.assertIn("firmwareBulkConfirmed", update)
+        for display in DISPLAYS:
+            transport = read(display / "src/OfeDisplayWifi.h")
+            sketch = read(display / (display.name + ".ino"))
+            self.assertIn("decodeBulk(raw,n,active_config_.key,bulk)", transport)
+            self.assertIn("handle_wifi_fw_bulk", sketch)
+            self.assertIn("offset + n <= fw_update_offset", sketch)
 
 
 if __name__ == "__main__":

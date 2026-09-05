@@ -17,8 +17,15 @@ public:
   void probeResult(uint8_t addr, bool ok);
   void forcePhysical(bool enabled) { physical_ = enabled; }
   void beginFirmware(uint8_t addr);
-  void endFirmware() { firmware_addr_.store(0); }
+  void endFirmware();
   bool firmwareWireless(uint8_t addr) const { return firmware_addr_==addr && firmware_wifi_; }
+  bool firmwareBulkAvailable(uint8_t addr) const {
+    return firmwareWireless(addr) && firmware_bulk_available_;
+  }
+  bool firmwareBulkConfirmed(uint8_t addr) const {
+    return firmwareBulkAvailable(addr) && firmware_bulk_confirmed_;
+  }
+  bool firmwareBulkChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint16_t len);
 private:
   struct Peer {
     uint64_t uid=0, client=0, server=0;
@@ -36,6 +43,8 @@ private:
   std::atomic<uint8_t> firmware_addr_{0};
   uint64_t firmware_uid_=0;
   bool firmware_wifi_=false;
+  bool firmware_bulk_available_=false,firmware_bulk_confirmed_=false;
+  uint32_t firmware_bulk_request_=0;
   int fd_=-1;
   uint32_t socket_retry_ms_=0;
   ModuleRegistry* registry_=nullptr;

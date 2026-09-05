@@ -72,6 +72,7 @@ static void master_setup() {
 
   scheduler.begin();
   master_command_queue_begin();
+  module_update_io_init();
   scheduler.setServiceCallback([]() {
     ofe_status_leds.setFirmwareUpdate(scheduler.firmwareUpdateActive());
     ofe_status_leds.tick();
@@ -93,7 +94,13 @@ static void master_setup() {
   // long module OTA requests there can starve IDLE0 and trip the task WDT.
   // Give the web task a slightly higher priority than the loop task so a
   // startup scan or a slow RS485 poll cannot make the UI feel dead.
-  xTaskCreatePinnedToCore(web_service_task, "web-http", 8192, nullptr, 2, nullptr, 1);
+  if (xTaskCreatePinnedToCore(web_service_task, "web-http", 8192, nullptr, 2, &web_service_task_handle, 1) != pdPASS) {
+    // Keep the server usable even if a fragmented heap cannot provide the
+    // auxiliary task stack. master_loop_tick() runs the same service inline
+    // as a controlled fallback.
+    web_service_task_handle = nullptr;
+    Serial.println(F("[WEB] HTTP task allocation failed; using loop fallback"));
+  }
   // MQTT is intentionally separate from HTTP. TLS handshakes, broker retries,
   // and Home Assistant discovery are synchronous in PubSubClient and must not
   // block web.handleClient(). Delay first MQTT connect a little so the page is

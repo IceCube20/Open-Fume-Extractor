@@ -206,7 +206,7 @@ static constexpr uint32_t DISPLAY_NATIVE_CAP = (1UL << 22);
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 3
-#define OFE_MODULE_FW_PATCH 57
+#define OFE_MODULE_FW_PATCH 59
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -1804,7 +1804,7 @@ static String fmt_uptime(uint32_t seconds) {
   return String(m) + "m";
 }
 
-static String fmt_dhm(uint16_t minutes) {
+static String fmt_dhm(uint32_t minutes) {
   const uint16_t d = minutes / 1440U;
   minutes %= 1440U;
   const uint8_t h = minutes / 60U;
@@ -6024,7 +6024,7 @@ static void lv_update_module_detail() {
   String values;
   if (m.addr == ADDR_MASTER) {
     values = String("IP: ") + (m.master_ip[0] ? m.master_ip : "-") +
-      "\n" + tr("Uptime: ", "Laufzeit: ") + fmt_dhm((uint16_t)(m.uptime_s / 60UL)) +
+      "\n" + tr("Uptime: ", "Laufzeit: ") + fmt_dhm(m.uptime_s / 60UL) +
       "\nHeap: " + String((m.heap_free + 512UL) / 1024UL) + " KB" +
       "\nCPU: " + String(m.cpu_load) + "%  Loop max: " + String(m.loop_max_ms) + " ms";
   } else if (detail_fields_is_jbc_usb(m.type, m.caps)) {
@@ -6697,7 +6697,7 @@ static void lv_update_dashboard_values() {
   lv_set_text(ui_weller_detail_runtime, fmt_dhm(home_weller_runtime_min) + "/" + fmt_dhm(home_weller_programmed_min));
   lv_set_text(ui_weller_detail_sw, weller_sw_name(home_weller_version));
   lv_set_text(ui_heap, fmt_bytes(ESP.getFreeHeap()));
-  lv_set_text(ui_uptime, fmt_uptime(millis() / 1000UL));
+  lv_set_text(ui_uptime, fmt_uptime(monotonic_uptime_seconds()));
   lv_set_text(ui_loop, String(cpu_load_pct) + "%   /   " + String(loop_max_ms) + "ms");
 }
 
@@ -7637,7 +7637,7 @@ static void send_telemetry(const Frame& req) {
   resp.payload[o++] = MODULE_DISPLAY;
   put_u32_le(resp.payload + o, ESP.getFreeHeap()); o += 4;
   put_u32_le(resp.payload + o, ESP.getMinFreeHeap()); o += 4;
-  put_u32_le(resp.payload + o, millis() / 1000UL); o += 4;
+  put_u32_le(resp.payload + o, monotonic_uptime_seconds()); o += 4;
   resp.payload[o++] = cpu_load_pct;
   put_u16_le(resp.payload + o, loop_max_ms); o += 2;
   resp.payload[o++] = status.valid ? 1 : 0;
@@ -7821,6 +7821,29 @@ static void handle_fw_chunk(const Frame& req) {
   const uint8_t progress = (uint8_t)pct;
   send_status_response(req, STATUS_OK);
   draw_update_progress_throttled(module_addr, progress, "Writing firmware");
+}
+
+static uint8_t handle_wifi_fw_bulk(uint32_t offset, const uint8_t* data, uint16_t n,
+                                   uint32_t& accepted) {
+  accepted = fw_update_offset;
+  if (!fw_update_active || !data || !n || n > ofe_wifi::BULK_DATA_MAX) return STATUS_BUSY;
+  if (offset != fw_update_offset) {
+    // A lost UDP acknowledgement may resend an already committed block.
+    if (offset < fw_update_offset && offset + n <= fw_update_offset) {
+      fw_update_touch();
+      accepted = fw_update_offset;
+      return STATUS_OK;
+    }
+    return STATUS_BAD_VALUE;
+  }
+  if (!fw_update_buffer_append(data, n)) return STATUS_BUSY;
+  fw_update_offset += n;
+  fw_update_touch();
+  accepted = fw_update_offset;
+  uint32_t pct = fw_update_size ? (fw_update_offset * 100UL) / fw_update_size : 0;
+  if (pct > 99) pct = 99;
+  draw_update_progress_throttled(module_addr, (uint8_t)pct, "Writing firmware");
+  return STATUS_OK;
 }
 
 static void handle_fw_status(const Frame& req) {
@@ -9158,7 +9181,7 @@ void setup() {
     pending_display_event = DISPLAY_EVENT_NONE;
     pending_display_event_value = 0;
     ui_defer_flags(UI_DEFER_MASTER_LINK | UI_DEFER_APP_VALUES);
-  });
+  }, handle_wifi_fw_bulk);
   display_boot_setup_started_ms = millis();
   start_rs485_task_if_enabled();
 }

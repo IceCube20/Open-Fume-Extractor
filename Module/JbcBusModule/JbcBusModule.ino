@@ -52,7 +52,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 59
+#define OFE_MODULE_FW_PATCH 60
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -1466,7 +1466,7 @@ static void record_loop_time(uint32_t busy_us) {
 static void append_system_telemetry(uint8_t* payload, uint8_t& o) {
   put_u32_le(payload + o, ESP.getFreeHeap()); o += 4;
   put_u32_le(payload + o, ESP.getMinFreeHeap()); o += 4;
-  put_u32_le(payload + o, millis() / 1000UL); o += 4;
+  put_u32_le(payload + o, monotonic_uptime_seconds()); o += 4;
   payload[o++] = cpu_load_pct;
   put_u16_le(payload + o, loop_max_ms); o += 2;
 }
@@ -1664,8 +1664,6 @@ void loop() {
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);
 }
-
-
 
 
 

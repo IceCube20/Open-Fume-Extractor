@@ -6,7 +6,8 @@ static void wifi_start_setup_ap() {
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
   apply_ap_hostname();
-  WiFi.softAP(master_ap_ssid, MASTER_AP_PASSWORD);
+  if (strlen(master_ap_password) < 8) generate_setup_password(master_ap_password, sizeof(master_ap_password));
+  WiFi.softAP(master_ap_ssid, master_ap_password);
   dns.start(53, "*", WiFi.softAPIP());
   captive_active = true;
   wifi_sta_pending = false;
@@ -14,6 +15,8 @@ static void wifi_start_setup_ap() {
   Serial.println(master_hostname);
   Serial.print("Web AP ");
   Serial.print(master_ap_ssid);
+  Serial.print(" password ");
+  Serial.print(master_ap_password);
   Serial.print(" IP ");
   Serial.println(WiFi.softAPIP());
   start_mdns_service();
@@ -91,7 +94,7 @@ static void web_begin() {
   web.on("/state", HTTP_GET, [](){ if (web_require_auth()) web_handle_state(); });
   web.on("/led_state", HTTP_GET, [](){ if (web_require_auth()) web_handle_led_state(); });
   web.on("/developer/mode", HTTP_POST, [](){ if (web_require_auth()) web_handle_developer_mode(); });
-  web.on("/scan", HTTP_GET, [](){ if (web_require_auth()) web_handle_scan(); });
+  web.on("/scan", HTTP_POST, [](){ if (web_require_auth()) web_handle_scan(); });
   web.on("/diagnostics", HTTP_GET, [](){ if (web_require_auth()) web_handle_diagnostics(); });
   web.on("/diagnostics/state", HTTP_GET, [](){ if (web_require_auth()) web_handle_diagnostics_state(); });
   web.on("/diagnostics/events", HTTP_GET, [](){ if (web_require_auth()) web_handle_diagnostics_events(); });
@@ -149,6 +152,7 @@ static void web_begin() {
   web.on("/config/leds", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_leds(); });
   web.on("/config/mqtt", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_mqtt(); });
   web.on("/config/save", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_save(); });
+  web.on("/config/password", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_password(); });
   web.on("/generate_204", HTTP_GET, web_redirect_config);
   web.on("/gen_204", HTTP_GET, web_redirect_config);
   web.on("/hotspot-detect.html", HTTP_GET, web_redirect_config);

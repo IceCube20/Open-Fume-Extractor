@@ -4,6 +4,16 @@
 // execution order for CLI, LEDs, module OTA, scheduler, logic and telemetry.
 static void master_loop_tick() {
 #if WEB_ENABLE
+  // The normal HTTP service runs on its own task. If task creation failed at
+  // startup, keep WiFi, captive DNS and HTTP alive from the Arduino loop.
+  if (!web_service_task_handle) {
+    wifi_service_tick();
+    if (captive_active) dns.processNextRequest();
+    web.handleClient();
+  }
+#endif
+
+#if WEB_ENABLE
   serial_cli_tick();
 #endif
   update_status_leds();
@@ -14,7 +24,12 @@ static void master_loop_tick() {
   // traffic. Critical OFF commands are drained first inside this function.
   master_command_queue_process();
 
+  // Module OTA waits synchronously for the target ACK. Keep it after CLI and
+  // LED servicing so a slow/lost ACK cannot starve the local control paths.
+  // The pump owns the OTA I/O mutex while it talks to the target and the
+  // scheduler skips normal polling while firmwareUpdateActive() is true.
   module_update_pump();
+
   scheduler.tick();
 #if WEB_ENABLE
   logic_runtime_tick();

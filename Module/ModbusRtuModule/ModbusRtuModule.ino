@@ -62,7 +62,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 51
+#define OFE_MODULE_FW_PATCH 52
 #define OFE_MODULE_FW_SUFFIX "alpha"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -926,7 +926,7 @@ static void handle_caps(const Frame& req) {
 static void append_system_telemetry(uint8_t* payload, uint8_t& o) {
   put_u32_le(payload + o, ESP.getFreeHeap()); o += 4;
   put_u32_le(payload + o, ESP.getMinFreeHeap()); o += 4;
-  put_u32_le(payload + o, millis() / 1000UL); o += 4;
+  put_u32_le(payload + o, monotonic_uptime_seconds()); o += 4;
   payload[o++] = cpu_load_pct;
   put_u16_le(payload + o, loop_max_ms); o += 2;
 }

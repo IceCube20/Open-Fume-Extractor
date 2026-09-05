@@ -1,5 +1,9 @@
 #pragma once
 
+#if __has_include("MasterPrivateConfig.h")
+#include "MasterPrivateConfig.h"
+#endif
+
 #ifndef OFE_STATUS_LED_ENABLE
 #define OFE_STATUS_LED_ENABLE 1
 #endif
@@ -46,8 +50,18 @@
 #define MODULE_FW_DISPLAY_PUMP_FRAMES_PER_LOOP 1
 #endif
 
+#ifndef MODULE_FW_WIFI_DISPLAY_PUMP_FRAMES_PER_LOOP
+// Authenticated WiFi has no RS485 line-turnaround delay. Send a short burst
+// per loop while retaining the conservative single-frame path for wired displays.
+#define MODULE_FW_WIFI_DISPLAY_PUMP_FRAMES_PER_LOOP 4
+#endif
+
 #ifndef MODULE_FW_PUMP_BUDGET_MS
 #define MODULE_FW_PUMP_BUDGET_MS 18
+#endif
+
+#ifndef MODULE_FW_WIFI_PUMP_BUDGET_MS
+#define MODULE_FW_WIFI_PUMP_BUDGET_MS 48
 #endif
 
 #ifndef MODULE_FW_HTTP_CHUNK_SIZE
@@ -146,8 +160,12 @@
 #define MASTER_AP_SSID "OpenFumeExtractor"
 #endif
 
+#ifndef MASTER_DEFAULT_PASSWORD
+#define MASTER_DEFAULT_PASSWORD "extractor123"
+#endif
+
 #ifndef MASTER_AP_PASSWORD
-#define MASTER_AP_PASSWORD "extractor123"
+#define MASTER_AP_PASSWORD MASTER_DEFAULT_PASSWORD
 #endif
 
 #ifndef WEB_AUTH_ENABLE
@@ -162,13 +180,17 @@
 #define WEB_AUTH_PASSWORD MASTER_AP_PASSWORD
 #endif
 
-#ifndef OFE_DEVELOPER_PASSWORD
-#define OFE_DEVELOPER_PASSWORD "OFEdevelop123"
+#ifndef OFE_DEVELOPER_MODE_ENABLE
+#define OFE_DEVELOPER_MODE_ENABLE 0
+#endif
+
+#ifndef OFE_DEVELOPER_PASSWORD_SHA256
+#define OFE_DEVELOPER_PASSWORD_SHA256 ""
 #endif
 
 #define MASTER_FW_MAJOR 1
 #define MASTER_FW_MINOR 9
-#define MASTER_FW_PATCH 24
+#define MASTER_FW_PATCH 29
 #define MASTER_FW_SUFFIX "beta"
 #define MASTER_FW_NAME "Open Fume Extractor"
 #define MASTER_FW_VERSION OFE_STR(MASTER_FW_MAJOR) "." OFE_STR(MASTER_FW_MINOR) "." OFE_STR(MASTER_FW_PATCH) MASTER_FW_SUFFIX

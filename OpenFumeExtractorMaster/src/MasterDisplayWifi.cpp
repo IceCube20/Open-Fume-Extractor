@@ -91,7 +91,66 @@ void MasterDisplayWifi::beginFirmware(uint8_t addr) {
   firmware_wifi_=active(addr);
   const Peer* p=peer(addr);
   firmware_uid_=p ? p->uid : 0;
+  firmware_bulk_available_=firmware_wifi_ && p && p->connected;
+  firmware_bulk_confirmed_=false;
+  firmware_bulk_request_=esp_random();
+  if (!firmware_bulk_request_) firmware_bulk_request_=1;
   firmware_addr_.store(addr);
+}
+void MasterDisplayWifi::endFirmware() {
+  firmware_addr_.store(0);
+  firmware_uid_=0;
+  firmware_wifi_=false;
+  firmware_bulk_available_=false;
+  firmware_bulk_confirmed_=false;
+}
+bool MasterDisplayWifi::firmwareBulkChunk(uint8_t addr, uint32_t offset,
+                                          const uint8_t* data, uint16_t len) {
+  if (!firmwareBulkAvailable(addr) || !data || !len || len>BULK_DATA_MAX || fd_<0) return false;
+  Peer* p=peer(addr);
+  uint8_t key[16];
+  if (!p || p->uid!=firmware_uid_ || !p->connected || !active(addr) || !derive(p->uid,key)) {
+    firmware_bulk_available_=false;
+    return false;
+  }
+  uint32_t request=++firmware_bulk_request_;
+  if (!request) request=++firmware_bulk_request_;
+  constexpr uint8_t attempts=3;
+  constexpr uint32_t ack_timeout_ms=750;
+  for (uint8_t attempt=0;attempt<attempts;++attempt) {
+    if (!sendBulkPacket(fd_,p->endpoint,false,p->mode,STATUS_OK,p->uid,p->client,p->server,
+                        request,offset,data,len,key)) continue;
+    const uint32_t started=millis();
+    while ((uint32_t)(millis()-started)<ack_timeout_ms) {
+      uint8_t magic[4]; sockaddr_in peek_from={}; socklen_t peek_len=sizeof(peek_from);
+      const int peeked=recvfrom(fd_,magic,sizeof(magic),MSG_PEEK|MSG_DONTWAIT,
+                                reinterpret_cast<sockaddr*>(&peek_from),&peek_len);
+      if (peeked<=0) { delay(1); continue; }
+      if (peeked==4 && (!memcmp(magic,"OFA1",4) || !memcmp(magic,"OFB1",4))) {
+        uint8_t raw[BULK_PACKET_MAX]; sockaddr_in from={}; socklen_t from_len=sizeof(from);
+        const int n=recvfrom(fd_,raw,sizeof(raw),MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&from),&from_len);
+        BulkPacketView ack;
+        if (n>0 && samePeer(from,p->endpoint) && decodeBulk(raw,n,key,ack) && ack.ack &&
+            ack.uid==p->uid && ack.client==p->client && ack.server==p->server &&
+            ack.mode==p->mode && ack.request==request) {
+          p->seen=millis(); publish(*p);
+          if (ack.status==STATUS_OK && ack.offset==offset+len) {
+            firmware_bulk_confirmed_=true;
+            return true;
+          }
+          break;
+        }
+      } else {
+        // Keep control/keepalive traffic moving while awaiting the bulk ACK.
+        Frame ignored;
+        receive(ignored);
+      }
+    }
+  }
+  // Old display firmware or an unhealthy UDP path: use the proven OFE frame path.
+  firmware_bulk_available_=false;
+  firmware_bulk_confirmed_=false;
+  return false;
 }
 bool MasterDisplayWifi::pollHook(void* self,Frame& f) {
   return static_cast<MasterDisplayWifi*>(self)->receive(f);
@@ -100,9 +159,16 @@ bool MasterDisplayWifi::route(const Frame& frame) {
   if (firmware_addr_ && frame.dst==firmware_addr_) {
     if (!firmware_wifi_) return false;
     Peer* p=peer(frame.dst);
-    if (p && p->uid==firmware_uid_ && p->connected && active(frame.dst)) send(*p,DATA,&frame);
-    // Lost WiFi during OTA must never leak a retry onto the physical bus.
-    return true;
+    if (!p || p->uid!=firmware_uid_ || !p->connected || !active(frame.dst)) {
+      // The WiFi peer may disappear after FW_BEGIN. Returning "handled" here
+      // used to swallow every retry, including FW_ABORT, so the master could
+      // remain in an update session until the HTTP request timed out. Let the
+      // normal transport try the physical bus as a bounded fallback instead.
+      return false;
+    }
+    // Only suppress the physical bus after the UDP datagram was actually
+    // accepted by the socket layer. A failed send must remain retryable.
+    return send(*p,DATA,&frame);
   }
   if (physical_) return false;
   if (frame.dst==ADDR_BROADCAST) {
