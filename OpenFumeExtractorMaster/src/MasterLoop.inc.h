@@ -35,7 +35,8 @@ static void master_loop_tick() {
   logic_runtime_tick();
 #endif
 #if WEB_ENABLE
-  if (scheduler.consumeScanJobFinished()) {
+  const bool scan_finished = scheduler.consumeScanJobFinished();
+  if (scan_finished) {
     registry.sortByAddress();
     apply_module_labels();
     save_module_snapshot();

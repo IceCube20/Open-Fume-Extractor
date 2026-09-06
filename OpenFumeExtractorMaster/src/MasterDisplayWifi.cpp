@@ -152,6 +152,18 @@ bool MasterDisplayWifi::firmwareBulkChunk(uint8_t addr, uint32_t offset,
   firmware_bulk_confirmed_=false;
   return false;
 }
+bool MasterDisplayWifi::rebindAddress(uint64_t uid, uint8_t new_addr) {
+  if (!uid || new_addr<0x40 || new_addr>0x4f) return false;
+  for (auto& p:peers_) {
+    if (p.uid!=uid) continue;
+    if (p.addr>=0x40 && p.addr<=0x4f)
+      published_seen_[p.addr-0x40].store(0,std::memory_order_relaxed);
+    p.addr=new_addr;
+    publish(p);
+    return true;
+  }
+  return false;
+}
 bool MasterDisplayWifi::pollHook(void* self,Frame& f) {
   return static_cast<MasterDisplayWifi*>(self)->receive(f);
 }

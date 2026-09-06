@@ -26,6 +26,7 @@ public:
     return firmwareBulkAvailable(addr) && firmware_bulk_confirmed_;
   }
   bool firmwareBulkChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint16_t len);
+  bool rebindAddress(uint64_t uid, uint8_t new_addr);
 private:
   struct Peer {
     uint64_t uid=0, client=0, server=0;

@@ -9,6 +9,7 @@
 
 using namespace jbc_rs485;
 
+extern bool master_developer_mode_enabled_for_modules();
 
 static uint8_t displayUniversalProfileEntityCount(const ModuleRecord& rec);
 
@@ -141,7 +142,7 @@ static const char* schedulerModuleTypeName(uint8_t type) {
 static bool moduleTypeDefaultAddress(uint8_t type, uint8_t addr) {
   switch (type) {
     case MODULE_JBC_BUS: return addr == 0x10;
-    case MODULE_JBC_USB: return addr == 0x11;
+    case MODULE_JBC_USB: return addr == 0x10;
     case MODULE_FAN_IO:
     case MODULE_FAN_IO_PRO:
       return addr == 0x20;
@@ -1755,7 +1756,9 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
       (uint32_t)(millis() - rec->last_seen_ms) < 8000UL;
     if (rec->consecutive_timeouts >= 5 && !hybrid_handover) rec->online = false;
     // Startup retries are not offline events: count only online -> offline.
-    if (was_online && !rec->online && rec->timeout_count < 0xFFFFU) rec->timeout_count++;
+    if (was_online && !rec->online && rec->timeout_count < 0xFFFFU) {
+      rec->timeout_count++;
+    }
     if (was_online && !rec->online) {
       if (rec->caps & CAP_JBC_ACTIVITY) {
         rec->jbc_addr = 0;
@@ -2267,6 +2270,16 @@ bool MasterScheduler::fastPollJbc(uint8_t addr) {
 }
 
 bool MasterScheduler::readJbcState(uint8_t addr) {
+  ModuleRecord* target = registry_.find(addr);
+  if (!target || target->type == MODULE_UNKNOWN || target->caps == 0) {
+    if (!readInfo(addr)) return false;
+    readCaps(addr);
+    target = registry_.find(addr);
+  }
+  // CMD_GET_STATE is shared by multiple module protocols. Never decode a JBC
+  // USB (or any other module) response as the legacy FAE settings structure.
+  if (!target || !(target->caps & CAP_JBC_BUS)) return false;
+
   Frame resp;
   if (!request(addr, CMD_GET_STATE, nullptr, 0, resp, 30)) return false;
   if (resp.cmd != (CMD_GET_STATE | 0x80) || resp.len < 29 || resp.payload[0] != STATUS_OK) return false;
@@ -3246,6 +3259,8 @@ bool MasterScheduler::readNextJbcState() {
   const uint32_t now = millis();
   if ((uint32_t)(now - last_default_jbc_state_probe_ms_) < JBC_DEFAULT_STATE_PROBE_INTERVAL_MS) return false;
   last_default_jbc_state_probe_ms_ = now;
+  const ModuleRecord* fallback = registry_.find(active_jbc_addr_);
+  if (fallback && !(fallback->caps & CAP_JBC_BUS)) return false;
   return readJbcState(active_jbc_addr_);
 }
 
@@ -4682,7 +4697,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   // A7: compact list of all currently connected JBC stations for the display
   // screensaver. Each entry is flags plus a zero-padded four-character model.
   // Known JBC model names fit in four characters (DDE, JTSE, PHXL, F4W, ...).
-  if (payload_can_write(2U + 7U)) {
+  if (payload_can_write(2U + 2U + 7U)) {
     const uint8_t marker_pos = payload_len;
     payload_write_u8(0xA7);
     const uint8_t count_pos = payload_len;
@@ -4692,8 +4707,8 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
       const ModuleRecord& rec = registry_.at(i);
       if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY) ||
           !(rec.jbc_link_flags & FAST_FLAG_CONNECTED)) continue;
-      // Keep seven bytes free for the clock extension appended below.
-      if (!payload_can_write(5U + 7U)) break;
+      // Keep two bytes for the developer flag and seven for the clock.
+      if (!payload_can_write(5U + 2U + 7U)) break;
 
       uint8_t flags = 0;
       if (rec.jbc_work_mask) flags |= 0x01;
@@ -4728,6 +4743,13 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   // DISPLAY_STATUS is now strictly Home/Live data only.
   // Module lists, module details and Universal/Modbus entities are sent via
   // dedicated display frames so missing blocks never clear unrelated UI caches.
+
+  // A5: developer-only display features. It deliberately sits directly in
+  // front of A6 so displays can detect it without scanning variable blocks.
+  if (payload_can_write(2U)) {
+    payload_write_u8(0xA5);
+    payload_write_u8(master_developer_mode_enabled_for_modules() ? 1 : 0);
+  }
 
   if ((uint16_t)payload_len + 7U <= MAX_PAYLOAD) {
     uint8_t hour = 0xFF;
@@ -6703,6 +6725,7 @@ struct DiscoveredModule {
   uint64_t uid = 0;
   uint8_t addr = 0;
   uint8_t type = MODULE_UNKNOWN;
+  uint32_t caps = 0;
   bool known_before = false;
   uint8_t remembered_addr = ADDR_INVALID;
   uint8_t discovery_order = 0;
@@ -6764,8 +6787,27 @@ static bool same_preferred_address_range(uint8_t type_a, uint8_t type_b) {
          preferred_addr_end(type_a) == preferred_addr_end(type_b);
 }
 
+static uint8_t compact_address_type_priority(const DiscoveredModule& module) {
+  switch (module.type) {
+    case MODULE_JBC_BUS: return 0;
+    case MODULE_JBC_USB: return 1;
+    case MODULE_FAN_IO: return 0;
+    case MODULE_FAN_IO_PRO: return 1;
+    case MODULE_DISPLAY:
+      if (module.caps & CAP_DISPLAY_320X480) return 0;
+      if (module.caps & CAP_DISPLAY_800X480) return 1;
+      return 2;
+    default: return 0;
+  }
+}
+
 static bool discovered_before_for_compact_address(const DiscoveredModule& a, const DiscoveredModule& b) {
-  // First come, first served. Display resolution/subtype has no priority.
+  // Shared family ranges must not depend on response timing. Keep the canonical
+  // type order first, then preserve stable addresses among equal module types.
+  const uint8_t a_priority = compact_address_type_priority(a);
+  const uint8_t b_priority = compact_address_type_priority(b);
+  if (a_priority != b_priority) return a_priority < b_priority;
+
   if (a.known_before != b.known_before) return a.known_before;
 
   if (a.known_before && b.known_before) {
@@ -6800,12 +6842,12 @@ static uint8_t compact_preferred_addr(const DiscoveredModule* modules, uint8_t c
 }
 
 uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
-  SchedulerBusLock bus_lock(bus_mutex_, pdMS_TO_TICKS(500));
-  if (!bus_lock.locked) return 0;
   DiscoveredModule found[ModuleRegistry::MAX_MODULES];
   uint8_t found_count = 0;
 
   for (uint8_t round = 0; round < 8; ++round) {
+    SchedulerBusLock bus_lock(bus_mutex_, pdMS_TO_TICKS(500));
+    if (!bus_lock.locked) continue;
     Frame req;
     req.dst = ADDR_BROADCAST;
     req.src = ADDR_MASTER;
@@ -6827,6 +6869,7 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
         found[found_count].type = resp.payload[1];
         found[found_count].uid = uid;
         found[found_count].addr = resp.payload[10];
+        if (resp.len >= 18) found[found_count].caps = get_u32_le(resp.payload + 14);
         found[found_count].discovery_order = found_count;
 
         for (uint8_t r = 0; r < registry_.count(); ++r) {
@@ -6848,7 +6891,27 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
         found_count++;
       }
       serviceWhileWaiting();
+      // Eight discovery windows can otherwise keep loopTask runnable for more
+      // than the watchdog interval. Block for one tick so IDLE1 can run.
+      delay(1);
     }
+  }
+
+  // Wireless displays are not participants on the physical broadcast bus.
+  // Add their authenticated live peers explicitly so the same deterministic
+  // compaction logic can address wired and wireless displays together.
+  for (uint8_t r = 0; r < registry_.count() && found_count < ModuleRegistry::MAX_MODULES; ++r) {
+    const ModuleRecord& rec = registry_.at(r);
+    if (rec.type != MODULE_DISPLAY || !rec.uid || !master_display_wifi.active(rec.addr) ||
+        contains_uid(found, found_count, rec.uid)) continue;
+    found[found_count].type = rec.type;
+    found[found_count].uid = rec.uid;
+    found[found_count].addr = rec.addr;
+    found[found_count].caps = rec.caps;
+    found[found_count].known_before = true;
+    found[found_count].remembered_addr = rec.addr;
+    found[found_count].discovery_order = found_count;
+    ++found_count;
   }
 
   uint8_t changed = 0;
@@ -6906,6 +6969,53 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
   }
 
 
+  auto readdress_discovered = [&](uint8_t index, uint8_t next_addr) -> bool {
+    if (found[index].type == MODULE_DISPLAY && master_display_wifi.active(found[index].addr)) {
+      const uint8_t payload = next_addr;
+      Frame resp;
+      return request(found[index].addr, CMD_SET_ADDRESS, &payload, 1, resp, 500) &&
+        resp.cmd == (CMD_SET_ADDRESS | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
+    }
+
+    uint8_t payload[9];
+    put_u64_le(payload, found[index].uid);
+    payload[8] = next_addr;
+
+    bool ok = false;
+    {
+      SchedulerBusLock bus_lock(bus_mutex_, pdMS_TO_TICKS(300));
+      if (bus_lock.locked) {
+        Frame req;
+        req.dst = ADDR_BROADCAST;
+        req.src = ADDR_MASTER;
+        req.seq = seq_++;
+        req.cmd = CMD_SET_ADDRESS_UID;
+        req.len = sizeof(payload);
+        memcpy(req.payload, payload, sizeof(payload));
+        link_.send(req);
+        busDiagRecordTx(req);
+
+        const uint32_t start = millis();
+        while ((uint32_t)(millis() - start) < 250UL) {
+          Frame resp;
+          if (link_.poll(resp)) {
+            busDiagRecordRx(resp);
+            const bool src_ok = resp.src == found[index].addr || resp.src == next_addr;
+            if (resp.dst == ADDR_MASTER && src_ok && resp.seq == req.seq &&
+                resp.cmd == (CMD_SET_ADDRESS_UID | 0x80) &&
+                resp.len >= 1 && resp.payload[0] == STATUS_OK) {
+              ok = true;
+              break;
+            }
+          }
+          serviceWhileWaiting();
+          delay(1);
+        }
+      }
+    }
+    return ok;
+  };
+
   // Dependency-aware re-addressing: move a module only when its target is not
   // currently occupied by another discovered module. This is important when a
   // new display initially sits at 0x40 while the older display must eventually
@@ -6945,8 +7055,53 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
     }
 
     if (selected < 0) {
-      Serial.println("DISC readdress cycle/conflict; preserving remaining addresses");
-      break;
+      // A previous non-deterministic assignment can leave two modules swapped.
+      // Break that cycle through an unused address in the same family.
+      int8_t cycle_index = -1;
+      uint8_t temporary_addr = 0;
+      for (uint8_t i = 0; i < found_count && cycle_index < 0; ++i) {
+        if (move_done[i]) continue;
+        const uint8_t start_addr = preferred_addr_start(found[i].type);
+        const uint8_t end_addr = preferred_addr_end(found[i].type);
+        for (uint16_t candidate = start_addr; candidate <= end_addr; ++candidate) {
+          bool occupied = false;
+          for (uint8_t j = 0; j < found_count; ++j) {
+            if (found[j].addr == (uint8_t)candidate) { occupied = true; break; }
+          }
+          if (!occupied) {
+            for (uint8_t r = 0; r < registry_.count(); ++r) {
+              if (registry_.at(r).addr == (uint8_t)candidate) { occupied = true; break; }
+            }
+          }
+          if (!occupied) {
+            cycle_index = (int8_t)i;
+            temporary_addr = (uint8_t)candidate;
+            break;
+          }
+        }
+      }
+
+      if (cycle_index < 0 || !temporary_addr ||
+          !readdress_discovered((uint8_t)cycle_index, temporary_addr)) {
+        Serial.println("DISC readdress cycle/conflict; no temporary address available");
+        break;
+      }
+
+      const uint8_t i = (uint8_t)cycle_index;
+      Serial.print("DISC temporary uid=");
+      Serial.print((uint32_t)(found[i].uid >> 32), HEX);
+      Serial.print((uint32_t)found[i].uid, HEX);
+      Serial.print(" addr=0x");
+      if (temporary_addr < 0x10) Serial.print('0');
+      Serial.println(temporary_addr, HEX);
+      registry_.bindUidToAddress(found[i].uid, temporary_addr);
+      if (found[i].type == MODULE_DISPLAY) {
+        master_display_wifi.rebindAddress(found[i].uid, temporary_addr);
+      }
+      found[i].addr = temporary_addr;
+      changed++;
+      serviceDelay(40);
+      continue;
     }
 
     const uint8_t i = (uint8_t)selected;
@@ -6954,36 +7109,7 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
       ? desired_addr[i]
       : compact_preferred_addr(found, found_count, i);
 
-    uint8_t payload[9];
-    put_u64_le(payload, found[i].uid);
-    payload[8] = next_addr;
-
-    Frame req;
-    req.dst = ADDR_BROADCAST;
-    req.src = ADDR_MASTER;
-    req.seq = seq_++;
-    req.cmd = CMD_SET_ADDRESS_UID;
-    req.len = sizeof(payload);
-    memcpy(req.payload, payload, sizeof(payload));
-    link_.send(req);
-    busDiagRecordTx(req);
-
-    const uint32_t start = millis();
-    bool ok = false;
-    while ((uint32_t)(millis() - start) < 250UL) {
-      Frame resp;
-      if (link_.poll(resp)) {
-        busDiagRecordRx(resp);
-        const bool src_ok = resp.src == found[i].addr || resp.src == next_addr;
-        if (resp.dst == ADDR_MASTER && src_ok && resp.seq == req.seq &&
-            resp.cmd == (CMD_SET_ADDRESS_UID | 0x80) &&
-            resp.len >= 1 && resp.payload[0] == STATUS_OK) {
-          ok = true;
-          break;
-        }
-      }
-      serviceWhileWaiting();
-    }
+    const bool ok = readdress_discovered(i, next_addr);
 
     if (ok) {
       Serial.print("DISC set uid=");
@@ -6994,9 +7120,14 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
       Serial.println(next_addr, HEX);
 
       registry_.bindUidToAddress(found[i].uid, next_addr);
+      if (found[i].type == MODULE_DISPLAY) {
+        master_display_wifi.rebindAddress(found[i].uid, next_addr);
+      }
       found[i].addr = next_addr;
       changed++;
-      delay(40);
+      serviceDelay(40);
+      // scanAddress() takes the same non-recursive bus mutex. It must run only
+      // after the address-command lock above has left scope.
       scanAddress(next_addr);
     }
 

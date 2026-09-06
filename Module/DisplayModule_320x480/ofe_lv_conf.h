@@ -1132,7 +1132,7 @@
 #endif /*LV_USE_SYSMON*/
 
 /** 1: Enable runtime performance profiler */
-#define LV_USE_PROFILER 1
+#define LV_USE_PROFILER 0
 #if LV_USE_PROFILER
     /** 1: Enable the built-in profiler */
     #define LV_USE_PROFILER_BUILTIN 0

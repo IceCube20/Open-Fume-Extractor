@@ -95,6 +95,13 @@ static bool heap_diag_active() {
   return developer_mode_enabled;
 }
 
+// MasterScheduler.cpp is a separate translation unit. Keep the mutable state
+// private to the web/diagnostics layer and expose only the current flag for
+// display status packets.
+bool master_developer_mode_enabled_for_modules() {
+  return developer_mode_enabled;
+}
+
 static void heap_diag_sample(const char* label);
 
 static void heap_diag_set_serial_debug(bool enabled) {

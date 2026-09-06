@@ -52,7 +52,7 @@ struct DisplayUniversalControlPending;
 #include <lvgl.h>
 #include "ofe_lv_profiler.h"
 #include "src/OfeRgbTileCopy.h"
-static_assert(LV_MEM_SIZE == 64U * 1024U, "Use the bundled build_opt.h and ofe_lv_conf.h for the RGB display");
+static_assert(LV_MEM_SIZE == 32U * 1024U, "Use the bundled build_opt.h and ofe_lv_conf.h for the RGB display");
 static_assert(LV_OBJ_STYLE_CACHE == 1, "The RGB display requires the bundled LVGL style-cache configuration");
 #include "SolderIronIcon.h"
 #include "src/OfeSerialPortFont.h"
@@ -300,7 +300,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 3
-#define OFE_MODULE_FW_PATCH 67
+#define OFE_MODULE_FW_PATCH 77
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -573,6 +573,7 @@ static void sample_cpu_load() {
 
 struct DisplayStatus {
   bool valid = false;
+  bool developer_mode = false;
   bool output_enabled = false;
   bool jbc_connected = false;
   bool weller_connected = false;
@@ -671,6 +672,9 @@ static bool screensaver_active = false;
 static bool screensaver_wait_release = false;
 static bool screensaver_wake_deferred = false;
 static uint32_t screensaver_last_update_ms = 0;
+static std::atomic<bool> screensaver_refresh_pending{true};
+static constexpr uint32_t SCREENSAVER_REFRESH_MIN_MS = 750UL;
+static constexpr uint32_t SCREENSAVER_REFRESH_MAX_MS = 5000UL;
 static lv_obj_t* screensaver_return_screen = nullptr;
 static bool backlight_pwm_ready = false;
 static uint8_t pending_display_event = 0;
@@ -1413,6 +1417,68 @@ static bool lvgl_canvas_dirty = false;
 static uint32_t lvgl_last_canvas_flush_ms = 0;
 static uint32_t lvgl_last_handler_ms = 0;
 
+// ---------------------------------------------------------------------------
+// Serial console for ESP32-S3.
+// Keep UART0 available and also expose native USB/JTAG CDC when Arduino's
+// "USB CDC On Boot" option is disabled. The CLI itself uses fixed-size buffers
+// and never allocates dynamic String objects.
+// ---------------------------------------------------------------------------
+#if defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE && \
+    (!defined(ARDUINO_USB_CDC_ON_BOOT) || !ARDUINO_USB_CDC_ON_BOOT)
+static HWCDC ofe_usb_cdc;
+#define OFE_DISPLAY_MANUAL_HWCDC 1
+#else
+#define OFE_DISPLAY_MANUAL_HWCDC 0
+#endif
+
+static void serial_console_begin() {
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  Serial.begin(115200);
+  Serial0.begin(115200);
+#elif OFE_DISPLAY_MANUAL_HWCDC
+  Serial0.begin(115200);
+  ofe_usb_cdc.begin();
+#else
+  Serial.begin(115200);
+#endif
+}
+
+static void debug_print(const char* text) {
+  if (!text) return;
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  Serial.print(text);
+  Serial0.print(text);
+#elif OFE_DISPLAY_MANUAL_HWCDC
+  Serial0.print(text);
+  ofe_usb_cdc.print(text);
+#else
+  Serial.print(text);
+#endif
+}
+
+static void debug_println(const char* text) {
+  if (!text) text = "";
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  Serial.println(text);
+  Serial0.println(text);
+#elif OFE_DISPLAY_MANUAL_HWCDC
+  Serial0.println(text);
+  ofe_usb_cdc.println(text);
+#else
+  Serial.println(text);
+#endif
+}
+
+static void debug_printf(const char* fmt, ...) {
+  if (!fmt) return;
+  char buf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  debug_print(buf);
+}
+
 // --- LVGL performance profiler ------------------------------------------------
 // Counts completed LVGL refresh cycles (last flush of a refresh), the amount of
 // rendered pixels, number of partial tiles, and time spent inside the LVGL
@@ -1435,6 +1501,21 @@ static uint16_t perf_handler_avg_x10_ms = 0;
 static uint16_t perf_handler_max_x10_ms = 0;
 static uint16_t perf_flush_avg_x10_ms = 0;
 static uint16_t perf_flush_max_x10_ms = 0;
+
+struct DisplayBenchmarkState {
+  bool active = false;
+  uint32_t started_ms = 0;
+  uint32_t last_step_ms = 0;
+  uint32_t last_label_ms = 0;
+  uint32_t previous_master_ms = 0;
+  uint32_t master_gap_max_ms = 0;
+  uint8_t cpu_peak = 0;
+  int16_t scroll_y = 0;
+  int8_t scroll_direction = 1;
+};
+static DisplayBenchmarkState display_benchmark;
+static constexpr uint32_t DISPLAY_BENCHMARK_DURATION_MS = 12000UL;
+static constexpr uint16_t DISPLAY_BENCHMARK_STEP_MS = 16U;
 
 static volatile bool lvgl_touch_pressed = false;
 static volatile uint32_t lvgl_last_touch_ms = 0;
@@ -1524,6 +1605,11 @@ static lv_obj_t* ui_alarm_rows[8] = {nullptr};
 static lv_obj_t* ui_alarm_titles[8] = {nullptr};
 static lv_obj_t* ui_alarm_details[8] = {nullptr};
 static lv_obj_t* ui_system_screen = nullptr;
+static lv_obj_t* ui_system_benchmark_button = nullptr;
+static lv_obj_t* ui_benchmark_screen = nullptr;
+static lv_obj_t* ui_benchmark_list = nullptr;
+static lv_obj_t* ui_benchmark_status = nullptr;
+static lv_obj_t* ui_benchmark_result = nullptr;
 
 static lv_obj_t* ui_header_link_cards[10] = {nullptr};
 static lv_obj_t* ui_header_link_labels[10] = {nullptr};
@@ -2031,7 +2117,42 @@ static inline void IRAM_ATTR rotate_rgb565_180_inplace(uint16_t* pixels,
   if (lo == hi && xor_mask) pixels[lo] ^= xor_mask;
 }
 
+// Lossless fast path for the normal INTERNAL-RAM LVGL tile. For 180-degree
+// rotation the packed RGB565 tile is globally reversed. Read the fast SRAM
+// tile backwards while writing each destination row forward into PSRAM. This
+// removes the separate in-place rotation pass and keeps pixel output identical.
+static inline void IRAM_ATTR copy_rgb565_180_internal_direct(
+    uint16_t* framebuffer,
+    const uint16_t* source,
+    int32_t dst_x,
+    int32_t dst_y,
+    int32_t w,
+    int32_t h,
+    uint16_t xor_mask) {
+  if (!framebuffer || !source || w <= 0 || h <= 0) return;
+
+  const uint16_t* src = source + (size_t)w * (size_t)h;
+  uint16_t* dst_row = framebuffer + (size_t)dst_y * DISPLAY_RGB_WIDTH + dst_x;
+
+  for (int32_t row = 0; row < h; ++row) {
+    int32_t i = 0;
+    for (; i + 7 < w; i += 8) {
+      dst_row[i + 0] = (*--src) ^ xor_mask;
+      dst_row[i + 1] = (*--src) ^ xor_mask;
+      dst_row[i + 2] = (*--src) ^ xor_mask;
+      dst_row[i + 3] = (*--src) ^ xor_mask;
+      dst_row[i + 4] = (*--src) ^ xor_mask;
+      dst_row[i + 5] = (*--src) ^ xor_mask;
+      dst_row[i + 6] = (*--src) ^ xor_mask;
+      dst_row[i + 7] = (*--src) ^ xor_mask;
+    }
+    for (; i < w; ++i) dst_row[i] = (*--src) ^ xor_mask;
+    dst_row += DISPLAY_RGB_WIDTH;
+  }
+}
+
 static void perf_finish_window_if_due() {
+  if (display_benchmark.active) return;
   const uint32_t now_ms = millis();
   if (!perf_window_ms) {
     perf_window_ms = now_ms;
@@ -2127,32 +2248,21 @@ static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px
 
 #if DISPLAY_ROTATION == 2
   {
-  // Lossless fast path for the physically upside-down JC8048W550:
-  // rotate in INTERNAL SRAM, then write completed rows sequentially. Large
-  // PSRAM render tiles pass through the retained SRAM allocation in chunks.
-  const uint32_t pixel_count = (uint32_t)w * (uint32_t)h;
-  uint16_t* mutable_pixels = reinterpret_cast<uint16_t*>(px_map);
+  // Lossless fast path for the physically upside-down JC8048W550. Normal
+  // builds render into INTERNAL SRAM, so combine rotation + framebuffer copy
+  // into one pass. The optional PSRAM large-tile experiment retains staging.
   const uint16_t xor_mask = DISPLAY_RGB_INVERT_COLORS ? 0xFFFFU : 0x0000U;
-
   uint16_t* fb = gfx->getFramebuffer();
-  const bool staged = lvgl_transfer_scratch && ofe_rgb_tile::copy180(
-    fb, DISPLAY_RGB_WIDTH, DISPLAY_RGB_HEIGHT, area->x1, area->y1, w, h,
-    pixels, lvgl_transfer_scratch, lvgl_transfer_scratch_pixels, xor_mask,
-    rotate_rgb565_180_inplace);
 
-  if (!staged) {
-    rotate_rgb565_180_inplace(mutable_pixels, pixel_count, xor_mask);
+  if (lvgl_transfer_scratch) {
+    ofe_rgb_tile::copy180(
+      fb, DISPLAY_RGB_WIDTH, DISPLAY_RGB_HEIGHT, area->x1, area->y1, w, h,
+      pixels, lvgl_transfer_scratch, lvgl_transfer_scratch_pixels, xor_mask,
+      rotate_rgb565_180_inplace);
+  } else {
     const int32_t dst_x = DISPLAY_RGB_WIDTH - area->x2 - 1;
     const int32_t dst_y = DISPLAY_RGB_HEIGHT - area->y2 - 1;
-    const size_t row_bytes = (size_t)w * sizeof(uint16_t);
-
-    const uint16_t* src_row = mutable_pixels;
-    uint16_t* dst_row = fb + dst_y * DISPLAY_RGB_WIDTH + dst_x;
-    for (int32_t row = 0; row < h; ++row) {
-      memcpy(dst_row, src_row, row_bytes);
-      src_row += w;
-      dst_row += DISPLAY_RGB_WIDTH;
-    }
+    copy_rgb565_180_internal_direct(fb, pixels, dst_x, dst_y, w, h, xor_mask);
   }
 
   const uint32_t flush_elapsed_us = micros() - flush_start_us;
@@ -3271,6 +3381,11 @@ static inline void lv_set_text_color_if_changed(lv_obj_t* obj, lv_color_t color,
     lv_obj_set_style_text_color(obj, color, selector);
 }
 
+static inline void lv_set_pos_if_changed(lv_obj_t* obj, int32_t x, int32_t y) {
+  if (!obj) return;
+  if (lv_obj_get_x(obj) != x || lv_obj_get_y(obj) != y) lv_obj_set_pos(obj, x, y);
+}
+
 static inline void lv_set_image_recolor_if_changed(lv_obj_t* obj, lv_color_t color, lv_style_selector_t selector = 0) {
   if (!obj) return;
   const lv_part_t part = (lv_part_t)(selector & 0xFFFFU);
@@ -3472,6 +3587,7 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
   else if (strcmp(subtitle, "alarms") == 0) localized_subtitle = tr("alarms", "Alarme");
   else if (strcmp(subtitle, "display update") == 0) localized_subtitle = tr("FW Update", "FW-Update");
   else if (strcmp(subtitle, "display module") == 0) localized_subtitle = tr("display module", "Displaymodul");
+  else if (strcmp(subtitle, "display benchmark") == 0) localized_subtitle = tr("benchmark", "Benchmark");
   lv_obj_t* sub = lv_label(header, localized_subtitle, 12, 11, lv_color_hex(0x7F8C9B), UI_FONT_DEFAULT, 170);
   lv_obj_set_size(sub, 170, 20);
   lv_label_set_long_mode(sub, LV_LABEL_LONG_CLIP);
@@ -3596,6 +3712,10 @@ static uint8_t screensaver_selection_from_timeout(uint8_t minutes) {
 
 static void lv_update_display_settings_widgets(bool force) {
   if (!lvgl_ready) return;
+
+  if (ui_system_benchmark_button) {
+    lv_set_visible(ui_system_benchmark_button, status.developer_mode);
+  }
 
   if (ui_system_brightness) {
     lv_set_text(ui_system_brightness, String(display_brightness_pct) + "%");
@@ -4208,7 +4328,7 @@ static void screensaver_update_values() {
   lv_set_text(ui_screensaver_state, running
     ? (status.afterrun_s ? String(tr("Afterrun ", "Nachlauf ")) + status.afterrun_s + "s" : String(tr("Extraction active", "Absaugung aktiv")))
     : (not_ready ? String(tr("Not ready", "Nicht bereit")) : String(tr("Ready", "Bereit"))));
-  lv_obj_set_style_text_color(ui_screensaver_state,
+  lv_set_text_color_if_changed(ui_screensaver_state,
     running ? lv_color_hex(0x55D98A) : (not_ready ? lv_color_hex(0xFFB020) : lv_color_hex(0xD8E2EE)), 0);
   uint8_t screensaver_power_pct = 0;
   if (status.output_enabled) {
@@ -4218,11 +4338,11 @@ static void screensaver_update_values() {
     screensaver_power_pct = constrain(status.output_power / 10, 0, 100);
   }
   lv_set_text(ui_screensaver_power, String(tr("Power ", "Leistung ")) + screensaver_power_pct + "%");
-  if (ui_screensaver_power_bar) lv_bar_set_value(ui_screensaver_power_bar, screensaver_power_pct, LV_ANIM_OFF);
-  lv_obj_set_style_text_color(ui_screensaver_clock, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_text_color(ui_screensaver_power, lv_color_hex(0xFFFFFF), 0);
+  lv_bar_set_value_if_changed(ui_screensaver_power_bar, screensaver_power_pct);
+  lv_set_text_color_if_changed(ui_screensaver_clock, lv_color_hex(0xFFFFFF), 0);
+  lv_set_text_color_if_changed(ui_screensaver_power, lv_color_hex(0xFFFFFF), 0);
   lv_set_text(ui_screensaver_modules, String(status.modules_count) + " " + tr("modules", "Module"));
-  lv_obj_set_style_text_color(ui_screensaver_modules, lv_color_hex(0xD8E2EE), 0);
+  lv_set_text_color_if_changed(ui_screensaver_modules, lv_color_hex(0xD8E2EE), 0);
   const uint8_t alarms = screensaver_alarm_count();
   const bool critical_alarm = screensaver_alarm_is_critical();
   String alarm_text = screensaver_alarm_title();
@@ -4235,23 +4355,30 @@ static void screensaver_update_values() {
   lv_set_text(ui_screensaver_alarm, alarms
     ? alarm_text
     : String(LV_SYMBOL_OK) + " " + tr("No alarms", "Keine Alarme"));
-  lv_obj_set_style_text_color(ui_screensaver_alarm,
+  lv_set_text_color_if_changed(ui_screensaver_alarm,
     alarms ? (critical_alarm ? lv_color_hex(0xFF4D5E) : lv_color_hex(0xFFB020)) : lv_color_hex(0x55D98A), 0);
   lv_set_text(ui_screensaver_info, screensaver_runtime_info());
-  lv_obj_set_style_text_color(ui_screensaver_info, lv_color_hex(0xB5C2D1), 0);
+  lv_set_text_color_if_changed(ui_screensaver_info, lv_color_hex(0xB5C2D1), 0);
 
   // Shift the central block slightly each minute to avoid a permanent panel pattern.
   const int16_t shift_x = status.clock_valid ? ((int16_t)(status.clock_minute % 3) - 1) * 8 : 0;
   const int16_t shift_y = status.clock_valid ? ((int16_t)((status.clock_minute / 3) % 3) - 1) * 4 : 0;
-  if (ui_screensaver_brand) lv_obj_set_pos(ui_screensaver_brand, shift_x, 34 + shift_y);
-  lv_obj_set_pos(ui_screensaver_clock, shift_x, 82 + shift_y);
-  lv_obj_set_pos(ui_screensaver_state, shift_x, 176 + shift_y);
-  lv_obj_set_pos(ui_screensaver_alarm, 60 + shift_x, 212 + shift_y);
-  lv_obj_set_pos(ui_screensaver_power, 102 + shift_x, 264 + shift_y);
-  lv_obj_set_pos(ui_screensaver_modules, 438 + shift_x, 264 + shift_y);
-  if (ui_screensaver_power_bar) lv_obj_set_pos(ui_screensaver_power_bar, 102 + shift_x, 294 + shift_y);
-  lv_obj_set_pos(ui_screensaver_info, 60 + shift_x, 322 + shift_y);
-  lv_obj_set_pos(ui_screensaver_hint, shift_x, 412 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_brand, shift_x, 34 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_clock, shift_x, 82 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_state, shift_x, 176 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_alarm, 60 + shift_x, 212 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_power, 102 + shift_x, 264 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_modules, 438 + shift_x, 264 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_power_bar, 102 + shift_x, 294 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_info, 60 + shift_x, 322 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_hint, shift_x, 412 + shift_y);
+
+  last_drawn_status = status;
+  have_drawn_status = true;
+}
+
+static void screensaver_request_refresh() {
+  screensaver_refresh_pending.store(true, std::memory_order_relaxed);
 }
 
 static bool screensaver_can_start() {
@@ -4266,6 +4393,7 @@ static void screensaver_enter() {
   screensaver_return_screen = lv_screen_active();
   screensaver_active = true;
   screensaver_update_values();
+  screensaver_refresh_pending.store(false, std::memory_order_relaxed);
   screensaver_last_update_ms = millis();
   const uint8_t dim_pct = display_brightness_pct < 18 ? display_brightness_pct : 18;
   write_backlight_duty(backlight_duty_from_percent(dim_pct));
@@ -4315,13 +4443,17 @@ static void screensaver_wake() {
 }
 
 static void screensaver_tick() {
+  if (display_benchmark.active) return;
   // Never hide a boot/recovery problem behind the screensaver. Home must have
   // rendered at least once after a valid Master status before sleep is allowed.
   if (!have_drawn_status && !screensaver_active) return;
   if (screensaver_active) {
     const uint32_t now = millis();
-    if ((uint32_t)(now - screensaver_last_update_ms) >= 1000UL) {
+    const uint32_t elapsed = (uint32_t)(now - screensaver_last_update_ms);
+    const bool requested = screensaver_refresh_pending.load(std::memory_order_relaxed);
+    if ((requested && elapsed >= SCREENSAVER_REFRESH_MIN_MS) || elapsed >= SCREENSAVER_REFRESH_MAX_MS) {
       screensaver_last_update_ms = now;
+      screensaver_refresh_pending.store(false, std::memory_order_relaxed);
       screensaver_update_values();
     }
     return;
@@ -5493,6 +5625,126 @@ static void lv_home_fanio_power_slider_event(lv_event_t* e) {
   }
 }
 
+static void display_benchmark_reset_counters(uint32_t now) {
+  perf_window_ms = now;
+  perf_frames = 0;
+  perf_flush_calls = 0;
+  perf_pixels = 0;
+  perf_flush_us = 0;
+  perf_flush_max_us = 0;
+  perf_handler_us = 0;
+  perf_handler_calls = 0;
+  perf_handler_max_us = 0;
+}
+
+static void display_benchmark_finish(uint32_t now) {
+  if (!display_benchmark.active) return;
+  display_benchmark.active = false;
+  const uint32_t elapsed_ms = now - display_benchmark.started_ms;
+  const float seconds = elapsed_ms ? elapsed_ms / 1000.0f : 1.0f;
+  const float lvgl_fps = perf_frames / seconds;
+  const float tiles_per_frame = perf_frames ?
+    (float)perf_flush_calls / (float)perf_frames : 0.0f;
+  const float mpix_s = seconds > 0.0f ?
+    ((float)perf_pixels / 1000000.0f) / seconds : 0.0f;
+  const float handler_avg_ms = perf_handler_calls ?
+    (float)perf_handler_us / (float)perf_handler_calls / 1000.0f : 0.0f;
+  const float flush_avg_ms = perf_flush_calls ?
+    (float)perf_flush_us / (float)perf_flush_calls / 1000.0f : 0.0f;
+  const float scan_hz = (float)DISPLAY_RGB_PCLK_HZ /
+    (float)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) * (DISPLAY_RGB_HEIGHT + 8 + 4 + 8));
+
+  const uint32_t benchmark_buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
+  String result = String("LVGL ") + String(lvgl_fps, 1) + " FPS | Scan " + String(scan_hz, 1) +
+    " Hz | " + String(tiles_per_frame, 1) + " Tiles/B" + String(benchmark_buf_lines) + " | " + String(mpix_s, 2) + " MPix/s\n" +
+    tr("Handler ", "Handler ") + String(handler_avg_ms, 1) + "/" + String(perf_handler_max_us / 1000.0f, 1) +
+    " ms | Copy " + String(flush_avg_ms, 1) + "/" + String(perf_flush_max_us / 1000.0f, 1) +
+    " ms | CPU " + String(display_benchmark.cpu_peak) + "% | Link " +
+    String(display_benchmark.master_gap_max_ms) + " ms";
+  lv_set_text(ui_benchmark_status, tr("Benchmark complete", "Benchmark abgeschlossen"));
+  lv_set_text(ui_benchmark_result, result);
+  Serial.printf("DISPLAY BENCHMARK: %.1f LVGL fps, %.1f Hz scan, %.1f tiles/frame, buffer %u lines, %.2f MPix/s, "
+                "handler %.1f/%.1f ms, copy %.1f/%.1f ms, CPU %u%%, master gap %u ms\n",
+    lvgl_fps, scan_hz, tiles_per_frame, (unsigned)benchmark_buf_lines, mpix_s,
+    handler_avg_ms, perf_handler_max_us / 1000.0f,
+    flush_avg_ms, perf_flush_max_us / 1000.0f, (unsigned)display_benchmark.cpu_peak,
+    (unsigned)display_benchmark.master_gap_max_ms);
+  perf_window_ms = now;
+}
+
+static void display_benchmark_start_event(lv_event_t*) {
+  if (!status.developer_mode || !ui_benchmark_list) return;
+  const uint32_t now = millis();
+  display_benchmark = DisplayBenchmarkState();
+  display_benchmark.active = true;
+  display_benchmark.started_ms = now;
+  display_benchmark.last_step_ms = now;
+  display_benchmark.previous_master_ms = last_master_ms;
+  display_benchmark.cpu_peak = cpu_load_pct;
+  last_user_activity_ms = now;
+  lv_obj_scroll_to_y(ui_benchmark_list, 0, LV_ANIM_OFF);
+  lv_set_text(ui_benchmark_status, tr("Running 0 / 12 s", "L\303\244uft 0 / 12 s"));
+  lv_set_text(ui_benchmark_result, tr("Rendering scrolling workload...", "Scroll-Last wird gerendert..."));
+  display_benchmark_reset_counters(now);
+}
+
+static void display_benchmark_back_event(lv_event_t*) {
+  display_benchmark.active = false;
+  perf_window_ms = millis();
+  display_view_mode = DISPLAY_VIEW_SYSTEM;
+  last_user_activity_ms = millis();
+  lv_update_display_settings_widgets(true);
+  lv_screen_switch(ui_system_screen);
+}
+
+static void display_benchmark_open_event(lv_event_t*) {
+  if (!status.developer_mode || !ui_benchmark_screen) return;
+  display_view_mode = DISPLAY_VIEW_SYSTEM;
+  last_user_activity_ms = millis();
+  lv_screen_switch(ui_benchmark_screen);
+}
+
+static void display_benchmark_tick() {
+  if (!display_benchmark.active) return;
+  if (!status.developer_mode) {
+    display_benchmark_back_event(nullptr);
+    return;
+  }
+  const uint32_t now = millis();
+  last_user_activity_ms = now;
+  if (last_master_ms && last_master_ms != display_benchmark.previous_master_ms) {
+    if (display_benchmark.previous_master_ms) {
+      const uint32_t gap = last_master_ms - display_benchmark.previous_master_ms;
+      if (gap > display_benchmark.master_gap_max_ms) display_benchmark.master_gap_max_ms = gap;
+    }
+    display_benchmark.previous_master_ms = last_master_ms;
+  }
+  if (cpu_load_pct > display_benchmark.cpu_peak) display_benchmark.cpu_peak = cpu_load_pct;
+
+  if ((uint32_t)(now - display_benchmark.last_step_ms) >= DISPLAY_BENCHMARK_STEP_MS) {
+    display_benchmark.last_step_ms = now;
+    display_benchmark.scroll_y += (int16_t)(9 * display_benchmark.scroll_direction);
+    if (display_benchmark.scroll_y >= 520) {
+      display_benchmark.scroll_y = 520;
+      display_benchmark.scroll_direction = -1;
+    } else if (display_benchmark.scroll_y <= 0) {
+      display_benchmark.scroll_y = 0;
+      display_benchmark.scroll_direction = 1;
+    }
+    lv_obj_scroll_to_y(ui_benchmark_list, display_benchmark.scroll_y, LV_ANIM_OFF);
+  }
+  if ((uint32_t)(now - display_benchmark.last_label_ms) >= 250U) {
+    display_benchmark.last_label_ms = now;
+    const uint32_t elapsed_ms = now - display_benchmark.started_ms;
+    const float fps = elapsed_ms ? (float)perf_frames * 1000.0f / elapsed_ms : 0.0f;
+    lv_set_text(ui_benchmark_status,
+      String(tr("Running ", "L\303\244uft ")) + String(elapsed_ms / 1000U) + " / 12 s | " + String(fps, 1) + " FPS");
+  }
+  if ((uint32_t)(now - display_benchmark.started_ms) >= DISPLAY_BENCHMARK_DURATION_MS) {
+    display_benchmark_finish(now);
+  }
+}
+
 static void lv_add_main_nav(lv_obj_t* screen, uint8_t active) {
   const int16_t y = DISPLAY_RGB_HEIGHT - 48;
   constexpr int16_t margin = 8;
@@ -5817,8 +6069,42 @@ static void lv_create_app_screens() {
   lv_apply_dropdown_theme(ui_system_theme);
   lv_obj_add_event_cb(ui_system_theme, lv_theme_event, LV_EVENT_VALUE_CHANGED, NULL);
 
+  ui_system_benchmark_button = lv_small_button(system_body, 0, 262, 776,
+    tr("Display benchmark", "Display-Benchmark"), display_benchmark_open_event);
+
   lv_update_display_settings_widgets(true);
   lv_add_main_nav(ui_system_screen, 3);
+
+  ui_benchmark_screen = lv_obj_create(NULL);
+  lv_style_screen(ui_benchmark_screen);
+  lv_add_header(ui_benchmark_screen, "display benchmark");
+  ui_benchmark_list = lv_obj_create(ui_benchmark_screen);
+  lv_obj_set_pos(ui_benchmark_list, 12, 50);
+  lv_obj_set_size(ui_benchmark_list, 776, 300);
+  lv_obj_set_style_pad_all(ui_benchmark_list, 0, 0);
+  lv_obj_set_style_border_width(ui_benchmark_list, 0, 0);
+  lv_obj_set_style_bg_opa(ui_benchmark_list, LV_OPA_TRANSP, 0);
+  lv_obj_set_scroll_dir(ui_benchmark_list, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(ui_benchmark_list, LV_SCROLLBAR_MODE_ACTIVE);
+  lv_obj_clear_flag(ui_benchmark_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+  lv_obj_set_style_anim_duration(ui_benchmark_list, 0, 0);
+  for (uint8_t i = 0; i < 16; ++i) {
+    lv_obj_t* row = lv_card(ui_benchmark_list, 0, i * 52, 758, 46,
+      ui_theme_color((i & 1U) ? 0x17212C : 0x14202A, (i & 1U) ? 0xF0F5F9 : 0xF7FAFC));
+    lv_label(row, (String("0x") + String(0x10 + i, HEX) + "  " + tr("Benchmark module ", "Benchmark-Modul ") + String(i + 1)).c_str(),
+      14, 7, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 560);
+    lv_label(row, (String(20 + (i * 7) % 79) + "%").c_str(), 670, 7,
+      lv_color_hex((i & 1U) ? 0x58B8FF : 0x2DFF88), UI_FONT_DEFAULT, 64);
+  }
+  ui_benchmark_status = lv_label(ui_benchmark_screen, tr("Ready", "Bereit"), 12, 358,
+    lv_color_hex(0x58B8FF), UI_FONT_DEFAULT, 776);
+  ui_benchmark_result = lv_label(ui_benchmark_screen,
+    tr("Press Start for a 12 second scrolling test.", "Start beginnt einen 12-Sekunden-Scrolltest."),
+    12, 382, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 776);
+  lv_label_set_long_mode(ui_benchmark_result, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(ui_benchmark_result, 38);
+  lv_small_button(ui_benchmark_screen, 12, 430, 124, tr("Back", "Zur\303\274ck"), display_benchmark_back_event);
+  lv_small_button(ui_benchmark_screen, 664, 430, 124, tr("Start", "Start"), display_benchmark_start_event);
 }
 
 static void lv_rebuild_app_ui() {
@@ -5830,6 +6116,7 @@ static void lv_rebuild_app_ui() {
     ui_module_detail_screen,
     ui_alarm_screen,
     ui_system_screen,
+    ui_benchmark_screen,
     ui_boot_screen,
     ui_update_screen,
     ui_status_screen,
@@ -5853,6 +6140,12 @@ static void lv_rebuild_app_ui() {
   ui_module_detail_screen = nullptr;
   ui_alarm_screen = nullptr;
   ui_system_screen = nullptr;
+  ui_system_benchmark_button = nullptr;
+  ui_benchmark_screen = nullptr;
+  ui_benchmark_list = nullptr;
+  ui_benchmark_status = nullptr;
+  ui_benchmark_result = nullptr;
+  display_benchmark.active = false;
   ui_boot_screen = nullptr;
   ui_update_screen = nullptr;
   ui_status_screen = nullptr;
@@ -7115,29 +7408,39 @@ static void lv_update_app_values() {
   if (!master_ok) {
     lv_set_text_c(ui_home_output, master_lost_now ? tr("Offline", "Offline") : tr("Connecting", "Verbinden"));
     lv_set_text(ui_home_power, "--");
-    lv_set_text(ui_home_rpm, master_lost_now ? String("--") : tr("waiting", "warten"));
+    lv_set_text_c(ui_home_rpm, master_lost_now ? "--" : tr("waiting", "warten"));
     lv_set_text(ui_home_afterrun, master_lost_now ? tr("Master missing", "Master fehlt") : tr("Waiting", "Warten"));
     if (ui_home_power_bar) lv_bar_set_value_if_changed(ui_home_power_bar, 0);
 
     lv_set_home_work_icon(status.jbc_present || jbc_module_count > 0, false);
     lv_set_text(ui_home_work, "-");
-    lv_set_text(ui_home_jbc, master_lost_now ? String("Cache") : String("waiting"));
+    lv_set_text_c(ui_home_jbc, master_lost_now ? "Cache" : "waiting");
     lv_set_text(ui_home_suction, "-");
     lv_set_text(ui_home_fan_detail, tr("No current data", "Keine aktuellen Daten"));
     if (ui_home_mode_dropdown && !lv_dropdown_is_open(ui_home_mode_dropdown)) lv_dropdown_set_selected_if_changed(ui_home_mode_dropdown, 3);
     if (ui_home_power_input && ui_numeric_source != ui_home_power_input) lv_textarea_set_text_if_changed(ui_home_power_input, "-");
     if (ui_home_delay_input && ui_numeric_source != ui_home_delay_input) lv_textarea_set_text_if_changed(ui_home_delay_input, "-");
-    lv_set_text(ui_home_weller, master_lost_now ? String("Cache") : String("waiting"));
+    lv_set_text_c(ui_home_weller, master_lost_now ? "Cache" : "waiting");
     lv_set_text(ui_home_filter, "-");
-    lv_set_text(ui_home_fault, master_lost_now ? tr("Master lost", "Master fehlt") : String("connecting"));
+    lv_set_text_c(ui_home_fault, master_lost_now ? tr("Master lost", "Master fehlt") : "connecting");
   } else {
     const bool module_offline_alarm = screensaver_has_alarm_code(DISPLAY_ALARM_MODULE_OFFLINE);
     const bool no_main_input = status.main_input_source_type == 0 || screensaver_has_alarm_code(DISPLAY_ALARM_NO_MAIN_INPUT);
     const bool not_ready = module_offline_alarm || no_main_input;
+    // Stack scratch avoids repeated Arduino String heap allocations in this
+    // 10 Hz telemetry hot path. The generated text is byte-for-byte equivalent.
+    char fast_text[64];
     lv_set_text_c(ui_home_output, status.output_enabled ? tr("Running", "L\303\244uft") : (not_ready ? tr("Not ready", "Nicht bereit") : tr("Idle", "Bereit")));
-    lv_set_text(ui_home_power, String(output_pct) + "%");
-    lv_set_text(ui_home_rpm, String(main_output_rpm_for_ui()) + " rpm");
-    lv_set_text(ui_home_afterrun, status.afterrun_s ? (String(tr("Afterrun ", "Nachlauf ")) + String(status.afterrun_s) + "s") : (not_ready ? String(tr("Not ready", "Nicht bereit")) : String(tr("Ready", "Bereit"))));
+    snprintf(fast_text, sizeof(fast_text), "%u%%", (unsigned)output_pct);
+    lv_set_text_c(ui_home_power, fast_text);
+    snprintf(fast_text, sizeof(fast_text), "%u rpm", (unsigned)main_output_rpm_for_ui());
+    lv_set_text_c(ui_home_rpm, fast_text);
+    if (status.afterrun_s) {
+      snprintf(fast_text, sizeof(fast_text), "%s%us", tr("Afterrun ", "Nachlauf "), (unsigned)status.afterrun_s);
+      lv_set_text_c(ui_home_afterrun, fast_text);
+    } else {
+      lv_set_text_c(ui_home_afterrun, not_ready ? tr("Not ready", "Nicht bereit") : tr("Ready", "Bereit"));
+    }
     if (ui_home_power_bar) lv_bar_set_value_if_changed(ui_home_power_bar, output_pct);
 
     lv_set_home_work_icon(status.jbc_present || jbc_module_count > 0, status.work_mask != 0);
@@ -7150,8 +7453,12 @@ static void lv_update_app_values() {
     lv_set_text(ui_home_work, status.jbc_connected
       ? (String(tr("Station ", "Station ")) + home_jbc_station_models() + tr(" | Work ", " | Work ") + on_off(status.work_mask != 0))
       : (jbc_module_count ? String(tr("Station offline", "Station offline")) : String("-")));
-    if (fan_module_count) lv_set_text(ui_home_suction, String(fan_module_count) + tr(" RS485 online", " RS485 online"));
-    else lv_set_text(ui_home_suction, String("RS485 offline"));
+    if (fan_module_count) {
+      snprintf(fast_text, sizeof(fast_text), "%u%s", (unsigned)fan_module_count, tr(" RS485 online", " RS485 online"));
+      lv_set_text_c(ui_home_suction, fast_text);
+    } else {
+      lv_set_text_c(ui_home_suction, "RS485 offline");
+    }
     String fan_detail;
     if (!fan_module_count) {
       fan_detail = "-";
@@ -7185,13 +7492,16 @@ static void lv_update_app_values() {
       lv_dropdown_set_selected_if_changed(ui_home_mode_dropdown, status.suction_level > 3 ? 3 : status.suction_level);
     }
     if (ui_home_power_input && ui_numeric_source != ui_home_power_input) {
-      lv_textarea_set_text_if_changed(ui_home_power_input, String(status.select_flow / 10).c_str());
+      snprintf(fast_text, sizeof(fast_text), "%u", (unsigned)(status.select_flow / 10U));
+      lv_textarea_set_text_if_changed(ui_home_power_input, fast_text);
     }
     if (ui_home_delay_input && ui_numeric_source != ui_home_delay_input) {
-      lv_textarea_set_text_if_changed(ui_home_delay_input, String(status.delay_work_s).c_str());
+      snprintf(fast_text, sizeof(fast_text), "%u", (unsigned)status.delay_work_s);
+      lv_textarea_set_text_if_changed(ui_home_delay_input, fast_text);
     }
     if (ui_home_afterrun_power_input && ui_numeric_source != ui_home_afterrun_power_input) {
-      lv_textarea_set_text_if_changed(ui_home_afterrun_power_input, String(status.afterrun_power / 10U).c_str());
+      snprintf(fast_text, sizeof(fast_text), "%u", (unsigned)(status.afterrun_power / 10U));
+      lv_textarea_set_text_if_changed(ui_home_afterrun_power_input, fast_text);
     }
     if (ui_home_afterrun_power_button) lv_set_toggle_style(ui_home_afterrun_power_button, status.afterrun_power_enabled);
     const bool weller_seen = status.weller_present;
@@ -7200,7 +7510,7 @@ static void lv_update_app_values() {
        home_weller_runtime_min || home_weller_programmed_min ||
        home_weller_light || home_weller_version || weller_cache_ok);
     if (!status.weller_present) {
-      lv_set_text(ui_home_weller, String("RS485 offline"));
+      lv_set_text_c(ui_home_weller, "RS485 offline");
       lv_set_text(ui_home_filter, "-");
     } else if (home_weller_connected || weller_has_values) {
       lv_set_text(ui_home_weller, String(weller_module_count ? weller_module_count : 1) +
@@ -7224,12 +7534,16 @@ static void lv_update_app_values() {
 
   active_alarm_count = lv_alarm_count_now();
   lv_update_alarm_header_ui();
-  lv_set_text(ui_home_fault, active_alarm_count
-    ? (String(active_alarm_count) + tr(" active", " aktiv"))
-    : String(tr("No alarms", "Keine Alarme")));
-  lv_set_text(ui_home_modules, active_alarm_count
-    ? String(tr("Tap for alarm details", "F\303\274r Alarmdetails antippen"))
-    : (String(status.modules_count) + tr(" modules online", " Module online")));
+  char summary_text[64];
+  if (active_alarm_count) {
+    snprintf(summary_text, sizeof(summary_text), "%u%s", (unsigned)active_alarm_count, tr(" active", " aktiv"));
+    lv_set_text_c(ui_home_fault, summary_text);
+    lv_set_text_c(ui_home_modules, tr("Tap for alarm details", "F\303\274r Alarmdetails antippen"));
+  } else {
+    lv_set_text_c(ui_home_fault, tr("No alarms", "Keine Alarme"));
+    snprintf(summary_text, sizeof(summary_text), "%u%s", (unsigned)status.modules_count, tr(" modules online", " Module online"));
+    lv_set_text_c(ui_home_modules, summary_text);
+  }
   lv_set_disabled_if_changed(ui_home_power_input, !(master_ok && status.suction_level == 3));
   lv_set_disabled_if_changed(ui_home_delay_input, !master_ok);
   lv_set_disabled_if_changed(ui_home_mode_dropdown, !master_ok);
@@ -7344,58 +7658,126 @@ static void lv_update_dashboard_values() {
   }
 
   lv_set_text_c(ui_output_state, status.output_enabled ? "Running" : "Idle");
-  if (ui_output_state) lv_obj_set_style_text_color(ui_output_state, status.output_enabled ? lv_color_hex(0x2DFF88) : ui_theme_color(0xF7FAFF, 0x17212B), 0);
+  if (ui_output_state) lv_set_text_color_if_changed(ui_output_state, status.output_enabled ? lv_color_hex(0x2DFF88) : ui_theme_color(0xF7FAFF, 0x17212B), 0);
   if (ui_output_card) {
-    lv_obj_set_style_bg_color(ui_output_card, status.output_enabled ? ui_theme_color(0x103125, 0xE5F7EC) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
-    lv_obj_set_style_border_color(ui_output_card, status.output_enabled ? lv_color_hex(0x2DFF88) : ui_theme_color(0x2C3B4A, 0xC4D0DB), 0);
+    lv_set_bg_color_if_changed(ui_output_card, status.output_enabled ? ui_theme_color(0x103125, 0xE5F7EC) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
+    lv_set_border_color_if_changed(ui_output_card, status.output_enabled ? lv_color_hex(0x2DFF88) : ui_theme_color(0x2C3B4A, 0xC4D0DB), 0);
   }
-  if (ui_jbc_card) lv_obj_set_style_bg_color(ui_jbc_card, status.jbc_connected ? ui_theme_color(0x102B22, 0xE5F7EC) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
-  if (ui_weller_card) lv_obj_set_style_bg_color(ui_weller_card, status.weller_connected ? ui_theme_color(0x102338, 0xE7F1FF) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
-  if (ui_work_card) lv_obj_set_style_bg_color(ui_work_card, status.work_mask ? ui_theme_color(0x332410, 0xFFF5D6) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
-  if (ui_weller_filter_card) lv_obj_set_style_bg_color(ui_weller_filter_card, status.weller_filter_status == 100 ? ui_theme_color(0x331818, 0xFFE8EB) : (status.weller_filter_status == 10 ? ui_theme_color(0x332410, 0xFFF5D6) : ui_theme_color(0x151B23, 0xF7FAFC)), 0);
+  if (ui_jbc_card) lv_set_bg_color_if_changed(ui_jbc_card, status.jbc_connected ? ui_theme_color(0x102B22, 0xE5F7EC) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
+  if (ui_weller_card) lv_set_bg_color_if_changed(ui_weller_card, status.weller_connected ? ui_theme_color(0x102338, 0xE7F1FF) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
+  if (ui_work_card) lv_set_bg_color_if_changed(ui_work_card, status.work_mask ? ui_theme_color(0x332410, 0xFFF5D6) : ui_theme_color(0x151B23, 0xF7FAFC), 0);
+  if (ui_weller_filter_card) lv_set_bg_color_if_changed(ui_weller_filter_card, status.weller_filter_status == 100 ? ui_theme_color(0x331818, 0xFFE8EB) : (status.weller_filter_status == 10 ? ui_theme_color(0x332410, 0xFFF5D6) : ui_theme_color(0x151B23, 0xF7FAFC)), 0);
   if (ui_output_bar) lv_bar_set_value_if_changed(ui_output_bar, output_pct);
-  lv_set_text(ui_output_power, String("Power ") + String(output_pct) + "%");
-  lv_set_text(ui_afterrun, String("After ") + String(status.afterrun_s) + "s");
-  lv_set_text(ui_jbc_state, status.jbc_connected ? (String(status.jbc_inputs) + " linked") : String("Offline"));
+  // These dashboard fields are refreshed frequently. Reuse one stack buffer so
+  // status traffic does not fragment the Arduino heap with temporary Strings.
+  char app_text[160];
+  snprintf(app_text, sizeof(app_text), "Power %u%%", (unsigned)output_pct);
+  lv_set_text_c(ui_output_power, app_text);
+  snprintf(app_text, sizeof(app_text), "After %us", (unsigned)status.afterrun_s);
+  lv_set_text_c(ui_afterrun, app_text);
+  if (status.jbc_connected) {
+    snprintf(app_text, sizeof(app_text), "%u linked", (unsigned)status.jbc_inputs);
+    lv_set_text_c(ui_jbc_state, app_text);
+  } else lv_set_text_c(ui_jbc_state, "Offline");
   lv_set_text_c(ui_weller_state, home_weller_connected ? "Linked" : "Offline");
-  lv_set_text(ui_work_mask, status.work_mask ? (String("0x") + String(status.work_mask, HEX)) : "idle");
-  lv_set_text(ui_fan_rpm, String(status.fan_rpm) + " rpm");
-  lv_set_text(ui_modules, String(status.modules_count));
-  lv_set_text(ui_addr, lv_addr_text(module_addr));
-  lv_set_text(ui_touch, String(FW_MAJOR) + "." + String(FW_MINOR) + "." + String(FW_PATCH) + String(FW_SUFFIX));
-  lv_set_text(ui_touch_pos, String(last_touch_x) + "," + String(last_touch_y));
-  lv_set_text(ui_brightness, String(display_brightness_pct) + "%");
+  if (status.work_mask) {
+    snprintf(app_text, sizeof(app_text), "0x%x", (unsigned)status.work_mask);
+    lv_set_text_c(ui_work_mask, app_text);
+  } else lv_set_text_c(ui_work_mask, "idle");
+  snprintf(app_text, sizeof(app_text), "%u rpm", (unsigned)status.fan_rpm);
+  lv_set_text_c(ui_fan_rpm, app_text);
+  snprintf(app_text, sizeof(app_text), "%u", (unsigned)status.modules_count);
+  lv_set_text_c(ui_modules, app_text);
+  snprintf(app_text, sizeof(app_text), "0x%02X", (unsigned)module_addr);
+  lv_set_text_c(ui_addr, app_text);
+  snprintf(app_text, sizeof(app_text), "%u.%u.%u%s", (unsigned)FW_MAJOR, (unsigned)FW_MINOR, (unsigned)FW_PATCH, FW_SUFFIX);
+  lv_set_text_c(ui_touch, app_text);
+  snprintf(app_text, sizeof(app_text), "%u,%u", (unsigned)last_touch_x, (unsigned)last_touch_y);
+  lv_set_text_c(ui_touch_pos, app_text);
+  snprintf(app_text, sizeof(app_text), "%u%%", (unsigned)display_brightness_pct);
+  lv_set_text_c(ui_brightness, app_text);
   if (ui_brightness_bar) lv_bar_set_value_if_changed(ui_brightness_bar, display_brightness_pct);
-  lv_set_text(ui_suction, suction_name(status.suction_level));
-  lv_set_text(ui_custom_power, String(status.select_flow / 10) + "%");
-  lv_set_text(ui_delay, String(status.delay_work_s) + "s");
-  lv_set_text(ui_delay_stand, String(status.delay_stand_s) + "s");
+  lv_set_text_c(ui_suction, suction_name(status.suction_level));
+  snprintf(app_text, sizeof(app_text), "%u%%", (unsigned)(status.select_flow / 10U));
+  lv_set_text_c(ui_custom_power, app_text);
+  snprintf(app_text, sizeof(app_text), "%us", (unsigned)status.delay_work_s);
+  lv_set_text_c(ui_delay, app_text);
+  snprintf(app_text, sizeof(app_text), "%us", (unsigned)status.delay_stand_s);
+  lv_set_text_c(ui_delay_stand, app_text);
   lv_set_text_c(ui_stand_intakes, status.stand_intakes ? "on" : "off");
-  lv_set_text(ui_output_addr, status.output_addr ? lv_addr_text(status.output_addr) : String("-"));
-  lv_set_text(ui_station, status.jbc_addr ? (String(station_name(status.station_addr)) + " " + lv_addr_text(status.jbc_addr)) : String("-"));
+  if (status.output_addr) {
+    snprintf(app_text, sizeof(app_text), "0x%02X", (unsigned)status.output_addr);
+    lv_set_text_c(ui_output_addr, app_text);
+  } else lv_set_text_c(ui_output_addr, "-");
+  if (status.jbc_addr) {
+    snprintf(app_text, sizeof(app_text), "%s 0x%02X", station_name(status.station_addr), (unsigned)status.jbc_addr);
+    lv_set_text_c(ui_station, app_text);
+  } else lv_set_text_c(ui_station, "-");
   lv_set_text_c(ui_continuous, status.continuous ? "on" : "off");
-  lv_set_text(ui_jbc_detail, String("W") + String(status.jbc_work_mask, HEX) + " S" + String(status.jbc_stand_mask, HEX) + (status.continuous ? " C" : ""));
+  snprintf(app_text, sizeof(app_text), "W%x S%x%s", (unsigned)status.jbc_work_mask,
+           (unsigned)status.jbc_stand_mask, status.continuous ? " C" : "");
+  lv_set_text_c(ui_jbc_detail, app_text);
   lv_set_text_c(ui_fan_detail_output, home_fan_enabled ? "on" : "off");
-  lv_set_text(ui_fan_detail_power, String(home_fan_power / 10) + "%");
-  lv_set_text(ui_fan_detail_rpm, String(home_fan_rpm) + " rpm");
-  lv_set_text(ui_fan_detail_inputs, String(detail_alias_or(home_fan_io_cache.io_in1_alias, "IN1")) + ": " + ((home_fan_inputs & 1) ? "on" : "off") + "   " + String(detail_alias_or(home_fan_io_cache.io_in2_alias, "IN2")) + ": " + ((home_fan_inputs & 2) ? "on" : "off"));
-  lv_set_text(ui_fan_detail_outputs, String(detail_alias_or(home_fan_io_cache.io_out1_alias, "OUT1")) + ": " + ((home_fan_outputs & 0x01) ? "on" : "off") + "   " + String(detail_alias_or(home_fan_io_cache.io_out2_alias, "OUT2")) + ": " + ((home_fan_outputs & 0x02) ? "on" : "off"));
+  snprintf(app_text, sizeof(app_text), "%u%%", (unsigned)(home_fan_power / 10U));
+  lv_set_text_c(ui_fan_detail_power, app_text);
+  snprintf(app_text, sizeof(app_text), "%u rpm", (unsigned)home_fan_rpm);
+  lv_set_text_c(ui_fan_detail_rpm, app_text);
+  snprintf(app_text, sizeof(app_text), "%s: %s   %s: %s",
+           detail_alias_or(home_fan_io_cache.io_in1_alias, "IN1"), (home_fan_inputs & 1) ? "on" : "off",
+           detail_alias_or(home_fan_io_cache.io_in2_alias, "IN2"), (home_fan_inputs & 2) ? "on" : "off");
+  lv_set_text_c(ui_fan_detail_inputs, app_text);
+  snprintf(app_text, sizeof(app_text), "%s: %s   %s: %s",
+           detail_alias_or(home_fan_io_cache.io_out1_alias, "OUT1"), (home_fan_outputs & 0x01) ? "on" : "off",
+           detail_alias_or(home_fan_io_cache.io_out2_alias, "OUT2"), (home_fan_outputs & 0x02) ? "on" : "off");
+  lv_set_text_c(ui_fan_detail_outputs, app_text);
   lv_set_text(ui_fan_detail_fault, fault_name(home_fan_fault));
   lv_set_text_c(ui_weller_detail_link, home_weller_connected ? "online" : "offline");
-  lv_set_text(ui_weller_detail_speed, String(home_weller_speed) + "%");
-  lv_set_text(ui_weller_detail_rpm, String(weller_cache_ok ? home_weller_cache.rpm : status.fan_rpm) + " rpm");
+  snprintf(app_text, sizeof(app_text), "%u%%", (unsigned)home_weller_speed);
+  lv_set_text_c(ui_weller_detail_speed, app_text);
+  snprintf(app_text, sizeof(app_text), "%u rpm", (unsigned)(weller_cache_ok ? home_weller_cache.rpm : status.fan_rpm));
+  lv_set_text_c(ui_weller_detail_rpm, app_text);
   lv_set_text_c(ui_weller_detail_fan, (home_weller_outputs & 1) ? "on" : "off");
   lv_set_text_c(ui_weller_detail_light, home_weller_light ? "on" : "off");
   lv_set_text_c(ui_weller_detail_filter, filter_name(home_weller_filter_status));
-  lv_set_text(ui_weller_detail_runtime, fmt_dhm(home_weller_runtime_min) + "/" + fmt_dhm(home_weller_programmed_min));
-  lv_set_text(ui_weller_detail_sw, weller_sw_name(home_weller_version));
-  lv_set_text(ui_heap, fmt_bytes(ESP.getFreeHeap()));
-  lv_set_text(ui_uptime, fmt_uptime(monotonic_uptime_seconds()));
-  lv_set_text(ui_loop,
-    String("CPU ") + String(cpu_load_pct) + "%  " +
-    String(perf_fps_x10 / 10) + "." + String(perf_fps_x10 % 10) + " fps  " +
-    String("LV ") + String(perf_handler_max_x10_ms / 10) + "." +
-    String(perf_handler_max_x10_ms % 10) + "ms");
+  auto format_dhm_stack = [](char* out, size_t cap, uint32_t minutes) {
+    const uint16_t d = minutes / 1440U;
+    minutes %= 1440U;
+    const uint8_t h = minutes / 60U;
+    const uint8_t m = minutes % 60U;
+    if (d) {
+      if (m) snprintf(out, cap, "%ud %uh %um", (unsigned)d, (unsigned)h, (unsigned)m);
+      else snprintf(out, cap, "%ud %uh", (unsigned)d, (unsigned)h);
+    } else if (h) snprintf(out, cap, "%uh %um", (unsigned)h, (unsigned)m);
+    else snprintf(out, cap, "%um", (unsigned)m);
+  };
+  char runtime_now[24], runtime_programmed[24];
+  format_dhm_stack(runtime_now, sizeof(runtime_now), home_weller_runtime_min);
+  format_dhm_stack(runtime_programmed, sizeof(runtime_programmed), home_weller_programmed_min);
+  snprintf(app_text, sizeof(app_text), "%s/%s", runtime_now, runtime_programmed);
+  lv_set_text_c(ui_weller_detail_runtime, app_text);
+  if (home_weller_version) {
+    snprintf(app_text, sizeof(app_text), "V0.%u", (unsigned)home_weller_version);
+    lv_set_text_c(ui_weller_detail_sw, app_text);
+  } else lv_set_text_c(ui_weller_detail_sw, "-");
+  snprintf(app_text, sizeof(app_text), "%u KB", (unsigned)(ESP.getFreeHeap() / 1024UL));
+  lv_set_text_c(ui_heap, app_text);
+  {
+    uint32_t up = monotonic_uptime_seconds();
+    const uint32_t d = up / 86400UL;
+    up %= 86400UL;
+    const uint32_t h = up / 3600UL;
+    up %= 3600UL;
+    const uint32_t m = up / 60UL;
+    if (d) snprintf(app_text, sizeof(app_text), "%lud %luh", (unsigned long)d, (unsigned long)h);
+    else if (h) snprintf(app_text, sizeof(app_text), "%luh %lum", (unsigned long)h, (unsigned long)m);
+    else snprintf(app_text, sizeof(app_text), "%lum", (unsigned long)m);
+    lv_set_text_c(ui_uptime, app_text);
+  }
+  snprintf(app_text, sizeof(app_text), "CPU %u%%  %u.%u fps  LV %u.%ums",
+           (unsigned)cpu_load_pct,
+           (unsigned)(perf_fps_x10 / 10), (unsigned)(perf_fps_x10 % 10),
+           (unsigned)(perf_handler_max_x10_ms / 10), (unsigned)(perf_handler_max_x10_ms % 10));
+  lv_set_text_c(ui_loop, app_text);
 }
 
 static void log_internal_ram(const char* label) {
@@ -7498,9 +7880,9 @@ static void lvgl_init_ui() {
   lv_init();
   // Keep the hot LVGL pool in SRAM and add capacity without taking RAM from RGB/WiFi.
   // TLSF limits each added pool to LV_MEM_SIZE with our no-expansion config.
-  static void* widget_pools[2] = {};
+  static void* widget_pools[5] = {};
   constexpr size_t pool_bytes = LV_MEM_SIZE;
-  for (size_t i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < 5; ++i) {
     if (widget_pools[i]) continue;
     void* candidate = heap_caps_aligned_alloc(64, pool_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!candidate) {
@@ -7514,7 +7896,7 @@ static void lvgl_init_ui() {
     }
     widget_pools[i] = candidate;
   }
-  Serial.printf("LVGL widget pools: %u bytes internal + 2 x %u bytes PSRAM\n", (unsigned)LV_MEM_SIZE, (unsigned)pool_bytes);
+  Serial.printf("LVGL widget pools: %u bytes internal + 5 x %u bytes PSRAM\n", (unsigned)LV_MEM_SIZE, (unsigned)pool_bytes);
   lv_tick_set_cb(lvgl_millis_cb);
   const uint32_t screen_w = gfx->width();
   const uint32_t screen_h = gfx->height();
@@ -7709,7 +8091,7 @@ static void show_dashboard() {
   if (screensaver_active) {
     // Keep the screensaver as the active screen. Status frames during sleep
     // must only refresh the screensaver widgets, not the hidden Home UI.
-    screensaver_update_values();
+    screensaver_request_refresh();
     return;
   }
   const bool boot_active = ui_boot_screen && lv_screen_active() == ui_boot_screen;
@@ -7904,7 +8286,7 @@ static void apply_deferred_ui_updates() {
   if (flags & UI_DEFER_MODULE_DETAIL) lv_update_module_detail();
   if (flags & UI_DEFER_DISPLAY_SETTINGS) lv_update_display_settings_widgets(true);
   if (flags & UI_DEFER_APP_VALUES) {
-    if (screensaver_active) screensaver_update_values();
+    if (screensaver_active) screensaver_request_refresh();
     else lv_update_app_values();
   }
   if (flags & UI_DEFER_DASHBOARD) show_dashboard();
@@ -8783,6 +9165,7 @@ static void handle_display_status(const Frame& req) {
   const bool old_weller_present = status.weller_present;
   const bool old_fan_present = status.fan_present;
   const uint8_t old_modules_count = status.modules_count;
+  const bool old_developer_mode = status.developer_mode;
 
   status.valid = true;
   status.output_enabled = req.payload[0] != 0;
@@ -8909,6 +9292,13 @@ static void handle_display_status(const Frame& req) {
     if (selected_jbc_detail_changed) sync_selected_module_detail_to_home_cache();
   }
 
+  status.developer_mode = req.len >= 9 &&
+    req.payload[req.len - 9] == 0xA5 && req.payload[req.len - 7] == 0xA6 &&
+    req.payload[req.len - 8] != 0;
+  if (old_developer_mode != status.developer_mode) {
+    ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
+  }
+
   int16_t time_pos = -1;
   if (req.len >= 7 && req.payload[req.len - 7] == 0xA6) time_pos = req.len - 7;
   const int16_t ext_end = time_pos >= 0 ? time_pos : req.len;
@@ -9000,7 +9390,7 @@ static void handle_display_status(const Frame& req) {
     // While sleeping, incoming Master frames must never schedule a Dashboard
     // redraw. Only the screensaver labels are refreshed in the LVGL loop.
     if (screensaver_active) {
-      ui_defer_flags(UI_DEFER_APP_VALUES);
+      if (status_changed_for_draw()) screensaver_request_refresh();
       if (status.update_active && update_is_local_display_target(status.update_target)) {
         ui_defer_update_screen(status.update_target, status.update_progress, "Bus update", false, status.update_name);
       }
@@ -9010,26 +9400,32 @@ static void handle_display_status(const Frame& req) {
     // the clock/header can be updated before Home was ever loaded, and
     // lv_update_app_values() may set have_drawn_status while the boot screen is
     // still active.  Therefore do not rely on have_drawn_status alone here.
+    const bool draw_changed = status_changed_for_draw();
+
     if (!had_status) {
       // First real Master frame leaves the boot page and builds Home once.
       // parse_display_extension() can update caches before this point, so do
       // not use have_drawn_status as the first-frame detector here.
       ui_defer_flags(UI_DEFER_DASHBOARD);
+    } else if (display_view_mode == DISPLAY_VIEW_HOME && draw_changed) {
+      // Identical telemetry must not rebuild the large Home widget tree.
+      // Caches are still updated by the parser; only redundant LVGL work is skipped.
+      ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
     }
-    else if (display_view_mode == DISPLAY_VIEW_HOME) ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
     if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL && selected_jbc_detail_changed) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
-    if (display_view_mode == DISPLAY_VIEW_ALARMS) ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
+    if (display_view_mode == DISPLAY_VIEW_ALARMS && draw_changed) {
+      ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
+    }
     if (status.update_active && update_is_local_display_target(status.update_target)) {
       ui_defer_update_screen(status.update_target, status.update_progress, "Bus update", false, status.update_name);
     } else {
       if (status.update_active) refresh_bus_update_inline_ui_throttled(false);
-      if (status_changed_for_draw()) ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
     }
     return;
   }
 
   if (screensaver_active) {
-    screensaver_update_values();
+    if (status_changed_for_draw()) screensaver_request_refresh();
     return;
   }
   if (selected_jbc_detail_changed && display_view_mode == DISPLAY_VIEW_MODULE_DETAIL) lv_update_module_detail();
@@ -9895,12 +10291,158 @@ static void record_loop_time(uint32_t busy_us) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Lightweight diagnostic CLI. Same command set as the 320x480 display.
+// Fixed 96-byte line buffer: no heap churn and no changes to LVGL/RGB timing.
+// ---------------------------------------------------------------------------
+static char serial_cli_line[96] = {0};
+static uint8_t serial_cli_len = 0;
+static uint32_t serial_cli_last_char_ms = 0;
+
+static void serial_cli_prompt() {
+  debug_print("display800> ");
+}
+
+static void serial_cli_print_help() {
+  debug_println("");
+  debug_println("Open Fume Extractor Display 800x480 CLI");
+  debug_println("  help     - commands");
+  debug_println("  status   - firmware/link/performance summary");
+  debug_println("  heap     - internal RAM and PSRAM");
+  debug_println("  tasks    - FreeRTOS stack reserves");
+  debug_println("  perf     - current LVGL/RGB counters");
+  debug_println("  reboot   - restart this display");
+}
+
+static void serial_cli_print_heap() {
+  const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  debug_printf("HEAP internal free=%u B, largest=%u B, minimum=%u B | Arduino free=%u B\n",
+    (unsigned)heap_caps_get_free_size(caps),
+    (unsigned)heap_caps_get_largest_free_block(caps),
+    (unsigned)heap_caps_get_minimum_free_size(caps),
+    (unsigned)ESP.getFreeHeap());
+  debug_printf("PSRAM free=%u B / total=%u B\n",
+    (unsigned)ESP.getFreePsram(), (unsigned)ESP.getPsramSize());
+}
+
+static void serial_cli_print_tasks() {
+  const UBaseType_t loop_stack = uxTaskGetStackHighWaterMark(nullptr);
+  const UBaseType_t rs485_stack = rs485_task_handle ? uxTaskGetStackHighWaterMark(rs485_task_handle) : 0;
+  debug_printf("TASKS loop stack=%u words | rs485=%u words | wifi=%u words | rs485 task=%s\n",
+    (unsigned)loop_stack,
+    (unsigned)rs485_stack,
+    (unsigned)display_wifi.workerStackHighWaterMark(),
+    rs485_task_started ? "running" : "loop fallback");
+}
+
+static void serial_cli_print_status() {
+  const uint32_t buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
+  debug_printf("STATUS FW=%s addr=0x%02X uptime=%lus master=%s CPU=%u%% loopMax=%ums LVGL=B%u\n",
+    OFE_MODULE_FW_VERSION,
+    (unsigned)module_addr,
+    (unsigned long)(millis() / 1000UL),
+    master_link_online() ? "online" : "offline",
+    (unsigned)cpu_load_pct,
+    (unsigned)loop_max_ms,
+    (unsigned)buf_lines);
+  serial_cli_print_heap();
+}
+
+static void serial_cli_print_perf() {
+  const uint32_t buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
+  const float scan_hz = (float)DISPLAY_RGB_PCLK_HZ /
+    (float)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) * (DISPLAY_RGB_HEIGHT + 8 + 4 + 8));
+  debug_printf("PERF LVGL=%u.%u fps tiles=%u.%u/B%u MPix=%u.%02u handler=%u.%u/%u.%u ms copy=%u.%u/%u.%u ms scan=%.1f Hz\n",
+    perf_fps_x10 / 10, perf_fps_x10 % 10,
+    perf_tiles_x10 / 10, perf_tiles_x10 % 10, (unsigned)buf_lines,
+    perf_mpixels_x100 / 100, perf_mpixels_x100 % 100,
+    perf_handler_avg_x10_ms / 10, perf_handler_avg_x10_ms % 10,
+    perf_handler_max_x10_ms / 10, perf_handler_max_x10_ms % 10,
+    perf_flush_avg_x10_ms / 10, perf_flush_avg_x10_ms % 10,
+    perf_flush_max_x10_ms / 10, perf_flush_max_x10_ms % 10,
+    scan_hz);
+}
+
+static void serial_cli_execute(char* command) {
+  if (!command) return;
+  while (*command == ' ' || *command == '\t') ++command;
+  size_t n = strlen(command);
+  while (n && (command[n - 1] == ' ' || command[n - 1] == '\t')) command[--n] = 0;
+  for (char* p = command; *p; ++p) {
+    if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+  }
+  if (!*command) return;
+
+  if (!strcmp(command, "help") || !strcmp(command, "?")) serial_cli_print_help();
+  else if (!strcmp(command, "status")) serial_cli_print_status();
+  else if (!strcmp(command, "heap")) serial_cli_print_heap();
+  else if (!strcmp(command, "tasks") || !strcmp(command, "stack")) serial_cli_print_tasks();
+  else if (!strcmp(command, "perf")) serial_cli_print_perf();
+  else if (!strcmp(command, "reboot") || !strcmp(command, "restart")) {
+    debug_println("Restarting display...");
+    delay(40);
+    ESP.restart();
+  } else {
+    debug_printf("Unknown command: %s\n", command);
+    debug_println("Type 'help' for commands.");
+  }
+}
+
+static void serial_cli_feed(Stream& stream) {
+  while (stream.available()) {
+    const int raw = stream.read();
+    if (raw < 0) break;
+    const char c = (char)raw;
+    if (c == '\r' || c == '\n') {
+      if (serial_cli_len) {
+        serial_cli_line[serial_cli_len] = 0;
+        serial_cli_execute(serial_cli_line);
+        serial_cli_len = 0;
+        serial_cli_prompt();
+      }
+    } else if ((c == '\b' || c == 0x7F) && serial_cli_len) {
+      --serial_cli_len;
+    } else if (c >= 32 && c < 127 && serial_cli_len < sizeof(serial_cli_line) - 1) {
+      serial_cli_line[serial_cli_len++] = c;
+      serial_cli_last_char_ms = millis();
+    }
+  }
+}
+
+static void serial_cli_tick() {
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  serial_cli_feed(Serial);
+  serial_cli_feed(Serial0);
+#elif OFE_DISPLAY_MANUAL_HWCDC
+  serial_cli_feed(ofe_usb_cdc);
+  serial_cli_feed(Serial0);
+#else
+  serial_cli_feed(Serial);
+#endif
+
+  if (serial_cli_len && (uint32_t)(millis() - serial_cli_last_char_ms) >= 1200UL) {
+    serial_cli_line[serial_cli_len] = 0;
+    serial_cli_execute(serial_cli_line);
+    serial_cli_len = 0;
+    serial_cli_prompt();
+  }
+}
+
 void setup() {
   ofe_keep_module_fw_signature();
   ofe_status_leds.begin();
   bus.setActivityCallback([]() { ofe_status_leds.pulseBusActivity(); });
-  Serial.begin(115200);
+  serial_console_begin();
   delay(300);
+  debug_printf("APP SERIAL ONLINE: CDC_ON_BOOT=%d, core=%u, millis=%u\n",
+#if defined(ARDUINO_USB_CDC_ON_BOOT)
+    (int)ARDUINO_USB_CDC_ON_BOOT,
+#else
+    0,
+#endif
+    (unsigned)xPortGetCoreID(), (unsigned)millis());
+  debug_println("[CLI] ready. Type 'help' for commands.");
+  serial_cli_prompt();
   backlight_off();
 
   Serial.printf("Display mode: RGB 800x480 SYNCFIX-v16 JC8048W550 LIVE-HOME-MODULES, %u-line internal bounce, %s LVGL flush, PCLK %u Hz, H/V idle-low=1, lv_color_t %u B\n",
@@ -10056,6 +10598,7 @@ void loop() {
       }
       screensaver_tick();
     }
+    display_benchmark_tick();
     const uint32_t lvgl_now = millis();
     if ((uint32_t)(lvgl_now - lvgl_last_handler_ms) >= DISPLAY_LVGL_HANDLER_INTERVAL_MS) {
       lvgl_last_handler_ms = lvgl_now;
@@ -10064,6 +10607,7 @@ void loop() {
     }
   }
   record_loop_time((uint32_t)(micros() - loop_start_us));
+  serial_cli_tick();
   // Prevent the Arduino loop task from busy-spinning on one CPU core.
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);

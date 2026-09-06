@@ -5,7 +5,10 @@
 
 namespace ofe_display_memory {
 // Leave room for WiFi RX/TX, task stacks, scans and controls after startup.
-constexpr size_t RUNTIME_RESERVE = 64U * 1024U;
+// Reserve is checked after Canvas + radio startup but before the LVGL widget tree.
+// 136 KiB intentionally leaves room for the ~55 KiB that the remaining UI/WiFi
+// startup consumes, targeting roughly 80 KiB free internal heap at runtime.
+constexpr size_t RUNTIME_RESERVE = 136U * 1024U;
 constexpr size_t STARTUP_RESERVE = 112U * 1024U;
 inline bool fits(size_t free_bytes, size_t bytes, size_t reserve) {
   return free_bytes >= reserve && bytes <= free_bytes - reserve;
@@ -21,4 +24,3 @@ inline uint8_t* allocateDraw(size_t bytes, size_t reserve) {
   return p;
 }
 }
-

@@ -62,7 +62,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 76
+#define OFE_MODULE_FW_PATCH 77
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -80,7 +80,7 @@ static void ofe_keep_module_fw_signature() {
   (void)n;
 }
 
-static const uint8_t DEFAULT_MODULE_ADDR = 0x11; // shares JBC family range with FAE bridge (0x10..0x1F)
+static const uint8_t DEFAULT_MODULE_ADDR = 0x10; // every module family starts at its 0xX0 factory address
 static const uint32_t MODULE_CAPS =
   CAP_JBC_USB | CAP_FW_UPDATE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE | CAP_LOCAL_PROTOCOL;
 

@@ -75,6 +75,9 @@ public:
   bool wireless() {
     return last_transport_wireless_.load(std::memory_order_relaxed);
   }
+  UBaseType_t workerStackHighWaterMark() const {
+    return worker_ ? uxTaskGetStackHighWaterMark(worker_) : 0;
+  }
   uint64_t uid() const { return uid_; }
   bool handleConfig(const jbc_rs485::Frame& request) {
     using namespace ofe_wifi;
@@ -269,7 +272,9 @@ private:
     constexpr uint32_t caps=MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t free_before=heap_caps_get_free_size(caps), block_before=heap_caps_get_largest_free_block(caps);
     WiFi.persistent(false);
-    WiFi.useStaticBuffers(false);
+    // The display keeps WiFi enabled for its complete uptime. Static driver
+    // buffers cost a little fixed RAM but avoid long-running heap churn.
+    WiFi.useStaticBuffers(true);
     bool ok=WiFi.mode(WIFI_STA);
     if (ok) { WiFi.setAutoReconnect(true); WiFi.setSleep(false); }
     sampleMemory();
@@ -369,9 +374,13 @@ private:
         }
       }
       bool online=radio && WiFi.status()==WL_CONNECTED;
-      if (online && (!resolve_ms || (uint32_t)(millis()-resolve_ms)>30000)) {
+      bool address_missing=false;
+      portENTER_CRITICAL(&mux_); address_missing=resolved_ip_==0; portEXIT_CRITICAL(&mux_);
+      const bool resolve_due=!resolve_ms || (uint32_t)(millis()-resolve_ms)>30000;
+      if (online && resolve_due && (address_missing || !connected_)) {
         IPAddress ip;
-        // DNS can wait, but only this worker does so. LVGL and the OFE task do not.
+        // Resolve once while the authenticated session is healthy. Repeated
+        // mDNS/DNS work used to fragment the small display heap every 30 s.
         bool ok=ip.fromString(c.host) || WiFi.hostByName(c.host,ip)==1;
         if (ok) { portENTER_CRITICAL(&mux_); resolved_ip_=(uint32_t)ip; portEXIT_CRITICAL(&mux_); }
         resolve_ms=millis();

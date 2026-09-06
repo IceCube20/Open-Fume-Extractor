@@ -7,7 +7,7 @@ $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $targets = @(
   @{ Name='Master'; Path='OpenFumeExtractorMaster\src\MasterBuildConfig.h'; Prefix='MASTER_FW'; Target='MASTER'; Address='0x01'; Board='ESP32-S3, 16 MB Flash, 8 MB OPI-PSRAM' },
   @{ Name='JBC FAE Bus'; Path='Module\JbcBusModule\JbcBusModule.ino'; Prefix='OFE_MODULE_FW'; Target='JBC_BUS'; Address='0x10'; Board='ESP32 DevKit V1' },
-  @{ Name='JBC USB'; Path='Module\JbcUsbModule\JbcUsbModule.ino'; Prefix='OFE_MODULE_FW'; Target='JBC_USB'; Address='0x11'; Board='ESP32-S3, USB Host' },
+  @{ Name='JBC USB'; Path='Module\JbcUsbModule\JbcUsbModule.ino'; Prefix='OFE_MODULE_FW'; Target='JBC_USB'; Address='0x10'; Board='ESP32-S3, USB Host' },
   @{ Name='Fan/IO'; Path='Module\FanIoModule\FanIoModule.ino'; Prefix='OFE_MODULE_FW'; Target='FAN_IO'; Address='0x20'; Board='ESP32 DevKit V1' },
   @{ Name='Fan/IO Pro'; Path='Module\FanIoProModule\FanIoProModule.ino'; Prefix='OFE_MODULE_FW'; Target='FAN_IO_PRO'; Address='0x20'; Board='ESP32 DevKit V1' },
   @{ Name='Weller Zero Smog'; Path='Module\WellerZeroSmogModule\WellerZeroSmogModule.ino'; Prefix='OFE_MODULE_FW'; Target='WELLER_ZERO_SMOG'; Address='0x30'; Board='ESP32 DevKit V1' },

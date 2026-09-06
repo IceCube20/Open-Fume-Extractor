@@ -280,7 +280,7 @@ This keeps station configuration read-only apart from mandatory handshake/UUID b
 ## 12. First hardware bring-up
 
 1. Flash `JbcUsbModule` to an ESP32-S3 via a separate debug/programming path.
-2. Confirm the OFE master discovers it as **JBC USB**, normally at `0x11`.
+2. Confirm the OFE master discovers it as **JBC USB**. Its factory address is `0x10`; automatic addressing assigns the next free JBC-family address when required.
 3. Verify protected 5 V USB VBUS and native D-/D+ wiring.
 4. Connect a JBC station and confirm CP210x VID/PID appears in the web page.
 5. With an older P01 station, verify `NAK -> SYN -> ACK -> ACK -> address -> ACK`, then firmware/model discovery.

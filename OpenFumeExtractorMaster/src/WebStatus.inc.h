@@ -117,6 +117,10 @@ static void load_module_snapshot() {
     rec->addr = addr;
     rec->type = type;
     rec->uid = uid;
+    // Offline events are session diagnostics. Keep the learned module in NVS,
+    // but always start its event counter at zero after a Master restart.
+    rec->timeout_count = 0;
+    master_prefs.remove(module_snapshot_key(i, 'o').c_str());
     rec->online = false;
     rec->seen_in_scan = false;
   }
@@ -133,6 +137,7 @@ static void save_module_snapshot() {
     master_prefs.putUChar(module_snapshot_key(saved, 'a').c_str(), m.addr);
     master_prefs.putUChar(module_snapshot_key(saved, 't').c_str(), m.type);
     master_prefs.putString(module_snapshot_key(saved, 'u').c_str(), uid_hex(m.uid));
+    master_prefs.remove(module_snapshot_key(saved, 'o').c_str());
     ++saved;
   }
   const uint8_t old_count = master_prefs.getUChar(MasterSettingsStore::KEY_MODULE_SNAPSHOT_COUNT, 0);
@@ -141,6 +146,7 @@ static void save_module_snapshot() {
     master_prefs.remove(module_snapshot_key(i, 'a').c_str());
     master_prefs.remove(module_snapshot_key(i, 't').c_str());
     master_prefs.remove(module_snapshot_key(i, 'u').c_str());
+    master_prefs.remove(module_snapshot_key(i, 'o').c_str());
   }
   master_prefs.end();
 }

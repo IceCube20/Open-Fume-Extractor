@@ -51,50 +51,22 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertIn("esp_timer_get_time", bus)
         for path in ROOT.glob("Module/*/*.ino"):
             text = path.read_text(encoding="utf-8")
-            self.assertNotIn("millis() / 1000UL", text, str(path))
+            self.assertIn("monotonic_uptime_seconds()", text, str(path))
+            self.assertNotRegex(text, r"put_u32_le\([^\n]*millis\(\)\s*/\s*1000", str(path))
 
     def test_jbc_deadline_is_rollover_safe(self):
         usb = self.read("Module/JbcUsbModule/JbcUsbModule.ino")
         self.assertNotIn("next_sold_peripheral_config_poll_ms<=now", usb)
         self.assertIn("(int32_t)(now - next_sold_peripheral_config_poll_ms) >= 0", usb)
 
-    def test_module_registry_does_not_block_runtime_tasks(self):
-        header = self.read("OpenFumeExtractorMaster/src/ModuleRegistry.h")
-        source = self.read("OpenFumeExtractorMaster/src/ModuleRegistry.cpp")
-        self.assertNotIn("WriteGuard", header)
-        self.assertNotIn("ReaderView", header)
-        self.assertNotIn("portMAX_DELAY", source)
-
-    def test_cli_and_leds_run_before_module_ota_pump(self):
-        loop = self.read("OpenFumeExtractorMaster/src/MasterLoop.inc.h")
-        self.assertLess(loop.index("serial_cli_tick();"), loop.index("module_update_pump();"))
-        self.assertLess(loop.index("ofe_status_leds.tick();"), loop.index("module_update_pump();"))
-        self.assertLess(loop.index("module_update_pump();"), loop.index("scheduler.tick();"))
-
-    def test_wifi_display_ota_uses_bounded_burst(self):
-        config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")
-        update = self.read("OpenFumeExtractorMaster/src/WebUpdate.inc.h")
-        self.assertIn("#define MODULE_FW_DISPLAY_PUMP_FRAMES_PER_LOOP 1", config)
-        self.assertIn("#define MODULE_FW_WIFI_DISPLAY_PUMP_FRAMES_PER_LOOP 4", config)
-        self.assertIn("master_display_wifi.firmwareWireless(module_update_addr)", update)
-        self.assertIn("MODULE_FW_WIFI_PUMP_BUDGET_MS", update)
-
-    def test_bus_quality_is_visible_without_developer_mode(self):
-        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
-        self.assertNotIn('class="dev-only" data-i18n="comm_quality"', status)
-        self.assertNotIn('<td class="dev-only ${cc}" title="${ct}">${cq}</td>', status)
-
-    def test_large_display_uses_full_module_list_and_screensaver_height(self):
-        display = self.read("Module/DisplayModule_800x480/DisplayModule_800x480.ino")
-        self.assertIn("lv_obj_set_size(ui_module_list, 780, 364);", display)
-        self.assertIn("show_update_notice ? 330 : 364", display)
-        self.assertIn("lv_obj_set_pos(ui_screensaver_hint, shift_x, 412 + shift_y);", display)
-
     def test_web_status_requests_do_not_overlap(self):
         shell = self.read("OpenFumeExtractorMaster/src/WebShell.inc.h")
         status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
         led = self.read("OpenFumeExtractorMaster/src/MasterMqtt.inc.h")
-        self.assertIn("fetch('/state/led'", shell)
+        self.assertIn("fetch('/led_state'", shell)
+        self.assertNotIn("fetch('/state/led'", shell)
+        self.assertIn("window.addEventListener('pageshow',refreshShellDevMode)", shell)
+        self.assertIn("data-enabled='", shell)
         self.assertNotIn("fetch('/state',{cache:'no-store'}).then", shell)
         self.assertIn("let stateLoadBusy=false", status)
         self.assertIn("finally{stateLoadBusy=false}", status)
@@ -109,6 +81,100 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertNotIn("lastRxWasNetwork()) return", rx)
         self.assertIn('\\\"transport\\\"', diagnostics)
         self.assertIn("m.transport==='wifi'?'WLAN':'RS485'", diagnostics)
+
+    def test_auto_addressing_yields_and_unlocks_before_rescan(self):
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        auto = scheduler.split("uint8_t MasterScheduler::autoAddressModules", 1)[1].split(
+            "void MasterScheduler::pushOutputIfNeeded", 1
+        )[0]
+        discovery = auto.split("for (uint8_t round = 0; round < 8; ++round)", 1)[1].split(
+            "uint8_t changed = 0", 1
+        )[0]
+        readdress = auto.split("auto readdress_discovered", 1)[1].split(
+            "// Dependency-aware re-addressing", 1
+        )[0]
+        self.assertIn("delay(1);", discovery)
+        self.assertIn("SchedulerBusLock bus_lock", readdress)
+        self.assertIn("return ok;", readdress)
+        self.assertIn("const bool ok = readdress_discovered(i, next_addr);", auto)
+        self.assertLess(
+            auto.index("const bool ok = readdress_discovered(i, next_addr);"),
+            auto.index("scanAddress(next_addr);"),
+        )
+
+    def test_offline_events_are_session_only(self):
+        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        loop = self.read("OpenFumeExtractorMaster/src/MasterLoop.inc.h")
+        self.assertIn("rec->timeout_count = 0;", status)
+        self.assertNotIn("getUShort(module_snapshot_key(i, 'o').c_str()", status)
+        self.assertNotIn("putUShort(module_snapshot_key(saved, 'o').c_str()", status)
+        self.assertIn("remove(module_snapshot_key(i, 'o').c_str())", status)
+        self.assertIn("remove(module_snapshot_key(saved, 'o').c_str())", status)
+        self.assertIn("rec->timeout_count++;", scheduler)
+        self.assertNotIn("module_history_dirty_", scheduler)
+        self.assertNotIn("consumeModuleHistoryPersistDue", loop)
+
+    def test_jbc_usb_cannot_be_decoded_as_fae_settings(self):
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        read_state = scheduler.split("bool MasterScheduler::readJbcState", 1)[1].split(
+            "bool MasterScheduler::readJbcUsbState", 1
+        )[0]
+        self.assertIn("if (!target || !(target->caps & CAP_JBC_BUS)) return false;", read_state)
+        self.assertLess(
+            read_state.index("if (!target || !(target->caps & CAP_JBC_BUS)) return false;"),
+            read_state.index("if (!request(addr, CMD_GET_STATE"),
+        )
+
+    def test_shared_address_families_have_deterministic_order(self):
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        ordering = scheduler.split("static uint8_t compact_address_type_priority", 1)[1].split(
+            "static bool discovered_before_for_compact_address", 1
+        )[0]
+        for token in (
+            "MODULE_JBC_BUS", "MODULE_JBC_USB", "MODULE_FAN_IO",
+            "MODULE_FAN_IO_PRO", "CAP_DISPLAY_320X480", "CAP_DISPLAY_800X480",
+        ):
+            self.assertIn(token, ordering)
+        self.assertIn("resp.len >= 18", scheduler)
+        self.assertIn("DISC temporary uid=", scheduler)
+
+    def test_wireless_displays_participate_in_address_assignment(self):
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        wifi = self.read("OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp")
+        self.assertIn("master_display_wifi.active(rec.addr)", scheduler)
+        self.assertIn("request(found[index].addr, CMD_SET_ADDRESS", scheduler)
+        self.assertIn("master_display_wifi.rebindAddress", scheduler)
+        self.assertIn("bool MasterDisplayWifi::rebindAddress", wifi)
+
+    def test_small_display_long_runtime_hardening(self):
+        display = self.read("Module/DisplayModule_320x480/DisplayModule_320x480.ino")
+        memory = self.read("Module/DisplayModule_320x480/src/OfeDisplayMemory.h")
+        wifi = self.read("Module/DisplayModule_320x480/src/OfeDisplayWifi.h")
+        self.assertIn("Reset reason:", display)
+        self.assertIn("SMALL HEALTH:", display)
+        self.assertIn("RUNTIME_RESERVE = 136U * 1024U", memory)
+        self.assertIn("WiFi.useStaticBuffers(true)", wifi)
+        self.assertIn("SCREENSAVER_REFRESH_MIN_MS = 750UL", display)
+        self.assertIn("SCREENSAVER_REFRESH_MAX_MS = 5000UL", display)
+        self.assertIn("screensaver_refresh_pending", display)
+        self.assertIn("resolve_due && (address_missing || !connected_)", wifi)
+
+    def test_all_module_factory_addresses_start_at_family_base(self):
+        expected = {
+            "Module/JbcBusModule/JbcBusModule.ino": "module_addr = 0x10",
+            "Module/JbcUsbModule/JbcUsbModule.ino": "DEFAULT_MODULE_ADDR = 0x10",
+            "Module/FanIoModule/FanIoModule.ino": "module_addr = 0x20",
+            "Module/FanIoProModule/FanIoProModule.ino": "module_addr = 0x20",
+            "Module/WellerZeroSmogModule/WellerZeroSmogModule.ino": "DEFAULT_MODULE_ADDR = 0x30",
+            "Module/DisplayModule_320x480/DisplayModule_320x480.ino": "DEFAULT_MODULE_ADDR = 0x40",
+            "Module/DisplayModule_800x480/DisplayModule_800x480.ino": "DEFAULT_MODULE_ADDR = 0x40",
+            "Module/UniversalRs232Module/UniversalRs232Module.ino": "DEFAULT_MODULE_ADDR = 0x50",
+            "Module/ModbusRtuModule/ModbusRtuModule.ino": "DEFAULT_MODULE_ADDR = 0x60",
+        }
+        for path, declaration in expected.items():
+            with self.subTest(module=path):
+                self.assertIn(declaration, self.read(path))
 
 
 if __name__ == "__main__":

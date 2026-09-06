@@ -19,9 +19,20 @@ class DisplayHybridIntegration(unittest.TestCase):
             self.assertEqual(expected, read(display / "src/OfeDisplayTunnel.h"))
 
     def test_display_implementation_copies(self):
-        for file in ("OfeDisplayWifi.h", "OfeDisplayWifiUi.inc.h", "OfeDisplayMemory.h", "OfeSerialPortFont.h"):
+        # UI and icon sources stay identical. Memory/WiFi allocation policy is
+        # intentionally panel-specific: the QSPI display favors its internal
+        # LVGL tile while the RGB display protects scanout DMA headroom.
+        for file in ("OfeDisplayWifiUi.inc.h", "OfeSerialPortFont.h"):
             self.assertEqual(read(DISPLAYS[0] / "src" / file),
                              read(DISPLAYS[1] / "src" / file))
+
+    def test_each_display_has_explicit_memory_and_wifi_policy(self):
+        for display in DISPLAYS:
+            memory = read(display / "src/OfeDisplayMemory.h")
+            wifi = read(display / "src/OfeDisplayWifi.h")
+            self.assertIn("RUNTIME_RESERVE", memory)
+            self.assertIn("STARTUP_RESERVE", memory)
+            self.assertIn("WiFi.useStaticBuffers(", wifi)
 
     def test_bus_extension_copies(self):
         for name in ("Rs485PeripheralBus.h", "Rs485PeripheralBus.cpp"):
@@ -76,9 +87,9 @@ class DisplayHybridIntegration(unittest.TestCase):
                                 setup.index("reserve_lvgl_draw_buffer_early("))
                 self.assertIn("#define LVGL_DRAW_BUFFER_ALLOW_PSRAM_FALLBACK 0", sketch)
                 self.assertIn("constexpr size_t pool_bytes = LV_MEM_SIZE;", sketch)
-                self.assertIn("static void* widget_pools[2]", sketch)
+                self.assertIn("static void* widget_pools[5]", sketch)
                 self.assertIn("lv_mem_add_pool(candidate, pool_bytes)", sketch)
-                self.assertIn("(64 * 1024U)", read(display / "ofe_lv_conf.h"))
+                self.assertIn("(32 * 1024U)", read(display / "ofe_lv_conf.h"))
                 self.assertIn("LV_CONF_PATH", read(display / "build_opt.h"))
             else:
                 self.assertIn("#define LVGL_DRAW_BUFFER_ALLOW_PSRAM_FALLBACK 1", sketch)
@@ -178,19 +189,42 @@ class DisplayHybridIntegration(unittest.TestCase):
             sketch = read(display / (display.name + ".ino"))
             self.assertIn("ofe_serial_port::center_icon(link_lbl, display_wifi.wireless());", sketch)
             self.assertIn("ofe_serial_port::center_icon(ui_header_link_labels[i], wifi);", sketch)
+            self.assertIn("SCREENSAVER_REFRESH_MIN_MS = 750UL", sketch)
+            self.assertIn("SCREENSAVER_REFRESH_MAX_MS = 5000UL", sketch)
+            self.assertIn("screensaver_refresh_pending", sketch)
         large = read(DISPLAYS[1] / (DISPLAYS[1].name + ".ino"))
+        self.assertIn("lvgl_touch_indev = indev;", large)
+        self.assertIn("lv_indev_set_scroll_limit(indev, DISPLAY_SCROLL_LIMIT_PX);", large)
+        self.assertIn("lv_indev_set_scroll_throw(indev, DISPLAY_SCROLL_THROW_PCT);", large)
+        self.assertIn("lv_timer_set_period(refr_timer, DISPLAY_LVGL_REFRESH_PERIOD_MS);", large)
+        self.assertIn("lv_timer_set_period(indev_timer, DISPLAY_TOUCH_READ_PERIOD_MS);", large)
+        self.assertIn("lv_obj_add_flag(ui_module_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);", large)
+        self.assertIn("lv_indev_get_scroll_obj(lvgl_touch_indev)", large)
         self.assertIn('"selected_module COLD", false', large)
         self.assertIn('"detail_parse_scratch COLD", false', large)
-        self.assertIn("lvgl_touch_indev = indev;", large)
         flags = large.split("const uint32_t heavy_flags =", 1)[1].split(";", 1)[0]
         self.assertIn("UI_DEFER_MODULE_DETAIL", flags)
+
+    def test_small_axs_touch_uses_proven_native_lvgl_behavior(self):
+        small = read(DISPLAYS[0] / (DISPLAYS[0].name + ".ino"))
+        self.assertNotIn("DISPLAY_SCROLL_LIMIT_PX", small)
+        self.assertNotIn("DISPLAY_SCROLL_THROW_PCT", small)
+        self.assertNotIn("DISPLAY_TOUCH_JITTER_PX", small)
+        self.assertNotIn("DISPLAY_TOUCH_RELEASE_DEBOUNCE_SAMPLES", small)
+        self.assertNotIn("lv_timer_set_period(indev_timer", small)
+        self.assertNotIn("lv_timer_set_period(refr_timer", small)
+        self.assertIn("lv_obj_clear_flag(ui_module_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);", small)
+        self.assertRegex(small, r"#define DISPLAY_RS485_TASK_PRIORITY\s+2\b")
+        self.assertRegex(small, r"#define DISPLAY_RS485_ACTIVE_YIELD_MS\s+1\b")
+        loop = small.split("void loop() {", 1)[1]
+        self.assertRegex(loop, r"lvgl_timer_handler_profiled\(\);\s+lvgl_flush_canvas_if_dirty")
 
     def test_large_renderer_and_ide_board(self):
         config = read(DISPLAYS[1] / "ofe_lv_conf.h")
         self.assertRegex(config, r"#define LV_OBJ_STYLE_CACHE\s+1\b")
         self.assertRegex(config, r"#define LV_USE_STDLIB_STRING\s+LV_STDLIB_CLIB\b")
         self.assertRegex(config, r"#define LV_DRAW_SW_CIRCLE_CACHE_SIZE\s+16\b")
-        self.assertRegex(config, r"#define LV_MEM_SIZE\s+\(64 \* 1024U\)")
+        self.assertRegex(config, r"#define LV_MEM_SIZE\s+\(32 \* 1024U\)")
         board = dict(line.split("=", 1) for line in
                      read(ROOT / "tools/arduino_high_perf/boards.txt").splitlines()
                      if line and not line.startswith("#"))
@@ -204,6 +238,22 @@ class DisplayHybridIntegration(unittest.TestCase):
         }.items():
             self.assertEqual(board["ofe800." + key], value)
         self.assertIn("-DOFE_REQUIRE_RGB_HIGH_PERF_SDK=1", board["ofe800.build.defines"])
+
+    def test_developer_only_display_benchmark(self):
+        scheduler = read(MASTER / "src/MasterScheduler.cpp")
+        diagnostics = read(MASTER / "src/MasterDiagnostics.inc.h")
+        self.assertIn("master_developer_mode_enabled_for_modules()", diagnostics)
+        self.assertIn("payload_write_u8(0xA5);", scheduler)
+        self.assertIn("master_developer_mode_enabled_for_modules() ? 1 : 0", scheduler)
+        self.assertIn("payload_can_write(2U + 2U + 7U)", scheduler)
+        for display in DISPLAYS:
+            sketch = read(display / (display.name + ".ino"))
+            self.assertIn("bool developer_mode = false;", sketch)
+            self.assertIn("req.payload[req.len - 9] == 0xA5", sketch)
+            self.assertIn("lv_set_visible(ui_system_benchmark_button, status.developer_mode);", sketch)
+            self.assertIn("if (!status.developer_mode || !ui_benchmark_screen) return;", sketch)
+            self.assertIn("DISPLAY_BENCHMARK_DURATION_MS = 12000UL", sketch)
+            self.assertIn("display_benchmark_tick();", sketch)
 
     def test_large_scroll_profiler_is_local_and_allocation_free(self):
         large = DISPLAYS[1]

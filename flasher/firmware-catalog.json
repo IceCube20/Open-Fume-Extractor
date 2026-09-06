@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "1.9.29beta",
+    "version": "1.9.35beta",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.29beta-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.29beta.bin",
-    "mergedSha256": "1f10f4c32b036cc3e50f3ec60cdcc4d0c243b493ee0f7a8e174974a80b025353"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.35beta-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-1.9.35beta.bin",
+    "mergedSha256": "75a7887ccfe82af8bac8b25989651e1c59473bee5652fb3432bc18e97e195959"
   },
   {
     "id": "JBC-FAE-Bus",
@@ -26,14 +26,14 @@
   {
     "id": "JBC-USB",
     "label": "JBC USB",
-    "version": "1.1.76beta",
+    "version": "1.1.77beta",
     "signatureTarget": "JBC_USB",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/JBC-USB.json",
-    "merged": "firmware/JBC-USB/JBC-USB-1.1.76beta-merged.bin",
-    "ota": "firmware/JBC-USB/JBC-USB-1.1.76beta.bin",
-    "mergedSha256": "48467b93b7ed429003adecc5a4ff872d144ab4e2e9b82835cf0aea23df87551d"
+    "merged": "firmware/JBC-USB/JBC-USB-1.1.77beta-merged.bin",
+    "ota": "firmware/JBC-USB/JBC-USB-1.1.77beta.bin",
+    "mergedSha256": "0a59df3731ded6a0beb9ed9d2f5ad854db5e66c85aca5982b2180585ff33e866"
   },
   {
     "id": "Fan-IO",
@@ -74,26 +74,26 @@
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.3.59beta",
+    "version": "1.3.71beta",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.3.59beta-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.3.59beta.bin",
-    "mergedSha256": "43d682387e8f8f8e92e4b37a7eeb05d033065f4fc16593c778c5b477f4939ac3"
+    "merged": "firmware/Display-320x480/Display-320x480-1.3.71beta-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.3.71beta.bin",
+    "mergedSha256": "6f657e086911cfc2a7ba597229719e41285a1c8225e1a95f0ddda7683767096b"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.3.67beta",
+    "version": "1.3.77beta",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.3.67beta-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.3.67beta.bin",
-    "mergedSha256": "1ad5cf602b3a6e756e95dc4afb6f3f49e58c3d85f8265c68da0191a2567bfb32"
+    "merged": "firmware/Display-800x480/Display-800x480-1.3.77beta-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.3.77beta.bin",
+    "mergedSha256": "d4e1f7eb38c96106439136d6bb8900a645f45c2490c73a4f66d22918b84027e4"
   },
   {
     "id": "Universal-RS232",

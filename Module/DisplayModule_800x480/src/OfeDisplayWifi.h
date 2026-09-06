@@ -75,6 +75,9 @@ public:
   bool wireless() {
     return last_transport_wireless_.load(std::memory_order_relaxed);
   }
+  UBaseType_t workerStackHighWaterMark() const {
+    return worker_ ? uxTaskGetStackHighWaterMark(worker_) : 0;
+  }
   uint64_t uid() const { return uid_; }
   bool handleConfig(const jbc_rs485::Frame& request) {
     using namespace ofe_wifi;

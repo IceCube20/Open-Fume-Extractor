@@ -7,7 +7,7 @@ OpenFumeExtractor peripheral for connecting JBC stations through the CP210x-base
 - **UART behind CP210x:** 500000 baud, 8E1, no flow control
 - **JBC protocols:** Protocol 01 **and** Protocol 02 with automatic detection
 - **Operation:** read-only station monitoring in this first version
-- **OFE default address:** `0x11`
+- **OFE factory address:** `0x10` (the master assigns the next free JBC-family address automatically)
 
 The module reports the station's own model string, reported command protocol, detected frame protocol, software/hardware versions and the number/state of up to four ports to the OpenFumeExtractor master. Known JBC models use the port-count table recovered from JBC Connect; unknown/new model strings remain visible and are probed instead of being rejected.
 
