@@ -80,17 +80,7 @@ static String trace_cmd_name(uint8_t cmd) {
 }
 
 static const char* diagnostics_module_type_name(uint8_t type) {
-  switch (type) {
-    case MODULE_JBC_BUS: return "JBC FAE Bus";
-    case MODULE_JBC_USB: return "JBC USB";
-    case MODULE_FAN_IO: return "Fan/IO";
-    case MODULE_FAN_IO_PRO: return "Fan/IO Pro";
-    case MODULE_WELLER_ZERO_SMOG: return "Weller Zero Smog";
-    case MODULE_DISPLAY: return "Display";
-    case MODULE_UNIVERSAL_RS232: return "Universal RS232";
-    case MODULE_MODBUS_RTU: return "Modbus RTU";
-    default: return "Module";
-  }
+  return ofe_module_default_name(type);
 }
 
 static const char* diagnostics_device_bus_name(uint8_t type) {
@@ -323,6 +313,7 @@ static void web_handle_diagnostics_state() {
   json += F(",\"bad_seq\":"); json += st.bad_seq;
   json += F(",\"bad_cmd\":"); json += st.bad_cmd;
   json += F(",\"request_bad_seq_total\":"); json += scheduler.requestBadSeqCount();
+  json += F(",\"request_late_response_total\":"); json += scheduler.requestLateResponseCount();
   json += F(",\"request_bad_cmd_total\":"); json += scheduler.requestBadCmdCount();
   json += F(",\"request_total\":"); json += scheduler.requestCount();
   {
@@ -338,6 +329,9 @@ static void web_handle_diagnostics_state() {
   json += F(",\"io_full_polls\":"); json += scheduler.fullIoPollCount();
   json += F(",\"sample_ms\":"); json += millis();
   json += F(",\"ofe_baud\":250000");
+  json += F(",\"power_save_enabled\":"); json += scheduler.powerSaveEnabled() ? F("true") : F("false");
+  json += F(",\"power_save_active\":"); json += scheduler.powerSaveActive() ? F("true") : F("false");
+  json += F(",\"power_save_idle_min\":"); json += scheduler.powerSaveIdleMinutes();
   {
     char nbuf[24];
     snprintf(nbuf, sizeof(nbuf), "%llu", (unsigned long long)scheduler.ofeTxWireBytes());
@@ -398,6 +392,8 @@ static void web_handle_diagnostics_state() {
     json += F(",\"type_name\":\""); json += module_type_name_for(m); json += '"';
     json += F(",\"name\":\""); { const String dn = module_display_name(m); json += json_escape(dn.c_str()); } json += '"';
     json += F(",\"online\":"); json += m.online ? F("true") : F("false");
+    json += F(",\"eco_mode\":"); json += m.eco_mode ? F("true") : F("false");
+    json += F(",\"light_sleep\":"); json += m.light_sleep ? F("true") : F("false");
     json += F(",\"transport\":\"");
     json += (m.type == MODULE_DISPLAY && master_display_wifi.active(m.addr)) ? F("wifi") : F("rs485");
     json += '"';
@@ -459,8 +455,29 @@ static void web_handle_diagnostics_state() {
     json += F(",\"requests\":"); json += bd.requests;
     json += F(",\"responses\":"); json += bd.responses;
     json += F(",\"timeouts\":"); json += bd.timeouts;
+    json += F(",\"late_responses\":"); json += bd.late_responses;
     json += F(",\"bad_seq\":"); json += bd.bad_seq;
     json += F(",\"bad_cmd\":"); json += bd.bad_cmd;
+    json += F(",\"timeout_fast\":"); json += bd.timeout_fast;
+    json += F(",\"timeout_state\":"); json += bd.timeout_state;
+    json += F(",\"timeout_telemetry\":"); json += bd.timeout_telemetry;
+    json += F(",\"timeout_io\":"); json += bd.timeout_io;
+    json += F(",\"timeout_universal\":"); json += bd.timeout_universal;
+    json += F(",\"timeout_display_status\":"); json += bd.timeout_display_status;
+    json += F(",\"timeout_display_cache\":"); json += bd.timeout_display_cache;
+    json += F(",\"timeout_other\":"); json += bd.timeout_other;
+    json += F(",\"last_timeout_cmd\":"); json += bd.last_timeout_cmd;
+    json += F(",\"last_timeout_name\":\""); json += json_escape(trace_cmd_name(bd.last_timeout_cmd).c_str()); json += '"';
+    json += F(",\"last_timeout_age_ms\":");
+    json += (bd.last_timeout_ms ? (uint32_t)(millis() - bd.last_timeout_ms) : 0);
+    json += F(",\"latency_fast_max_ms\":"); json += bd.latency_fast_max_ms;
+    json += F(",\"latency_state_max_ms\":"); json += bd.latency_state_max_ms;
+    json += F(",\"latency_telemetry_max_ms\":"); json += bd.latency_telemetry_max_ms;
+    json += F(",\"latency_io_max_ms\":"); json += bd.latency_io_max_ms;
+    json += F(",\"latency_universal_max_ms\":"); json += bd.latency_universal_max_ms;
+    json += F(",\"latency_display_status_max_ms\":"); json += bd.latency_display_status_max_ms;
+    json += F(",\"latency_display_cache_max_ms\":"); json += bd.latency_display_cache_max_ms;
+    json += F(",\"latency_other_max_ms\":"); json += bd.latency_other_max_ms;
     json += F(",\"tx_frames\":"); json += bd.tx_frames;
     json += F(",\"rx_frames\":"); json += bd.rx_frames;
     {
@@ -609,14 +626,15 @@ static void web_handle_diagnostics() {
 
   html += F("<section class='panel'><div class='diag-panel-title diag-ofe-panel-title'><div><h2>OFE Bus</h2><p class='muted'>");
   html += web_text("Master ↔ Module · 250 kBaud · Live-Raten aus aufeinanderfolgenden Diagnose-Samples.", "Master ↔ modules · 250 kbaud · live rates from consecutive diagnostics samples.");
-  html += F("</p></div><div class='diag-master-led-pair' title='Master Status LEDs'><span id='diag_master_led_ofe' class='diag-led-word'>OFE</span><span id='diag_master_led_evt' class='diag-led-word'>EVT</span></div><span class='diag-badge'>OFE</span></div><div class='stat-grid diag-stat-grid'>");
+  html += F("</p></div><div class='diag-master-led-pair' title='Master Status LEDs'><span id='diag_master_led_ofe' class='diag-led-word'>OFE</span><span id='diag_master_eco_icon' class='diag-eco-sprout' hidden><svg viewBox='0 0 24 24' aria-hidden='true'><path d='M2 22v-2s5-2 10-2 10 2 10 2v2H2m9.3-12.9C10.1 5.2 4 6.1 4 6.1s.2 7.8 5.9 6.6C9.5 9.8 8 9 8 9c2.8 0 3 3.4 3 3.4V17h2v-4.2s0-3.9 3-4.9c0 0-2 3-2 5 7 .7 7-8.9 7-8.9s-8.9-1-9.7 5.1Z'/></svg></span><span id='diag_master_led_evt' class='diag-led-word'>EVT</span></div><span class='diag-badge'>OFE</span></div><div class='stat-grid diag-stat-grid'>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Zustand", "State"); html += F("</div><div id='diag_health' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Buslast", "Bus load"); html += F("</div><div id='diag_busload' class='v'>-</div></div>");
+  html += F("<div class='stat'><div class='k'>"); html += web_text("Energiesparmodus", "Power saving"); html += F("</div><div id='diag_power_save' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>TX / RX</div><div id='diag_rate' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>Frames/s</div><div id='diag_fps' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Trace-Latenz", "Trace latency"); html += F("</div><div id='diag_latency' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Transportfehler seit Boot", "Transport errors since boot"); html += F("</div><div id='diag_transport_errors' class='v'>-</div></div>");
-  html += F("<div class='stat'><div class='k'>"); html += web_text("Antwortfehler seit Boot", "Response errors since boot"); html += F("</div><div id='diag_bad' class='v'>-</div></div>");
+  html += F("<div class='stat'><div class='k'>"); html += web_text("Antworten seit Boot", "Responses since boot"); html += F("</div><div id='diag_bad' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Trace-Puffer", "Trace buffer"); html += F("</div><div id='diag_buffer' class='v'>-</div></div>");
   html += F("</div></section>");
 
@@ -773,6 +791,8 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-module-head{display:flex;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
 .diag-module-name{font-weight:800}.diag-module-type{font-size:12px;color:var(--muted);margin-top:2px}
 .diag-led-pair{display:flex;align-items:center;justify-content:center;gap:18px;min-height:32px;padding:5px 16px;border-bottom:1px solid #2b3139;background:#161a20}
+.diag-eco-sprout{width:18px;height:18px;flex:0 0 18px;margin-left:-10px;margin-right:-8px;color:#62dc8e;display:inline-flex;align-items:center;justify-content:center}.diag-eco-sprout[hidden]{display:none}.diag-eco-sprout svg{width:17px;height:17px;display:block;fill:currentColor}
+.diag-eco-banner{display:flex;align-items:center;gap:8px;padding:8px 12px;color:#82e6a5;background:rgba(38,126,70,.12);border-bottom:1px solid rgba(79,209,126,.24);font-size:12px;font-weight:800}.diag-eco-banner svg{width:17px;height:17px;fill:currentColor;flex:0 0 17px}
 .diag-led-word{display:inline-block;min-width:40px;text-align:center;font-size:12px;font-weight:900;letter-spacing:.14em;color:#59616b;opacity:.58;text-shadow:none;transition:none}
 .diag-led-word.is-live{opacity:1;color:#e8edf2;animation:none!important;transition:none}
 .diag-led-word.fx-breath{animation:diagLedBreath var(--led-duration,3200ms) linear infinite}.diag-led-word.fx-whitebreath{animation:diagLedWhiteBreath var(--led-duration,3200ms) linear infinite}.diag-led-word.fx-greenwhite{animation:diagLedGreenWhite var(--led-duration,3200ms) linear infinite}.diag-led-word.fx-bluewhite{animation:diagLedBlueWhite var(--led-duration,3200ms) linear infinite}.diag-led-word.fx-blink{animation:diagLedBlink var(--led-duration,1000ms) linear infinite}.diag-led-word.fx-double{animation:diagLedDouble var(--led-duration,900ms) linear infinite}
@@ -1508,6 +1528,7 @@ function csvCell(v){v=String(v==null?'':v);return /[";\n\r]/.test(v)?'"'+v.repla
 function fmtBytes(v){v=Number(v)||0;if(v>=1024*1024)return (v/1024/1024).toFixed(1)+' MB/s';if(v>=1024)return (v/1024).toFixed(1)+' KB/s';return v.toFixed(v<10?1:0)+' B/s';}
 function fmtFps(v){v=Number(v)||0;return v.toFixed(v<10?1:0);}
 function fmtTime(ms){ms=Number(ms)||0;return (ms/1000).toFixed(3)+' s';}
+function fmtAge(ms){ms=Number(ms)||0;if(ms<1000)return ms+' ms';let s=Math.round(ms/1000);if(s<60)return s+' s';let m=Math.round(s/60);if(m<60)return m+' min';let h=Math.round(m/60);return h+' h';}
 function diagSetRowCount(shown,total,labelDe,labelEn){
   let c=document.getElementById('diag_visible_count');
   if(!c)return;
@@ -3242,18 +3263,20 @@ function ofeLedTriangle(now,period){if(!period)return 1;let p=((now%period)+peri
 function ofeLedRgb(r,g,b){return 'rgb('+Math.round(r)+','+Math.round(g)+','+Math.round(b)+')'}
 function ofeLedDark(e,opacity){e.style.color='#59616b';e.style.opacity=String(opacity);e.style.textShadow='none'}
 function ofeLedGlow(e,c,level){let a=Math.max(0,Math.min(1,Number(level)));e.style.color=c;e.style.opacity=String(a);if(a<=.13){e.style.textShadow='0 0 1px '+c;return}let r1=(1+5*a).toFixed(1),r2=(3+11*a).toFixed(1),r3=(5+17*a).toFixed(1);e.style.textShadow='0 0 '+r1+'px '+c+',0 0 '+r2+'px '+c+',0 0 '+r3+'px '+c}
-function ofeLedRenderElement(e,now){let live=e.dataset.ledLive==='1',st=ofeLedEventStyle(e.dataset.ledEvent);if(!live||st.kind==='off'){ofeLedDark(e,.58);return}if(st.kind==='solid'){ofeLedGlow(e,st.c,1);return}if(st.kind==='breath'){let w=ofeLedTriangle(now,st.period),level=(24+w*231)/255;ofeLedGlow(e,st.c,level);return}if(st.kind==='whitebreath'){let w=ofeLedTriangle(now,st.period),level=(16+w*239)/255;ofeLedGlow(e,'#ffffff',level);return}if(st.kind==='greenwhite'){let m=ofeLedTriangle(now,st.period),c=ofeLedRgb(255*m,255,255*m);ofeLedGlow(e,c,1);return}if(st.kind==='bluewhite'){let m=ofeLedTriangle(now,st.period),c=ofeLedRgb(255*m,36+(219*m),255);ofeLedGlow(e,c,1);return}if(st.kind==='blink'){let on=(Math.floor(now/st.step)&1)!==0;if(on)ofeLedGlow(e,st.c,1);else ofeLedDark(e,.12);return}if(st.kind==='double'){let p=((now%st.period)+st.period)%st.period,on=p<90||(p>=180&&p<270);if(on)ofeLedGlow(e,st.c,1);else ofeLedDark(e,.12);return}ofeLedGlow(e,st.c,1)}
+function ofeLedRenderElement(e,now){let live=e.dataset.ledLive==='1',eco=e.dataset.ledEco==='1',ev=Number(e.dataset.ledEvent||0),ecoBus=eco&&(ev===1||ev===2),st=ecoBus?{kind:'purplewhite',period:3200,n:u('Energiesparmodus','Power save mode')}:ofeLedEventStyle(ev);if(!live||st.kind==='off'){ofeLedDark(e,.58);return}if(st.kind==='solid'){ofeLedGlow(e,st.c,1);return}if(st.kind==='breath'){let w=ofeLedTriangle(now,st.period),level=(24+w*231)/255;ofeLedGlow(e,st.c,level);return}if(st.kind==='whitebreath'){let w=ofeLedTriangle(now,st.period),level=(16+w*239)/255;ofeLedGlow(e,'#ffffff',level);return}if(st.kind==='purplewhite'){let m=ofeLedTriangle(now,st.period),c=ofeLedRgb(150+(105*m),255*m,255);ofeLedGlow(e,c,1);return}if(st.kind==='greenwhite'){let m=ofeLedTriangle(now,st.period),c=ofeLedRgb(255*m,255,255*m);ofeLedGlow(e,c,1);return}if(st.kind==='bluewhite'){let m=ofeLedTriangle(now,st.period),c=ofeLedRgb(255*m,36+(219*m),255);ofeLedGlow(e,c,1);return}if(st.kind==='blink'){let on=(Math.floor(now/st.step)&1)!==0;if(on)ofeLedGlow(e,st.c,1);else ofeLedDark(e,.12);return}if(st.kind==='double'){let p=((now%st.period)+st.period)%st.period,on=p<90||(p>=180&&p<270);if(on)ofeLedGlow(e,st.c,1);else ofeLedDark(e,.12);return}ofeLedGlow(e,st.c,1)}
 function ofeLedRenderFrame(){let now=ofeLedNow();document.querySelectorAll('[data-ofe-led="1"]').forEach(e=>ofeLedRenderElement(e,now));requestAnimationFrame(ofeLedRenderFrame)}
 function ofeLedEnsureRenderer(){if(ofeLedRafStarted)return;ofeLedRafStarted=true;requestAnimationFrame(ofeLedRenderFrame)}
 let diagLedSnapshot=null,diagLedBusy=false;
-function diagSetLedWord(id,label,ev,valid,enabled){let e=document.getElementById(id);if(!e)return;let st=ofeLedEventStyle(ev),live=!!valid&&!!enabled&&Number(ev)>0;e.textContent=label;e.dataset.ofeLed='1';e.dataset.ledEvent=String(Number(ev||0));e.dataset.ledLive=live?'1':'0';e.classList.remove('fx-breath','fx-whitebreath','fx-greenwhite','fx-bluewhite','fx-blink','fx-double');e.classList.toggle('is-live',live);e.title=valid?(label+' · '+st.n):(label+' · '+u('keine LED-Telemetrie','no LED telemetry'));ofeLedRenderElement(e,ofeLedNow())}
-function diagApplyLedSnapshot(){let d=diagLedSnapshot;if(!d)return;diagSetLedWord('diag_master_led_ofe','OFE',d.master_ofe,true,!!d.enabled);diagSetLedWord('diag_master_led_evt','EVT',d.master_evt,true,!!d.enabled);(d.modules||[]).forEach(m=>{diagSetLedWord('diag_led_ofe_'+m.addr,'OFE',m.ofe,!!m.valid&&!!m.online,!!d.enabled);diagSetLedWord('diag_led_evt_'+m.addr,'EVT',m.evt,!!m.valid&&!!m.online,!!d.enabled)})}
+function diagSetLedWord(id,label,ev,valid,enabled,eco=false){let e=document.getElementById(id);if(!e)return;let nev=Number(ev||0),ecoBus=!!eco&&(nev===1||nev===2),st=ecoBus?{n:u('Energiesparmodus','Power save mode')}:ofeLedEventStyle(nev),live=!!valid&&!!enabled&&nev>0;e.textContent=label;e.dataset.ofeLed='1';e.dataset.ledEvent=String(nev);e.dataset.ledEco=eco?'1':'0';e.dataset.ledLive=live?'1':'0';e.classList.remove('fx-breath','fx-whitebreath','fx-greenwhite','fx-bluewhite','fx-blink','fx-double');e.classList.toggle('is-live',live);e.title=valid?(label+' · '+st.n):(label+' · '+u('keine LED-Telemetrie','no LED telemetry'));ofeLedRenderElement(e,ofeLedNow())}
+function diagSetEcoIcon(id,active){let e=document.getElementById(id);if(!e)return;e.hidden=!active;e.title=u('Energiesparen','Power saving');e.setAttribute('aria-label',e.title)}
+function diagApplyLedSnapshot(){let d=diagLedSnapshot;if(!d)return;diagSetLedWord('diag_master_led_ofe','OFE',d.master_ofe,true,!!d.enabled,!!d.master_eco);diagSetEcoIcon('diag_master_eco_icon',!!d.master_eco);diagSetLedWord('diag_master_led_evt','EVT',d.master_evt,true,!!d.enabled,false);(d.modules||[]).forEach(m=>{diagSetLedWord('diag_led_ofe_'+m.addr,'OFE',m.ofe,!!m.valid&&!!m.online,!!d.enabled,!!m.eco);diagSetEcoIcon('diag_eco_icon_'+m.addr,!!m.eco);diagSetLedWord('diag_led_evt_'+m.addr,'EVT',m.evt,!!m.valid&&!!m.online,!!d.enabled,false)})}
 async function loadDiagLedState(){if(diagLedBusy)return;diagLedBusy=true;let t0=performance.now();try{let r=await fetch('/led_state',{cache:'no-store'});if(!r.ok)return;let d=await r.json(),t1=performance.now();diagLedSnapshot=d;ofeLedClockSync(d.uptime_ms,t0,t1);ofeLedEnsureRenderer();diagApplyLedSnapshot()}catch(e){}finally{diagLedBusy=false}}
 function diagSerialGlyph(){return `<svg class="module-head-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7,3H17V5H19V8H16V14H8V8H5V5H7V3M17,9H19V14H17V9M11,15H13V22H11V15M5,9H7V14H5V9Z" fill="currentColor"/></svg>`}
 function diagSwitchGlyph(){return `<svg class="module-head-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M1,11H3.17C3.58,9.83 4.69,9 6,9C6.65,9 7.25,9.21 7.74,9.56L14.44,4.87L15.58,6.5L8.89,11.2C8.96,11.45 9,11.72 9,12A3,3 0 0,1 6,15C4.69,15 3.58,14.17 3.17,13H1V11M23,11V13H20.83C20.42,14.17 19.31,15 18,15A3,3 0 0,1 15,12A3,3 0 0,1 18,9C19.31,9 20.42,9.83 20.83,11H23M6,11A1,1 0 0,0 5,12A1,1 0 0,0 6,13A1,1 0 0,0 7,12A1,1 0 0,0 6,11M18,11A1,1 0 0,0 17,12A1,1 0 0,0 18,13A1,1 0 0,0 19,12A1,1 0 0,0 18,11Z" fill="currentColor"/></svg>`}
 function diagFanGlyph(){return `<svg class="module-head-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.78,13.74 15.72,13.3 14.79,13.11C14.59,13.59 14.28,14 13.88,14.34C15.87,18.03 15.08,22 11.5,22C7,22 6.91,18.42 9.27,17.24C10.25,16.75 10.69,15.71 10.89,14.79C10.4,14.59 9.97,14.27 9.65,13.87C5.96,15.85 2,15.07 2,11.5C2,7 5.56,6.89 6.74,9.26C7.24,10.25 8.29,10.68 9.22,10.87C9.41,10.39 9.73,9.97 10.14,9.65C8.15,5.96 8.94,2 12.5,2Z" fill="currentColor"/></svg>`}
 function diagMonitorGlyph(){return `<svg class="module-head-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M21,16H3V4H21M21,2H3C1.89,2 1,2.89 1,4V16A2,2 0 0,0 3,18H10V20H8V22H16V20H14V18H21A2,2 0 0,0 23,16V4C23,2.89 22.1,2 21,2Z" fill="currentColor"/></svg>`}
 function diagUsbGlyph(){return `<svg class="module-head-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2C6.9 2 6 2.9 6 4V12H5V16L9 20V22H15V20L19 16V12H18V4C18 2.9 17.11 2 16 2M8 4H16V12H8M9 7V9H11V7M13 7V9H15V7Z" fill="currentColor"/></svg>`}
+function diagSproutGlyph(){return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 22v-2s5-2 10-2 10 2 10 2v2H2m9.3-12.9C10.1 5.2 4 6.1 4 6.1s.2 7.8 5.9 6.6C9.5 9.8 8 9 8 9c2.8 0 3 3.4 3 3.4V17h2v-4.2s0-3.9 3-4.9c0 0-2 3-2 5 7 .7 7-8.9 7-8.9s-8.9-1-9.7 5.1Z"/></svg>`}
 function diagModuleVisual(m){
   switch(Number(m.type)){
     case 1:return {cls:'jbc',icon:diagSerialGlyph(),sub:'JBC Bus'};
@@ -3280,7 +3303,7 @@ function diagRenderModules(d,sec){
       shell+='<div class="diag-module-card '+v.cls+'" id="diag_card_'+m.addr+'">';
       shell+='<div class="diag-module-head"><div class="diag-module-title">'+esc(m.name)+'</div><div class="diag-module-head-main"><div class="diag-module-identity"><span class="diag-module-icon">'+v.icon+'</span><div class="diag-module-copy"><div class="diag-module-type">'+esc(m.type_name||v.sub)+'</div><div class="diag-module-address">'+addrText(m.addr)+'</div></div></div>';
       shell+='<div class="diag-module-statuses"><span class="diag-mini-badge">'+(m.transport==='wifi'?'WLAN':'RS485')+'</span><span id="diag_online_'+m.addr+'" class="diag-mini-badge diag-online-pill '+online+'"><span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?'online':'offline')+'</span></div></div></div>';
-      shell+='<div class="diag-led-pair"><span id="diag_led_ofe_'+m.addr+'" class="diag-led-word">OFE</span><span id="diag_led_evt_'+m.addr+'" class="diag-led-word">EVT</span></div>';
+      shell+='<div class="diag-led-pair"><span id="diag_led_ofe_'+m.addr+'" class="diag-led-word">OFE</span><span id="diag_eco_icon_'+m.addr+'" class="diag-eco-sprout" hidden>'+diagSproutGlyph()+'</span><span id="diag_led_evt_'+m.addr+'" class="diag-led-word">EVT</span></div>';
       shell+='<div id="diag_dynamic_'+m.addr+'" class="diag-module-dynamic"></div></div>';
     });
     cards.innerHTML=shell||'<div class="muted">'+u('Keine Module','No modules')+'</div>';
@@ -3294,20 +3317,34 @@ function diagRenderModules(d,sec){
     let req=p&&sec>0?(Number(m.requests)-Number(p.requests))/sec:0;
     if(tx<0)tx=0;if(rx<0)rx=0;if(req<0)req=0;
     let share=totalRate>0?((tx+rx)*100/totalRate):0;
-    let timeouts=Number(m.timeouts||0),badSeq=Number(m.bad_seq||0),badCmd=Number(m.bad_cmd||0),online=m.online?'is-online':'is-offline';
+    let timeouts=Number(m.timeouts||0),late=Number(m.late_responses||0),badSeq=Number(m.bad_seq||0),badCmd=Number(m.bad_cmd||0),online=m.online?'is-online':'is-offline';
     let pill=document.getElementById('diag_online_'+m.addr);
     if(pill){pill.className='diag-mini-badge diag-online-pill '+online;pill.innerHTML='<span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?'online':'offline')}
     let body='';
+    if(m.eco_mode)body+='<div class="diag-eco-banner">'+diagSproutGlyph()+'<span>'+u(m.light_sleep?'Energiesparen · Schlafmodus':'Energiesparen','Power saving'+(m.light_sleep?' · sleeping':''))+'</span></div>';
     body+='<div class="diag-module-body">';
-    body+='<div class="diag-status-metric"><div><div class="k">'+u('Busanteil','Bus share')+'</div><div class="v diag-bus-share-value"><strong>'+share.toFixed(1)+'%</strong><span class="diag-share-track"><span class="diag-share-fill" style="width:'+Math.min(100,Math.max(0,share)).toFixed(1)+'%"></span></span></div></div>';
+    body+='<div class="diag-status-metric"><div><div class="k">'+u('OFE-Traffic-Anteil','OFE traffic share')+'</div><div class="v diag-bus-share-value"><strong>'+share.toFixed(1)+'%</strong><span class="diag-share-track"><span class="diag-share-fill" style="width:'+Math.min(100,Math.max(0,share)).toFixed(1)+'%"></span></span></div></div>';
     body+='<div><div class="k">Req/s</div><div class="v">'+req.toFixed(req<10?1:0)+'</div></div></div>';
     body+='<div class="diag-status-metric"><div><div class="k">TX / RX</div><div class="v">'+fmtBytes(tx)+'<br><span class="diag-rate-muted">'+fmtBytes(rx)+'</span></div></div>';
     body+='<div><div class="k">'+u('Latenz','Latency')+'</div><div class="v">'+m.latency_avg_ms+' ms<br><span class="diag-rate-muted">max '+m.latency_max_ms+' ms</span></div></div></div>';
+    let reqBoot=Number(m.requests||0),timeoutPct=reqBoot>0?(timeouts*100/reqBoot):0;
+    body+='<div class="diag-rate-muted" style="margin-top:7px">'+u('Requests seit Boot','Requests since boot')+': '+reqBoot+' · '+u('Timeout-Quote','Timeout rate')+': '+timeoutPct.toFixed(timeoutPct<1?2:1)+'%</div>';
     body+='<div class="diag-errors-line"><div class="k">'+u('Fehler seit Boot','Errors since boot')+'</div><div class="diag-metric-split">';
     body+='<span class="diag-metric-chip '+(timeouts?'err':'ok')+'" title="Timeout">T '+timeouts+'</span>';
+    body+='<span class="diag-metric-chip '+(late?'warn':'ok')+'" title="'+u('Verspätete Antwort','Late response')+'">L '+late+'</span>';
     body+='<span class="diag-metric-chip '+(badSeq?'warn':'ok')+'" title="Sequence">S '+badSeq+'</span>';
     body+='<span class="diag-metric-chip '+(badCmd?'warn':'ok')+'" title="Command">C '+badCmd+'</span>';
-    body+='</div></div></div>';
+    body+='</div></div>';
+    let tc=[];
+    function tcAdd(label,value){value=Number(value||0);if(value)tc.push(label+' '+value)}
+    tcAdd('Fast',m.timeout_fast);tcAdd('State',m.timeout_state);tcAdd('Tel',m.timeout_telemetry);tcAdd('I/O',m.timeout_io);tcAdd('Uni',m.timeout_universal);tcAdd('D-Stat',m.timeout_display_status);tcAdd('D-Cache',m.timeout_display_cache);tcAdd(u('Sonst','Other'),m.timeout_other);
+    body+='<div class="diag-rate-muted" style="margin-top:7px">'+u('Timeout-Aufteilung','Timeout breakdown')+': '+(tc.length?tc.join(' · '):'—');
+    if(timeouts&&m.last_timeout_name){body+=' · '+u('zuletzt','last')+' '+esc(m.last_timeout_name);if(Number(m.last_timeout_age_ms||0)>0)body+=' ('+u('vor','ago')+' '+fmtAge(m.last_timeout_age_ms)+')'}
+    body+='</div>';
+    let lc=[];
+    function lcAdd(label,value){value=Number(value||0);if(value)lc.push(label+' '+value+'ms')}
+    lcAdd('Fast',m.latency_fast_max_ms);lcAdd('State',m.latency_state_max_ms);lcAdd('Tel',m.latency_telemetry_max_ms);lcAdd('I/O',m.latency_io_max_ms);lcAdd('Uni',m.latency_universal_max_ms);lcAdd('D-Stat',m.latency_display_status_max_ms);lcAdd('D-Cache',m.latency_display_cache_max_ms);
+    body+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Erfolgs-Latenz max','Successful latency max')+': '+(lc.length?lc.join(' · '):'—')+'</div></div>';
     body+='<div class="diag-device-section"><div class="diag-device-head"><div class="diag-device-title">'+esc(m.device_bus)+'</div><span class="diag-mini-badge diag-online-pill '+online+'"><span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?u('bereit','ready'):u('offline','offline'))+'</span></div>';
     body+='<div class="diag-device-detail">'+esc(m.device_detail||'-')+'</div></div>';
     let dynamic=document.getElementById('diag_dynamic_'+m.addr);if(dynamic)dynamic.innerHTML=body;
@@ -3431,11 +3468,12 @@ async function loadDiag(force=false,epochOverride=null){
 
   document.getElementById('diag_health').innerHTML='<span class="diag-status '+(healthy?'ok':'warn')+'">'+(healthy?'OK':u('Live-Fehler','live errors'))+'</span>';
   document.getElementById('diag_busload').textContent=sec>0?'≈ '+busload.toFixed(busload<10?2:1)+' %':'-';
+  let ps=document.getElementById('diag_power_save');if(ps){let enabled=!!d.power_save_enabled,active=!!d.power_save_active,idle=Number(d.power_save_idle_min||0);ps.innerHTML=active?'<span class="diag-status ok">'+u('aktiv','active')+'</span>':(enabled?'<span class="diag-status warn">'+u('aktiviert','enabled')+'</span> <span class="diag-rate-muted">'+u('nach ','after ')+idle+' min</span>':'<span class="diag-status">'+u('aus','off')+'</span>')}
   document.getElementById('diag_rate').textContent=sec>0?fmtBytes(txRate)+' / '+fmtBytes(rxRate):'-';
   document.getElementById('diag_fps').textContent=sec>0?fmtFps(txFps)+' / '+fmtFps(rxFps):'-';
   document.getElementById('diag_latency').textContent=d.avg_latency_ms+' ms / max '+d.max_latency_ms+' ms';
   document.getElementById('diag_transport_errors').textContent='CRC '+d.ofe_crc_errors+' · LEN '+d.ofe_bad_length+' · ESC '+d.ofe_escape_errors;
-  document.getElementById('diag_bad').textContent='SEQ '+d.request_bad_seq_total+' · CMD '+d.request_bad_cmd_total;
+  document.getElementById('diag_bad').textContent='SEQ '+d.request_bad_seq_total+' · Late '+Number(d.request_late_response_total||0)+' · CMD '+d.request_bad_cmd_total;
   document.getElementById('diag_buffer').textContent=d.stored+' / dropped '+d.dropped+(d.psram?' / PSRAM':'');
 
   diagRenderModules(d,sec);
@@ -3452,7 +3490,7 @@ async function loadDiag(force=false,epochOverride=null){
   diagApplyFilter();
   prevDiag=d;
 }
-setInterval(loadDiag,1000);
+setInterval(loadDiag,500);
 setInterval(loadDiagEvents,250);
 setInterval(loadDiagLedState,200);
 diagView();

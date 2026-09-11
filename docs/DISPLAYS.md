@@ -1,6 +1,6 @@
 # Display Connection: RS485 and WiFi
 
-Both display variants can communicate with the master through the OFE RS485 bus
+All three display variants can communicate with the master through the OFE RS485 bus
 or through an authenticated WiFi pairing.
 
 ## Failover behavior
@@ -37,10 +37,16 @@ five-second completion state before returning to the previously open page.
 The small display uses an AXS15231B QSPI panel, a full canvas and software rotation.
 It uses the standard display firmware image in the release package.
 
+## Display ST7796 320x480
+
+This variant uses an ST7796 SPI panel with FT63x6 touch. It uses hardware rotation
+and transfers LVGL dirty rectangles directly to the panel. Select the dedicated
+`Display-ST7796-320x480` firmware; it is not interchangeable with the AXS15231B
+320x480 image.
+
 ## Display 800x480
 
 The Guition JC8048W550 uses a timing-sensitive parallel RGB565 panel. Always use
 the dedicated `Display-800x480` release files. The released firmware is built with
 the verified high-performance SDK configuration, 16 MHz PCLK, a 64-byte data-cache
 line, PSRAM XIP and the tested VSYNC/cache synchronization.
-

@@ -89,6 +89,7 @@ enum Command : uint8_t {
   CMD_GET_EVENTS = 0x11,
   CMD_ACK_EVENTS = 0x12,
   CMD_LED_SYNC = 0x13,
+  CMD_POWER_SAVE = 0x14,
   CMD_SET_ADDRESS = 0x20,
   CMD_SAVE_CONFIG = 0x21,
   CMD_FACTORY_RESET = 0x22,
@@ -104,6 +105,7 @@ enum Command : uint8_t {
   CMD_FILTER_CALIBRATION = 0x36,
   CMD_IO_LABEL = 0x37,
   CMD_JBC_USB_CONFIG = 0x38,
+  CMD_IO_CONFIG = 0x39,
   CMD_FW_BEGIN = 0x40,
   CMD_FW_CHUNK = 0x41,
   CMD_FW_END = 0x42,
@@ -137,6 +139,13 @@ enum JbcUsbConfigAction : uint8_t {
   JBC_USB_CONFIG_SELECTED_TEMP = 0x02,
   JBC_USB_CONFIG_SELECTED_FLOW = 0x03,
   JBC_USB_CONFIG_LEVELS = 0x04,
+};
+
+enum IoConfigAction : uint8_t {
+  IO_CONFIG_CHANNEL = 0x01,
+  IO_CONFIG_FAN = 0x02,
+  IO_CONFIG_FILTER = 0x03,
+  IO_CONFIG_RESET = 0x04,
 };
 
 
@@ -185,9 +194,33 @@ enum Caps : uint32_t {
   CAP_DISPLAY_800X480 = 1UL << 23,
   CAP_JBC_USB = 1UL << 24,
   CAP_DISPLAY_HYBRID = 1UL << 25,
+  CAP_POWER_SAVE = 1UL << 26,
+  CAP_DISPLAY_ST7796 = 1UL << 27,
 };
 
 static const uint32_t CAP_JBC_ACTIVITY = CAP_JBC_BUS | CAP_JBC_USB;
+
+// Canonical module names are part of the shared OFE protocol contract. Keep
+// aliases separate: an empty alias always falls back to this exact name in
+// modules, the Master UI, MQTT and both display variants.
+inline const char* ofe_module_default_name(uint8_t type, uint32_t caps = 0) {
+  switch (type) {
+    case MODULE_JBC_BUS: return "JBC FAE Bus";
+    case MODULE_JBC_USB: return "JBC USB";
+    case MODULE_FAN_IO: return "Fan/IO";
+    case MODULE_FAN_IO_PRO: return "Fan/IO Pro";
+    case MODULE_SENSOR_RESERVED: return "Sensor";
+    case MODULE_WELLER_ZERO_SMOG: return "Weller Zero Smog Bus";
+    case MODULE_DISPLAY:
+      if (caps & CAP_DISPLAY_ST7796) return "Display ST7796 320x480";
+      if (caps & CAP_DISPLAY_800X480) return "Display 800x480";
+      if (caps & CAP_DISPLAY_320X480) return "Display 320x480";
+      return "Display";
+    case MODULE_UNIVERSAL_RS232: return "Universal RS232 Bridge";
+    case MODULE_MODBUS_RTU: return "Modbus RTU Bridge";
+    default: return "Module";
+  }
+}
 
 enum FastPollFlags : uint8_t {
   FAST_FLAG_CONNECTED = 1U << 0,
@@ -260,6 +293,7 @@ public:
 
   void send(const Frame& frame);
   void sendPhysical(const Frame& frame);
+  void sendWakePreamble(uint8_t bytes = 16);
   bool lastTxWasNetwork() const { return tx_network_; }
   bool lastRxWasNetwork() const { return rx_network_; }
   using SendRoute = bool (*)(void*, const Frame&);

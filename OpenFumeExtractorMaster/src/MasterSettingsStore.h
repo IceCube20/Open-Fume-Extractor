@@ -32,6 +32,8 @@ constexpr const char* KEY_MQTT_DISC = "mqtt_disc";
 constexpr const char* KEY_MQTT_CA = "mqtt_ca";
 constexpr const char* KEY_LED_ENABLED = "led_en";
 constexpr const char* KEY_LED_BRIGHTNESS = "led_pct";
+constexpr const char* KEY_POWER_SAVE_ENABLED = "eco_en";
+constexpr const char* KEY_POWER_SAVE_IDLE_MIN = "eco_idle";
 
 constexpr const char* KEY_LANG = "lang";
 constexpr const char* KEY_DEV_MODE = "dev_mode";

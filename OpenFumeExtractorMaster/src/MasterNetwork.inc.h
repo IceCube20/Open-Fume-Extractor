@@ -31,6 +31,23 @@ static bool save_status_led_config(bool enabled, uint8_t brightness_pct) {
   return ok;
 }
 
+static void apply_module_power_save_config() {
+  module_power_save_idle_min = constrain(module_power_save_idle_min, (uint16_t)1, (uint16_t)1440);
+  master_cmd_set_power_save_config(module_power_save_enabled, module_power_save_idle_min);
+}
+
+static bool save_module_power_save_config(bool enabled, uint16_t idle_minutes) {
+  Preferences prefs;
+  if (!prefs.begin(MasterSettingsStore::NS_NET, false)) return false;
+  module_power_save_enabled = enabled;
+  module_power_save_idle_min = constrain(idle_minutes, (uint16_t)1, (uint16_t)1440);
+  bool ok = prefs.putBool(MasterSettingsStore::KEY_POWER_SAVE_ENABLED, module_power_save_enabled);
+  ok = prefs.putUShort(MasterSettingsStore::KEY_POWER_SAVE_IDLE_MIN, module_power_save_idle_min) && ok;
+  prefs.end();
+  if (ok) apply_module_power_save_config();
+  return ok;
+}
+
 static void netcfg_load() {
   MqttConfigGuard guard;
   if (!guard.locked() || !net_prefs.begin(MasterSettingsStore::NS_NET, false)) {
@@ -88,6 +105,9 @@ static void netcfg_load() {
   status_led_enabled = net_prefs.getBool(MasterSettingsStore::KEY_LED_ENABLED, true);
   status_led_brightness_pct = (uint8_t)net_prefs.getUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, 20);
   status_led_brightness_pct = constrain(status_led_brightness_pct, (uint8_t)10, (uint8_t)100);
+  module_power_save_enabled = net_prefs.getBool(MasterSettingsStore::KEY_POWER_SAVE_ENABLED, false);
+  module_power_save_idle_min = net_prefs.getUShort(MasterSettingsStore::KEY_POWER_SAVE_IDLE_MIN, 30);
+  module_power_save_idle_min = constrain(module_power_save_idle_min, (uint16_t)1, (uint16_t)1440);
   mqtt_ca_cert = net_prefs.getString(MasterSettingsStore::KEY_MQTT_CA, "");
   mqtt_ca_cert.replace("\r\n", "\n");
   mqtt_ca_cert.trim();
@@ -100,6 +120,7 @@ static void netcfg_load() {
     Serial.println(master_bootstrap_password);
   }
   apply_status_led_config();
+  apply_module_power_save_config();
 }
 
 static bool netcfg_save(const String& ssid, const String& pass, const String& hostname,
@@ -245,6 +266,8 @@ static void netcfg_reset() {
   mqtt_port = 1883;
   status_led_enabled = true;
   status_led_brightness_pct = 20;
+  module_power_save_enabled = false;
+  module_power_save_idle_min = 30;
   // Do not submit an RS485 command while the reset is waiting to reboot.
   ofe_status_leds.setBrightness(status_led_raw_brightness());
   build_master_hostname();

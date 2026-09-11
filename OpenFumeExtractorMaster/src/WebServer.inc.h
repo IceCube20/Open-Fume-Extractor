@@ -90,8 +90,9 @@ static void web_begin() {
   web.on("/favicon.png", HTTP_GET, web_handle_logo);
   web.on("/favicon.ico", HTTP_GET, web_handle_logo);
   web.on("/logo.png", HTTP_GET, web_handle_logo);
-  web.on("/", HTTP_GET, [](){ if (captive_active) web_redirect_config(); else if (web_require_auth()) web_handle_root(); });
+  web.on("/", HTTP_GET, [](){ if (captive_active) web_redirect_config(); else if (web_require_auth(true)) web_handle_root(); });
   web.on("/state", HTTP_GET, [](){ if (web_require_auth()) web_handle_state(); });
+  web.on("/descriptors", HTTP_GET, [](){ if (web_require_auth()) web_handle_descriptors(); });
   web.on("/led_state", HTTP_GET, [](){ if (web_require_auth()) web_handle_led_state(); });
   web.on("/developer/mode", HTTP_POST, [](){ if (web_require_auth()) web_handle_developer_mode(); });
   web.on("/scan", HTTP_POST, [](){ if (web_require_auth()) web_handle_scan(); });
@@ -113,6 +114,7 @@ static void web_begin() {
   web.on("/universal/profile", HTTP_POST, [](){ if (web_require_auth()) web_handle_universal_profile(); });
   web.on("/universal/profile/read", HTTP_GET, [](){ if (web_require_auth()) web_handle_universal_profile_read(); });
   web.on("/universal/entity", HTTP_POST, [](){ if (web_require_auth()) web_handle_universal_entity(); });
+  web.on("/module/io_config", HTTP_POST, [](){ if (web_require_auth()) web_handle_io_config(); });
   web.on("/output/select", HTTP_POST, [](){ if (web_require_auth()) web_handle_output_select(); });
   web.on("/routing/main", HTTP_POST, [](){ if (web_require_auth()) web_handle_main_input_select(); });
   web.on("/routing/set", HTTP_POST, [](){ if (web_require_auth()) web_handle_routing_set(); });
@@ -150,7 +152,9 @@ static void web_begin() {
   web.on("/config/export", HTTP_GET, [](){ if (web_require_auth()) web_handle_config_export(); });
   web.on("/config/import", HTTP_POST, [](){ if (web_require_auth()) web_handle_config_import(); });
   web.on("/config/leds", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_leds(); });
+  web.on("/config/power-save", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_power_save(); });
   web.on("/config/mqtt", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_mqtt(); });
+  web.on("/config/web-login", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_web_login(); });
   web.on("/config/save", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_save(); });
   web.on("/config/password", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_password(); });
   web.on("/generate_204", HTTP_GET, web_redirect_config);

@@ -1,18 +1,18 @@
 {
-  "name": "Open Fume Extractor - Modbus RTU",
-  "version": "1.0.52alpha",
-  "new_install_prompt_erase": true,
-  "new_install_improv_wait_time": 0,
-  "builds": [
-    {
-      "chipFamily": "ESP32",
-      "improv": false,
-      "parts": [
-        {
-          "path": "../../firmware/Modbus-RTU/Modbus-RTU-1.0.52alpha-merged.bin",
-          "offset": 0
-        }
-      ]
-    }
-  ]
+    "name":  "Open Fume Extractor - Modbus RTU",
+    "version":  "1.0.56alpha",
+    "new_install_prompt_erase":  true,
+    "new_install_improv_wait_time":  0,
+    "builds":  [
+                   {
+                       "chipFamily":  "ESP32",
+                       "improv":  false,
+                       "parts":  [
+                                     {
+                                         "path":  "../../firmware/Modbus-RTU/Modbus-RTU-1.0.56alpha-merged.bin",
+                                         "offset":  0
+                                     }
+                                 ]
+                   }
+               ]
 }

@@ -168,6 +168,8 @@ static String build_config_backup_json() {
   json += "    "; json_add_string_field(json, "language", String(web_lang)); json += ",\n";
   json += "    "; json_add_bool_field(json, "status_led_enabled", status_led_enabled); json += ",\n";
   json += "    "; json_add_u32_field(json, "status_led_brightness", status_led_brightness_pct); json += ",\n";
+  json += "    "; json_add_bool_field(json, "module_power_save_enabled", module_power_save_enabled); json += ",\n";
+  json += "    "; json_add_u32_field(json, "module_power_save_idle_min", module_power_save_idle_min); json += ",\n";
   json += "    "; json_add_u32_field(json, "suction", cs.suction_level); json += ",\n";
   json += "    "; json_add_u32_field(json, "select_flow", cs.select_flow); json += ",\n";
   json += "    "; json_add_u32_field(json, "delay_work", cs.delay_work_sec); json += ",\n";
@@ -243,6 +245,12 @@ static bool apply_config_backup_json(const String& backup, String& error) {
     return false;
   }
   if (master.length()) {
+    if (!save_module_power_save_config(
+          json_get_bool_field(master, "module_power_save_enabled", module_power_save_enabled),
+          (uint16_t)json_get_u32_field(master, "module_power_save_idle_min", module_power_save_idle_min))) {
+      error = "failed to write module power-save settings";
+      return false;
+    }
     String lang = json_get_string_field(master, "language", String(web_lang)); lang = (lang == "en") ? "en" : "de"; lang.toCharArray(web_lang, sizeof(web_lang));
     apply_control_settings((uint8_t)json_get_u32_field(master, "suction", scheduler.controlSettings().suction_level),
       (uint16_t)json_get_u32_field(master, "select_flow", scheduler.controlSettings().select_flow),
@@ -369,7 +377,7 @@ static void web_handle_initial_network_setup() {
   if (n <= 0 && !strlen(wifi_ssid)) {
     html += F("<option value=''>"); html += web_text("Keine Netzwerke gefunden - SSID manuell eingeben", "No networks found - enter SSID manually"); html += F("</option>");
   }
-  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn secondary' href='/config'>");
+  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn' href='/config'>");
   html += web_text("Netzwerke neu scannen", "Scan networks");
   html += F("</a></div><label>");
   html += web_text("SSID manuell eingeben", "Enter SSID manually");
@@ -494,6 +502,11 @@ static void web_handle_initial_network_save() {
 }
 
 static void web_handle_config() {
+  // Derive the warning from the actual credential as a safety net.  A stale
+  // runtime flag must never hide the initial/default-password warning.
+  if (strcmp(web_auth_password, MASTER_DEFAULT_PASSWORD) == 0) {
+    web_password_change_required = true;
+  }
   if (captive_active && !web_password_change_required) {
     web_handle_initial_network_setup();
     return;
@@ -573,13 +586,19 @@ static void web_handle_config() {
   if (n <= 0 && !strlen(wifi_ssid)) {
     html += F("<option value=''>"); html += web_text("Keine Netzwerke gefunden - SSID manuell eingeben", "No networks found - enter SSID manually"); html += F("</option>");
   }
-  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn secondary' href='/config'>");
+  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn' href='/config'>");
   html += web_text("Netzwerke neu scannen", "Scan networks");
   html += F("</a></div><label>");
   html += web_text("SSID manuell eingeben", "Enter SSID manually");
   html += F("</label><input name='ssid_manual' maxlength='32' placeholder='SSID'><label>");
   html += web_text("WLAN-Passwort", "WiFi password");
-  html += F("</label><input name='pass' maxlength='64' type='password' value='********' autocomplete='current-password'><label>Hostname</label><input name='hostname' maxlength='31' value='");
+  html += F("</label><input name='pass' maxlength='64' type='password' value='");
+  if (wifi_password[0]) html += F("********");
+  html += F("' autocomplete='current-password' placeholder='");
+  html += web_text("Leer lassen, um das gespeicherte Passwort zu behalten", "Leave empty to keep the saved password");
+  html += F("'><div class='muted' style='font-size:12px;margin-top:5px'>");
+  html += wifi_password[0] ? web_text("Passwort ist gesetzt", "Password is set") : web_text("Kein Passwort gespeichert", "No password saved");
+  html += F("</div><label>Hostname</label><input name='hostname' maxlength='31' value='");
   html += html_escape(String(master_hostname));
   html += F("' placeholder='open-fume-extractor'><label>");
   html += web_text("IP-Konfiguration", "IP configuration");
@@ -601,9 +620,15 @@ static void web_handle_config() {
   html += F("</button></div><hr style='border:0;border-top:1px solid var(--line);margin:18px 0'><h2>Web Login</h2><p class='muted'>");
   html += web_text("Benutzer und Passwort für Web-UI, API und OTA. Falls vergessen: seriell 'webauth reset' senden.", "Username and password for web UI, API and OTA. If forgotten, send 'webauth reset' over Serial.");
   html += F("</p><div class='grid'><div><label>"); html += web_text("Benutzer", "Username"); html += F("</label><input name='web_user' maxlength='32' value='"); html += html_escape(String(web_auth_user));
-  html += F("' placeholder='admin'></div><div><label>"); html += web_text("Neues Passwort", "New password"); html += F("</label><input name='web_pass' maxlength='64' type='password' placeholder='");
+  html += F("' placeholder='admin'></div><div><label>"); html += web_text("Passwort", "Password"); html += F("</label><input name='web_pass' maxlength='64' type='password' value='");
+  if (web_auth_password[0]) html += F("********");
+  html += F("' autocomplete='current-password' placeholder='");
   html += web_text("Leer lassen, um das aktuelle Passwort zu behalten", "Leave empty to keep the current password");
-  html += F("'></div></div><hr style='border:0;border-top:1px solid var(--line);margin:18px 0'><h2>MQTT</h2><p class='muted'>");
+  html += F("'><div class='muted' style='font-size:12px;margin-top:5px'>");
+  html += web_auth_password[0] ? web_text("Passwort ist gesetzt", "Password is set") : web_text("Kein Passwort gespeichert", "No password saved");
+  html += F("</div></div></div><div class='actions' style='margin-top:12px'><button type='button' onclick='saveWebLogin()'>");
+  html += web_text("Web Login übernehmen", "Apply web login");
+  html += F("</button><span id='web_login_msg' class='muted'></span></div><hr style='border:0;border-top:1px solid var(--line);margin:18px 0'><h2>MQTT</h2><p class='muted'>");
   html += web_text("MQTT-Basis für Home Assistant oder eigene Automationen. TLS nutzt Port 8883, ohne TLS normalerweise 1883.", "MQTT foundation for Home Assistant or custom automations. TLS usually uses port 8883, plain MQTT usually 1883.");
   html += F("</p><input type='hidden' id='mqtt_enabled_value' name='mqtt_enabled_value' value='0'><input type='hidden' id='mqtt_tls_value' name='mqtt_tls_value' value='0'><input type='hidden' id='mqtt_ha_value' name='mqtt_ha_value' value='0'><div class='grid'><div><label><input type='checkbox' id='mqtt_enabled' name='mqtt_enabled' value='1' onchange='syncMqttChecks()' style='width:auto;min-height:0;margin-right:8px'");
   if (mqtt_enabled) html += F(" checked");
@@ -612,7 +637,13 @@ static void web_handle_config() {
   html += F(">TLS</label></div></div><div class='grid'><div><label>Broker Host</label><input name='mqtt_host' maxlength='64' value='"); html += html_escape(String(mqtt_host));
   html += F("' placeholder='homeassistant.local'></div><div><label>Port</label><input id='mqtt_port' name='mqtt_port' type='number' min='1' max='65535' value='"); html += mqtt_port;
   html += F("'></div><div><label>Benutzer</label><input name='mqtt_user' maxlength='64' value='"); html += html_escape(String(mqtt_user));
-  html += F("'></div><div><label>Passwort</label><input name='mqtt_pass' maxlength='64' type='password' value='********'></div><div><label>Base Topic</label><input name='mqtt_topic' maxlength='64' value='"); html += html_escape(String(mqtt_base_topic));
+  html += F("'></div><div><label>Passwort</label><input name='mqtt_pass' maxlength='64' type='password' value='");
+  if (mqtt_password[0]) html += F("********");
+  html += F("' autocomplete='current-password' placeholder='");
+  html += web_text("Leer lassen, um das gespeicherte Passwort zu behalten", "Leave empty to keep the saved password");
+  html += F("'><div class='muted' style='font-size:12px;margin-top:5px'>");
+  html += mqtt_password[0] ? web_text("Passwort ist gesetzt", "Password is set") : web_text("Kein Passwort gespeichert", "No password saved");
+  html += F("</div></div><div><label>Base Topic</label><input name='mqtt_topic' maxlength='64' value='"); html += html_escape(String(mqtt_base_topic));
   html += F("' placeholder='open-fume-extractor'></div><div><label>Discovery Prefix</label><input name='mqtt_disc' maxlength='32' value='"); html += html_escape(String(mqtt_discovery_prefix));
   html += F("' placeholder='homeassistant'></div></div><label><input type='checkbox' id='mqtt_ha' name='mqtt_ha' value='1' onchange='syncMqttChecks()' style='width:auto;min-height:0;margin-right:8px'");
   if (mqtt_ha_discovery) html += F(" checked");
@@ -621,7 +652,7 @@ static void web_handle_config() {
   html += html_escape(mqtt_ca_cert);
   html += F("</textarea><p class='muted' style='font-size:12px;margin-top:5px'>");
   html += web_text("Wenn dieses Feld leer ist, nutzt TLS weiterhin den Kompatibilitätsmodus ohne Zertifikatsprüfung.", "When this field is empty, TLS continues in compatibility mode without certificate verification.");
-  html += F("</p><div class='actions' style='margin-top:12px'><button type='button' class='secondary' onclick='saveMqtt()'>");
+  html += F("</p><div class='actions' style='margin-top:12px'><button type='button' onclick='saveMqtt()'>");
   html += web_text("MQTT speichern", "Save MQTT");
   html += F("</button><span id='mqtt_msg' class='muted'></span></div><hr style='border:0;border-top:1px solid var(--line);margin:18px 0'><h2>");
   html += web_text("Status-LEDs", "Status LEDs");
@@ -633,9 +664,23 @@ static void web_handle_config() {
   html += F("</label></div><div><label>"); html += web_text("Status-LED Helligkeit (%)", "Status LED brightness (%)");
   html += F("</label><div style='display:grid;grid-template-columns:minmax(0,1fr) 64px;gap:10px;align-items:center'><input id='status_led_brightness_range' type='range' min='10' max='100' step='1' value='"); html += status_led_brightness_pct;
   html += F("' oninput='statusLedBrightnessChanged(this.value)'><input id='status_led_brightness' name='status_led_brightness' type='hidden' value='"); html += status_led_brightness_pct;
-  html += F("'><span id='status_led_brightness_text' class='v' style='text-align:right'>"); html += status_led_brightness_pct; html += F("%</span></div></div></div><div class='actions' style='margin-top:12px'><button type='button' class='secondary' onclick='saveStatusLeds()'>");
+  html += F("'><span id='status_led_brightness_text' class='v' style='text-align:right'>"); html += status_led_brightness_pct; html += F("%</span></div></div></div><div class='actions' style='margin-top:12px'><button type='button' onclick='saveStatusLeds()'>");
   html += web_text("LEDs übernehmen", "Apply LEDs");
-  html += F("</button><span id='status_led_msg' class='muted'></span></div></form><section class='panel'><h2>");
+  html += F("</button><span id='status_led_msg' class='muted'></span></div><hr style='border:0;border-top:1px solid var(--line);margin:18px 0'><h2>");
+  html += web_text("Energiesparmodus", "Power save mode");
+  html += F("</h2><p class='muted'>");
+  html += web_text("Versetzt inaktive Module nach der Wartezeit in den Energiesparmodus. OFE- und EVT-LED behalten ihren normalen Status; beide sind dabei auf 20 % begrenzt.", "Puts idle modules into power save mode after the selected delay. OFE and EVT LEDs keep their normal status; both are capped at 20%.");
+  html += F(" <span class='pill "); html += scheduler.powerSaveActive() ? F("on'>") : F("'>");
+  html += scheduler.powerSaveActive() ? web_text("Energiesparen aktiv", "Power saving active") : web_text("Bereit", "Ready");
+  html += F("</span>");
+  html += F("</p><input type='hidden' id='module_power_save_enabled_value' name='module_power_save_enabled_value' value='0'><div class='grid'><div><label><input type='checkbox' id='module_power_save_enabled' name='module_power_save_enabled' value='1' onchange='syncPowerSaveChecks()' style='width:auto;min-height:0;margin-right:8px'");
+  if (module_power_save_enabled) html += F(" checked");
+  html += F(">"); html += web_text("Energiesparmodus aktivieren", "Enable power save mode");
+  html += F("</label></div><div><label>"); html += web_text("Wartezeit ohne Aktivität (Minuten)", "Idle delay (minutes)");
+  html += F("</label><input id='module_power_save_idle_min' name='module_power_save_idle_min' type='number' min='1' max='1440' step='1' value='"); html += module_power_save_idle_min;
+  html += F("'></div></div><div class='actions' style='margin-top:12px'><button type='button' onclick='savePowerSave()'>");
+  html += web_text("Energiesparmodus übernehmen", "Apply power save mode");
+  html += F("</button><span id='power_save_msg' class='muted'></span></div></form><section class='panel'><h2>");
   html += web_text("Display-Verbindung", "Display connection");
   html += F("</h2><a class='btn' href='/display-link'>"); html += web_text("Displays koppeln", "Pair displays"); html += F("</a></section><section class='panel'><h2>Backup / Restore</h2><p class='muted'>");
   html += web_text("Sichert WLAN, Web-Login, MQTT und wichtige Master-Einstellungen als JSON. Achtung: Passwörter und Zertifikate sind enthalten.", "Exports WiFi, web login, MQTT and important master settings as JSON. Warning: passwords and certificates are included.");
@@ -643,9 +688,9 @@ static void web_handle_config() {
   html += F("</a></div><form method='post' action='/config/import' style='margin-top:14px' onsubmit='return submitBackupImport(event)'><input type='hidden' name='csrf' value='"); html += web_csrf_token;
   html += F("'><label>"); html += web_text("Backup-Datei", "Backup file"); html += F("</label><input id='backup_file' type='file' accept='.json,application/json' onchange='loadBackupFile(this.files&&this.files[0])'><input id='backup_json' name='backup_json' type='hidden'><div id='backup_status' class='muted' style='margin-top:10px'>");
   html += web_text("Noch keine Backup-Datei ausgewählt.", "No backup file selected yet.");
-  html += F("</div><div class='actions' style='margin-top:12px'><button id='backup_import_btn' class='secondary' type='submit' disabled>"); html += web_text("Backup importieren und neu starten", "Import backup and reboot");
-  html += F("</button></div></form></section><script>function syncLedChecks(){var c=document.getElementById('status_led_enabled'),h=document.getElementById('status_led_enabled_value');if(c&&h)h.value=c.checked?'1':'0';}function statusLedBrightnessChanged(v){v=Math.max(10,Math.min(100,parseInt(v||20,10)));var r=document.getElementById('status_led_brightness_range'),n=document.getElementById('status_led_brightness'),txt=document.getElementById('status_led_brightness_text');if(r&&String(r.value)!==String(v))r.value=v;if(n&&String(n.value)!==String(v))n.value=v;if(txt)txt.textContent=v+'%';}function syncMqttChecks(){['mqtt_enabled','mqtt_tls','mqtt_ha'].forEach(function(id){var c=document.getElementById(id),h=document.getElementById(id+'_value');if(c&&h)h.value=c.checked?'1':'0';});}function mqttTlsChanged(){var p=document.getElementById('mqtt_port'),tls=document.getElementById('mqtt_tls');if(p&&tls&&(p.value==='1883'||p.value==='8883'||p.value===''))p.value=tls.checked?'8883':'1883';}function setCfgMsg(id,ok,msg){var e=document.getElementById(id);if(e){e.textContent=msg;e.style.color=ok?'#40d37a':'#ffb86b';}}async function postConfigPart(url,msgId,prepare){try{if(prepare)prepare();var f=document.getElementById('configForm'),r=await fetch(url,{method:'POST',body:new FormData(f),cache:'no-store'}),t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));setCfgMsg(msgId,true,'Gespeichert');}catch(e){setCfgMsg(msgId,false,'Fehler: '+(e&&e.message?e.message:e));}}function saveStatusLeds(){postConfigPart('/config/leds','status_led_msg',syncLedChecks);}function saveMqtt(){postConfigPart('/config/mqtt','mqtt_msg',syncMqttChecks);}function toggleStaticIp(){var e=document.getElementById('static_ip_fields');if(e)e.style.display=document.getElementById('ip_mode').value==='static'?'grid':'none';}function setBackupStatus(ok,msg){var s=document.getElementById('backup_status'),b=document.getElementById('backup_import_btn');if(s){s.textContent=msg;s.style.color=ok?'#40d37a':'#ffb86b';}if(b)b.disabled=!ok;}function validateBackupText(t){var o=JSON.parse(t);if(!o||o.product!=='Open Fume Extractor')throw new Error('Not an Open Fume Extractor backup');if(o.schema!==1)throw new Error('Unsupported backup version');if(!o.network&&!o.mqtt&&!o.master)throw new Error('Backup has no known settings');return o;}async function loadBackupFile(f){var h=document.getElementById('backup_json');if(h)h.value='';setBackupStatus(false,'');if(!f)return;try{var t=await f.text();validateBackupText(t);if(h)h.value=t;setBackupStatus(true,'Backup-Datei gültig. Import ist bereit.');}catch(e){setBackupStatus(false,'Backup ungültig: '+(e&&e.message?e.message:e));}}async function submitBackupImport(ev){if(ev)ev.preventDefault();var h=document.getElementById('backup_json');if(!h||!h.value){setBackupStatus(false,'Bitte zuerst eine gültige Backup-Datei auswählen.');return false;}if(!confirm('Backup wirklich importieren? Der Master startet danach neu.'))return false;try{var r=await fetch('/config/import',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'"); html += web_csrf_token;
-  html += F("'},body:h.value,cache:'no-store'}),txt=await r.text();if(!r.ok)throw new Error(txt||('HTTP '+r.status));document.open();document.write(txt);document.close();}catch(e){setBackupStatus(false,'Import fehlgeschlagen: '+(e&&e.message?e.message:e));}return false;}toggleStaticIp();syncMqttChecks();syncLedChecks();</script>");
+  html += F("</div><div class='actions' style='margin-top:12px'><button id='backup_import_btn' type='submit' disabled>"); html += web_text("Backup importieren und neu starten", "Import backup and reboot");
+  html += F("</button></div></form></section><script>function syncLedChecks(){var c=document.getElementById('status_led_enabled'),h=document.getElementById('status_led_enabled_value');if(c&&h)h.value=c.checked?'1':'0';}function syncPowerSaveChecks(){var c=document.getElementById('module_power_save_enabled'),h=document.getElementById('module_power_save_enabled_value');if(c&&h)h.value=c.checked?'1':'0';}function statusLedBrightnessChanged(v){v=Math.max(10,Math.min(100,parseInt(v||20,10)));var r=document.getElementById('status_led_brightness_range'),n=document.getElementById('status_led_brightness'),txt=document.getElementById('status_led_brightness_text');if(r&&String(r.value)!==String(v))r.value=v;if(n&&String(n.value)!==String(v))n.value=v;if(txt)txt.textContent=v+'%';}function syncMqttChecks(){['mqtt_enabled','mqtt_tls','mqtt_ha'].forEach(function(id){var c=document.getElementById(id),h=document.getElementById(id+'_value');if(c&&h)h.value=c.checked?'1':'0';});}function mqttTlsChanged(){var p=document.getElementById('mqtt_port'),tls=document.getElementById('mqtt_tls');if(p&&tls&&(p.value==='1883'||p.value==='8883'||p.value===''))p.value=tls.checked?'8883':'1883';}function setCfgMsg(id,ok,msg){var e=document.getElementById(id);if(e){e.textContent=msg;e.style.color=ok?'#40d37a':'#ffb86b';}}async function postConfigPart(url,msgId,prepare){try{if(prepare)prepare();var f=document.getElementById('configForm'),r=await fetch(url,{method:'POST',body:new FormData(f),cache:'no-store'}),t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));setCfgMsg(msgId,true,'Gespeichert');}catch(e){setCfgMsg(msgId,false,'Fehler: '+(e&&e.message?e.message:e));}}function saveStatusLeds(){postConfigPart('/config/leds','status_led_msg',syncLedChecks);}function savePowerSave(){postConfigPart('/config/power-save','power_save_msg',syncPowerSaveChecks);}function saveMqtt(){postConfigPart('/config/mqtt','mqtt_msg',syncMqttChecks);}async function saveWebLogin(){try{var f=document.getElementById('configForm'),r=await fetch('/config/web-login',{method:'POST',body:new FormData(f),cache:'no-store'}),t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));var j={};try{j=JSON.parse(t)}catch(e){}setCfgMsg('web_login_msg',true,j.credentials_changed?'Gespeichert – neue Zugangsdaten gelten ab dem nächsten Aufruf.':'Gespeichert');}catch(e){setCfgMsg('web_login_msg',false,'Fehler: '+(e&&e.message?e.message:e));}}function toggleStaticIp(){var e=document.getElementById('static_ip_fields');if(e)e.style.display=document.getElementById('ip_mode').value==='static'?'grid':'none';}function setBackupStatus(ok,msg){var s=document.getElementById('backup_status'),b=document.getElementById('backup_import_btn');if(s){s.textContent=msg;s.style.color=ok?'#40d37a':'#ffb86b';}if(b)b.disabled=!ok;}function validateBackupText(t){var o=JSON.parse(t);if(!o||o.product!=='Open Fume Extractor')throw new Error('Not an Open Fume Extractor backup');if(o.schema!==1)throw new Error('Unsupported backup version');if(!o.network&&!o.mqtt&&!o.master)throw new Error('Backup has no known settings');return o;}async function loadBackupFile(f){var h=document.getElementById('backup_json');if(h)h.value='';setBackupStatus(false,'');if(!f)return;try{var t=await f.text();validateBackupText(t);if(h)h.value=t;setBackupStatus(true,'Backup-Datei gültig. Import ist bereit.');}catch(e){setBackupStatus(false,'Backup ungültig: '+(e&&e.message?e.message:e));}}async function submitBackupImport(ev){if(ev)ev.preventDefault();var h=document.getElementById('backup_json');if(!h||!h.value){setBackupStatus(false,'Bitte zuerst eine gültige Backup-Datei auswählen.');return false;}if(!confirm('Backup wirklich importieren? Der Master startet danach neu.'))return false;try{var r=await fetch('/config/import',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'"); html += web_csrf_token;
+  html += F("'},body:h.value,cache:'no-store'}),txt=await r.text();if(!r.ok)throw new Error(txt||('HTTP '+r.status));document.open();document.write(txt);document.close();}catch(e){setBackupStatus(false,'Import fehlgeschlagen: '+(e&&e.message?e.message:e));}return false;}toggleStaticIp();syncMqttChecks();syncLedChecks();syncPowerSaveChecks();</script>");
   web_shell_end(html);
   web.send(200, "text/html; charset=utf-8", html);
 }
@@ -700,6 +745,50 @@ static void web_handle_config_password() {
   web.send(200, "text/html; charset=utf-8", html);
 }
 
+static void web_handle_config_web_login() {
+  String web_user_arg = web.arg("web_user");
+  web_user_arg.trim();
+  if (!web_user_arg.length()) web_user_arg = String(web_auth_user);
+  if (web_user_arg.length() > 32) {
+    web.send(400, "text/plain; charset=utf-8", "Web username is too long");
+    return;
+  }
+
+  String web_pass_arg = web.arg("web_pass");
+  if (!web_pass_arg.length() || web_pass_arg == "********") web_pass_arg = String(web_auth_password);
+  if (web_pass_arg.length() < 8 || web_pass_arg.length() > 64) {
+    web.send(400, "text/plain; charset=utf-8", "Web password must be 8 to 64 characters");
+    return;
+  }
+  if (web_pass_arg == MASTER_DEFAULT_PASSWORD) {
+    web_password_change_required = true;
+    web.send(400, "text/plain; charset=utf-8",
+             web_text("Bitte ein anderes Passwort als das Standardpasswort wählen.",
+                      "Choose a password different from the default password."));
+    return;
+  }
+
+  const bool credentials_changed = web_user_arg != String(web_auth_user) || web_pass_arg != String(web_auth_password);
+  Preferences auth_prefs;
+  if (!auth_prefs.begin(MasterSettingsStore::NS_NET, false)) {
+    web.send(507, "text/plain; charset=utf-8", "Failed to open settings storage");
+    return;
+  }
+  const bool user_written = auth_prefs.putString(MasterSettingsStore::KEY_WEB_USER, web_user_arg) > 0;
+  const bool pass_written = auth_prefs.putString(MasterSettingsStore::KEY_WEB_PASS, web_pass_arg) > 0;
+  auth_prefs.end();
+  if (!user_written || !pass_written) {
+    web.send(507, "text/plain; charset=utf-8", "Failed to persist web login");
+    return;
+  }
+
+  web_user_arg.toCharArray(web_auth_user, sizeof(web_auth_user));
+  web_pass_arg.toCharArray(web_auth_password, sizeof(web_auth_password));
+  web_password_change_required = strcmp(web_auth_password, MASTER_DEFAULT_PASSWORD) == 0;
+  web.send(200, "application/json; charset=utf-8",
+           credentials_changed ? "{\"ok\":true,\"credentials_changed\":true}" : "{\"ok\":true,\"credentials_changed\":false}");
+}
+
 static void web_handle_config_leds() {
   const bool status_led_enabled_form = web.hasArg("status_led_enabled_value") ? web.arg("status_led_enabled_value") == "1" : web.hasArg("status_led_enabled");
   uint32_t status_led_brightness_form32 = (uint32_t)strtoul(web.arg("status_led_brightness").c_str(), nullptr, 10);
@@ -715,6 +804,20 @@ static void web_handle_config_leds() {
     return;
   }
   mqtt_last_publish_ms = 0;
+  web.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+}
+
+static void web_handle_config_power_save() {
+  const bool enabled = web.hasArg("module_power_save_enabled_value")
+    ? web.arg("module_power_save_enabled_value") == "1"
+    : web.hasArg("module_power_save_enabled");
+  uint32_t idle_min = strtoul(web.arg("module_power_save_idle_min").c_str(), nullptr, 10);
+  if (idle_min < 1UL) idle_min = 1UL;
+  if (idle_min > 1440UL) idle_min = 1440UL;
+  if (!save_module_power_save_config(enabled, (uint16_t)idle_min)) {
+    web.send(507, "text/plain; charset=utf-8", "Failed to persist power-save settings");
+    return;
+  }
   web.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
 }
 

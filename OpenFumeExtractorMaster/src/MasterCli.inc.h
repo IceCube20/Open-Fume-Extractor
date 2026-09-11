@@ -48,6 +48,14 @@ static void serial_cli_print_status() {
   if (WiFi.status() == WL_CONNECTED) { Serial.print(F(" RSSI ")); Serial.print(WiFi.RSSI()); Serial.print(F(" dBm")); }
   Serial.println();
   Serial.print(F("Modules   : ")); Serial.print(registry.count()); Serial.println();
+  Serial.print(F("Power save: "));
+  if (!scheduler.powerSaveEnabled()) Serial.println(F("disabled"));
+  else {
+    Serial.print(scheduler.powerSaveActive() ? F("active") : F("armed"));
+    Serial.print(F(" after "));
+    Serial.print(scheduler.powerSaveIdleMinutes());
+    Serial.println(F(" min"));
+  }
   Serial.print(F("Output    : ")); Serial.print(extractor.outputEnabled() ? F("on") : F("off")); Serial.print(F("  power ")); Serial.print(power_pct); Serial.println(F("%"));
   Serial.print(F("Work mask : 0x")); Serial.println(extractor.workMask(), HEX);
   Serial.print(F("Afterrun  : ")); Serial.print((extractor.afterrunLeftMs() + 999UL) / 1000UL); Serial.println(F(" s"));
@@ -336,18 +344,14 @@ static void web_service_task(void* parameter) {
   (void)parameter;
   UBaseType_t applied_priority = uxTaskPriorityGet(nullptr);
   for (;;) {
-    // HTTP normally runs above the Arduino loop so a slow RS485 scan cannot
-    // freeze the UI. During RS485 module OTA that ordering is harmful: an
-    // 8 KiB multipart POST can keep the higher-priority HTTP task runnable for
-    // hundreds of milliseconds while module_update_pump() lives in loopTask.
-    // Match HTTP to the actual loop-task priority only for the OTA session.
-    // Equal-priority time slicing prevents HTTP from monopolizing core 1 while
-    // still giving the producer enough CPU to keep the 24 KiB queue filled.
-    UBaseType_t wanted_priority = 2;
-    if (module_update_addr && master_loop_task_handle) {
-      const UBaseType_t loop_priority = uxTaskPriorityGet(master_loop_task_handle);
-      wanted_priority = loop_priority;
-    }
+    // HTTP and loopTask share core 1.  Running HTTP one priority above loopTask
+    // lets a large /state JSON build pre-empt the control loop for hundreds of
+    // milliseconds; that wall time then appears as a large Master loop-max spike.
+    // Use the same priority as loopTask at all times. FreeRTOS time slicing keeps
+    // the web UI responsive while guaranteeing that HTTP, MQTT and diagnostics
+    // cannot monopolize the control core.
+    UBaseType_t wanted_priority = 1;
+    if (master_loop_task_handle) wanted_priority = uxTaskPriorityGet(master_loop_task_handle);
     if (wanted_priority != applied_priority) {
       vTaskPrioritySet(nullptr, wanted_priority);
       applied_priority = wanted_priority;

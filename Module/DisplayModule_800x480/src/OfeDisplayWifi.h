@@ -4,9 +4,14 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <esp_mac.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+
+#ifndef OFE_DISPLAY_HOSTNAME_PREFIX
+#define OFE_DISPLAY_HOSTNAME_PREFIX "OFE-Display"
+#endif
 
 class OfeDisplayWifi {
 public:
@@ -86,10 +91,12 @@ public:
     if (request.dst!=*address_) return true;
     Frame response; response.dst=request.src; response.src=*address_; response.seq=request.seq;
     response.cmd=CMD_DISPLAY_CONFIG|0x80; response.len=1; response.payload[0]=STATUS_BAD_VALUE;
-    if (!network_origin_ && request.src==ADDR_MASTER && request.len==1 && request.payload[0]==0) {
+    // The authenticated tunnel gives this command the same trust boundary as
+    // RS485. Query and provisioning must work over either active transport.
+    if (request.src==ADDR_MASTER && request.len==1 && request.payload[0]==0) {
       View v=view(); response.len=7; response.payload[0]=STATUS_OK; response.payload[1]=v.config.from_master;
       response.payload[2]=v.config.mode; put_u32_le(response.payload+3,configHash(v.config));
-    } else if (!network_origin_ && request.src==ADDR_MASTER && request.len==1+sizeof(Config) && request.payload[0]==1) {
+    } else if (request.src==ADDR_MASTER && request.len==1+sizeof(Config) && request.payload[0]==1) {
       Config c; memcpy(&c,request.payload+1,sizeof(c));
       if (c.from_master && configured(c) && save(c)) response.payload[0]=STATUS_OK;
     }
@@ -110,6 +117,7 @@ private:
   std::atomic<bool> last_transport_wireless_{false};
   uint32_t resolved_ip_=0;
   uint32_t config_revision_=0;
+  char device_hostname_[40]={};
   TaskHandle_t worker_=nullptr;
   jbc_rs485::Link* link_=nullptr;
   uint8_t* address_=nullptr;
@@ -268,13 +276,31 @@ private:
     shared_.free_internal=free; shared_.largest_internal=largest;
     portEXIT_CRITICAL(&mux_);
   }
+  void prepareHostname() {
+    if (device_hostname_[0]) return;
+    uint8_t mac[6]={0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+      snprintf(device_hostname_,sizeof(device_hostname_),"%s-%02X%02X%02X",
+               OFE_DISPLAY_HOSTNAME_PREFIX,(unsigned)mac[3],(unsigned)mac[4],(unsigned)mac[5]);
+    } else {
+      // Extremely defensive fallback; normal ESP32-S3 hardware always has a base MAC.
+      snprintf(device_hostname_,sizeof(device_hostname_),"%s-000000",OFE_DISPLAY_HOSTNAME_PREFIX);
+    }
+  }
   bool startRadio(const char* phase) {
     constexpr uint32_t caps=MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t free_before=heap_caps_get_free_size(caps), block_before=heap_caps_get_largest_free_block(caps);
     WiFi.persistent(false);
     WiFi.useStaticBuffers(false);
+    // Arduino-ESP32 applies the DHCP hostname while STA is started. Set it
+    // before WiFi.mode()/WiFi.begin(), otherwise routers can keep esp32s3.
+    prepareHostname();
+    if (!WiFi.setHostname(device_hostname_))
+      Serial.printf("[Display WiFi] hostname rejected: %s\n",device_hostname_);
     bool ok=WiFi.mode(WIFI_STA);
-    if (ok) { WiFi.setAutoReconnect(true); WiFi.setSleep(false); }
+    if (ok) {
+      WiFi.setAutoReconnect(true); WiFi.setSleep(false);
+    }
     sampleMemory();
     Serial.printf("[Display WiFi] %s: %s; internal %lu -> %lu B, largest %lu -> %lu B\n",
       phase,ok ? "ready" : "FAILED",(unsigned long)free_before,(unsigned long)heap_caps_get_free_size(caps),
@@ -344,7 +370,7 @@ private:
         radio=true;
       }
       if (radio && WiFi.status()==WL_CONNECTED) {
-        if (!mdns) { char name[32]; snprintf(name,sizeof(name),"ofe-display-%08lx",(unsigned long)uid_); mdns=MDNS.begin(name); }
+        if (!mdns) { prepareHostname(); mdns=MDNS.begin(device_hostname_); }
       }
       if (c.mode==WIRED && !scan && !scanning && radio) {
         if (mdns) { MDNS.end(); mdns=false; }

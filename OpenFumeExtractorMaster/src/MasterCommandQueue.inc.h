@@ -16,6 +16,7 @@ enum MasterCommandType : uint8_t {
   MASTER_CMD_PROBE_MODULE,
   MASTER_CMD_SET_MODULE_LABEL,
   MASTER_CMD_SET_IO_ALIAS,
+  MASTER_CMD_SET_IO_CONFIG,
   MASTER_CMD_APPLY_CONTROL_SETTINGS,
   MASTER_CMD_SET_AFTERRUN_PROFILE,
   MASTER_CMD_PERSIST_CONTROL_SETTINGS,
@@ -39,6 +40,7 @@ enum MasterCommandType : uint8_t {
   MASTER_CMD_SET_INPUT_RULE,
   MASTER_CMD_MODULE_REBOOT,
   MASTER_CMD_SET_LED_CONFIG,
+  MASTER_CMD_SET_POWER_SAVE_CONFIG,
   MASTER_CMD_TRACE_START,
   MASTER_CMD_TRACE_STOP,
   MASTER_CMD_TRACE_CLEAR,
@@ -142,6 +144,10 @@ static void master_command_execute(MasterCommandRequest& r) {
 
     case MASTER_CMD_SET_IO_ALIAS:
       r.result = scheduler.setIoAlias(r.addr, r.a, r.s1 ? r.s1 : "");
+      break;
+
+    case MASTER_CMD_SET_IO_CONFIG:
+      r.result = scheduler.setIoConfig(r.addr, r.bytes, r.len, r.flag1);
       break;
 
     case MASTER_CMD_APPLY_CONTROL_SETTINGS: {
@@ -264,6 +270,11 @@ static void master_command_execute(MasterCommandRequest& r) {
 
     case MASTER_CMD_SET_LED_CONFIG:
       scheduler.setLedConfig(r.flag1, r.a);
+      r.result = true;
+      break;
+
+    case MASTER_CMD_SET_POWER_SAVE_CONFIG:
+      scheduler.setPowerSaveConfig(r.flag1, r.w1);
       r.result = true;
       break;
 
@@ -420,6 +431,16 @@ static bool master_cmd_set_io_alias(uint8_t addr, uint8_t channel, const char* a
   r.addr = addr;
   r.a = channel;
   r.s1 = alias;
+  return master_command_submit(r);
+}
+
+static bool master_cmd_set_io_config(uint8_t addr, const uint8_t* data, uint8_t len, bool finalize = true) {
+  MasterCommandRequest r;
+  r.type = MASTER_CMD_SET_IO_CONFIG;
+  r.addr = addr;
+  r.bytes = data;
+  r.len = len;
+  r.flag1 = finalize;
   return master_command_submit(r);
 }
 
@@ -653,5 +674,13 @@ static bool master_cmd_set_led_config(bool enabled, uint8_t brightness_pct) {
   r.type = MASTER_CMD_SET_LED_CONFIG;
   r.flag1 = enabled;
   r.a = brightness_pct;
+  return master_command_submit(r);
+}
+
+static bool master_cmd_set_power_save_config(bool enabled, uint16_t idle_minutes) {
+  MasterCommandRequest r;
+  r.type = MASTER_CMD_SET_POWER_SAVE_CONFIG;
+  r.flag1 = enabled;
+  r.w1 = idle_minutes;
   return master_command_submit(r);
 }

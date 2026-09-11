@@ -68,12 +68,12 @@ static String update_page(const String& msg = String()) {
   html += F("function sleep(ms){return new Promise(function(ok){setTimeout(ok,ms);});}");
   html += F("async function waitMasterBack(stat){await sleep(2500);for(var i=0;i<35;i++){try{var r=await fetch('/state',{cache:'no-store'});if(r.ok){location.href='/';return;}}catch(e){}stat.textContent=u('Master startet neu...','Master rebooting...')+' '+(i+1);await sleep(2000);}location.href='/';}");
   html += F("function fwNameOk(type,file){var n=file.name.toLowerCase();var fan=n.indexOf('fanio')>=0||n.indexOf('fan_io')>=0||n.indexOf('fan-io')>=0;var pro=n.indexOf('pro')>=0;if(type==1)return n.indexOf('jbc')>=0&&n.indexOf('usb')<0;if(type==9)return n.indexOf('jbc')>=0&&n.indexOf('usb')>=0;if(type==2)return fan&&!pro;if(type==3)return (fan&&pro)||n.indexOf('faniopro')>=0||n.indexOf('relay')>=0;if(type==5)return n.indexOf('weller')>=0||(n.indexOf('zero')>=0&&n.indexOf('smog')>=0);if(type==6)return n.indexOf('display')>=0;if(type==7)return n.indexOf('universal')>=0||n.indexOf('rs232')>=0||n.indexOf('uart')>=0||n.indexOf('bridge')>=0;if(type==8)return n.indexOf('modbus')>=0||n.indexOf('rtu')>=0||n.indexOf('bridge')>=0;if(type==4)return n.indexOf('sensor')>=0;return false;}function fwChunkForType(type){return Number(type)==6?RS485_FW_CHUNK_DISPLAY:RS485_FW_CHUNK;}");
-  html += F("function fwExpectedSig(type,caps){caps=Number(caps||0);if(type==1)return 'OFE_FW_SIG:v1;target=JBC_BUS;';if(type==9)return 'OFE_FW_SIG:v1;target=JBC_USB;';if(type==2)return 'OFE_FW_SIG:v1;target=FAN_IO;';if(type==3)return 'OFE_FW_SIG:v1;target=FAN_IO_PRO;';if(type==5)return 'OFE_FW_SIG:v1;target=WELLER_ZERO_SMOG;';if(type==6){if(caps&8388608)return 'OFE_FW_SIG:v1;target=DISPLAY_800X480;';if(caps&4194304)return 'OFE_FW_SIG:v1;target=DISPLAY_320X480;';return 'OFE_FW_SIG:v1;target=DISPLAY;';}if(type==7)return 'OFE_FW_SIG:v1;target=UNIVERSAL_RS232;';if(type==8)return 'OFE_FW_SIG:v1;target=MODBUS_RTU;';if(type==4)return 'OFE_FW_SIG:v1;target=SENSOR;';return '';}");
+  html += F("function fwExpectedSig(type,caps){caps=Number(caps||0);if(type==1)return 'OFE_FW_SIG:v1;target=JBC_BUS;';if(type==9)return 'OFE_FW_SIG:v1;target=JBC_USB;';if(type==2)return 'OFE_FW_SIG:v1;target=FAN_IO;';if(type==3)return 'OFE_FW_SIG:v1;target=FAN_IO_PRO;';if(type==5)return 'OFE_FW_SIG:v1;target=WELLER_ZERO_SMOG;';if(type==6){if(caps&134217728)return 'OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;';if(caps&8388608)return 'OFE_FW_SIG:v1;target=DISPLAY_800X480;';if(caps&4194304)return 'OFE_FW_SIG:v1;target=DISPLAY_320X480;';return 'OFE_FW_SIG:v1;target=DISPLAY;';}if(type==7)return 'OFE_FW_SIG:v1;target=UNIVERSAL_RS232;';if(type==8)return 'OFE_FW_SIG:v1;target=MODBUS_RTU;';if(type==4)return 'OFE_FW_SIG:v1;target=SENSOR;';return '';}");
   html += F("async function findFwSig(file,want){var b=new Uint8Array(await file.arrayBuffer());var p='OFE_FW_SIG:v1;',fallback='';for(var i=0;i<=b.length-p.length;i++){var ok=true;for(var j=0;j<p.length;j++){if(b[i+j]!==p.charCodeAt(j)){ok=false;break;}}if(ok){var s='';for(var k=i;k<b.length&&k<i+180;k++){var c=b[k];if(c<32||c>126)break;s+=String.fromCharCode(c);}var m=s.match(/^OFE_FW_SIG:v1;target=[A-Z0-9_]+;(version=[^;]+;)?/);var sig=m?m[0]:s;if(!want||sig.indexOf(want)>=0){if(sig.indexOf(';version=')>=0)return sig;if(!fallback)fallback=sig;}}}return fallback;}");
   html += F("async function findFwAuth(file){var b=new Uint8Array(await file.arrayBuffer()),p='OFE_FW_AUTH:v1;';for(var i=b.length-p.length;i>=0;i--){var ok=true;for(var j=0;j<p.length;j++){if(b[i+j]!==p.charCodeAt(j)){ok=false;break;}}if(!ok)continue;var s='';for(var k=i;k<b.length&&k<i+420;k++){var c=b[k];if(c<32||c>126)break;s+=String.fromCharCode(c);}var m=s.match(/^OFE_FW_AUTH:v1;target=([A-Z0-9_]+);version=([^;]+);size=([0-9]+);sha256=([0-9a-f]{64});keyid=([0-9a-f]{16});sig=([0-9a-f]{128});$/);if(m&&Number(m[3])===i&&i+s.length===b.length)return{text:s,target:m[1],version:m[2],size:Number(m[3]),sha256:m[4],keyid:m[5]};}return null;}");
-  html += F("function fwTargetOk(type,target,caps,isMaster){if(isMaster)return target==='MASTER';if(Number(type)==6){caps=Number(caps||0);if(caps&8388608)return target==='DISPLAY_800X480';if(caps&4194304)return target==='DISPLAY_320X480';return target==='DISPLAY'||target==='DISPLAY_320X480'||target==='DISPLAY_800X480';}var expected=fwExpectedSig(type,caps),m=expected.match(/target=([A-Z0-9_]+)/);return !!m&&target===m[1];}");
-  html += F("function fwSigVersion(sig){var m=String(sig||'').match(/(?:^|;)version=([^;]+)/);return m?m[1]:'-';}function fwSigTarget(sig){var m=String(sig||'').match(/(?:^|;)target=([^;]+)/);return m?m[1]:'-';}function fwSigTargetLabel(sig){var t=fwSigTarget(sig);var map={MASTER:'Master',JBC_BUS:'JBC Bus',FAN_IO:'Fan/IO',FAN_IO_PRO:'Fan/IO Pro',WELLER_ZERO_SMOG:'Weller Zero Smog',DISPLAY:'Display',DISPLAY_320X480:'Display 320x480',DISPLAY_800X480:'Display 800x480',UNIVERSAL_RS232:'Universal RS232',MODBUS_RTU:'Modbus RTU',SENSOR:'Sensor'};return map[t]||t.replace(/_/g,' ');}");
-  html += F("function fwSigComplete(sig){return !!sig&&sig.indexOf(';version=')>=0;}function fwSigOk(type,sig,caps){var e=fwExpectedSig(type,caps);if(!e||!sig||!fwSigComplete(sig))return false;if(Number(type)==6){var c=Number(caps||0),is800=!!(c&8388608),is320=!!(c&4194304);if(is800)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0;if(is320)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0;return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0;}return sig.indexOf(e)>=0;}");
+  html += F("function fwTargetOk(type,target,caps,isMaster){if(isMaster)return target==='MASTER';if(Number(type)==6){caps=Number(caps||0);if(caps&134217728)return target==='DISPLAY_ST7796_320X480';if(caps&8388608)return target==='DISPLAY_800X480';if(caps&4194304)return target==='DISPLAY_320X480';return target==='DISPLAY'||target==='DISPLAY_320X480'||target==='DISPLAY_800X480'||target==='DISPLAY_ST7796_320X480';}var expected=fwExpectedSig(type,caps),m=expected.match(/target=([A-Z0-9_]+)/);return !!m&&target===m[1];}");
+  html += F("function fwSigVersion(sig){var m=String(sig||'').match(/(?:^|;)version=([^;]+)/);return m?m[1]:'-';}function fwSigTarget(sig){var m=String(sig||'').match(/(?:^|;)target=([^;]+)/);return m?m[1]:'-';}function fwSigTargetLabel(sig){var t=fwSigTarget(sig);var map={MASTER:'Master',JBC_BUS:'JBC Bus',FAN_IO:'Fan/IO',FAN_IO_PRO:'Fan/IO Pro',WELLER_ZERO_SMOG:'Weller Zero Smog',DISPLAY:'Display',DISPLAY_320X480:'Display 320x480',DISPLAY_ST7796_320X480:'Display ST7796 320x480',DISPLAY_800X480:'Display 800x480',UNIVERSAL_RS232:'Universal RS232',MODBUS_RTU:'Modbus RTU',SENSOR:'Sensor'};return map[t]||t.replace(/_/g,' ');}");
+  html += F("function fwSigComplete(sig){return !!sig&&sig.indexOf(';version=')>=0;}function fwSigOk(type,sig,caps){var e=fwExpectedSig(type,caps);if(!e||!sig||!fwSigComplete(sig))return false;if(Number(type)==6){var c=Number(caps||0),isST7796=!!(c&134217728),is800=!!(c&8388608),is320=!!(c&4194304);if(isST7796)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;')>=0;if(is800)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0;if(is320)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0;return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;')>=0;}return sig.indexOf(e)>=0;}");
   html += F("async function getState(){var r=await fetch('/state',{cache:'no-store'});return await r.json();}");
   html += F("function moduleStatsFmt(s){if(!DEV_MODE||!s)return '';return '  -  Dev Queue '+s.queue_count+'/'+s.queue_size+' low '+s.queue_low+' empty '+s.empty_polls+' starve '+s.starve_count+'/'+s.starve_max_ms+' ms http '+s.http_age_ms+'/'+s.http_max_gap_ms+' ms ack '+s.ack_last_ms+'/'+s.ack_max_ms+' ms pump '+s.pump_gap_last_ms+'/'+s.pump_gap_max_ms+' ms retry '+s.retry_total+'/'+s.retry_last+' frames '+s.frames;}function moduleChunkStatsText(t){if(!DEV_MODE||!t)return '';try{return moduleStatsFmt(JSON.parse(t));}catch(e){return '';}}async function moduleStatsText(){if(!DEV_MODE)return '';try{var r=await fetch('/update/module/stats',{cache:'no-store'});if(!r.ok)return '';return moduleStatsFmt(await r.json());}catch(e){return '';}}");
   html += F("function updateChunkText(name,size,extra){return DEV_MODE?'  -  '+name+': '+size+' B'+(extra||''):'';}function updateStartText(base,name,size){return DEV_MODE?base+' '+name+': '+size+' B':base;}function updateProgressText(p,label,offset,total,bps,eta,name,size,extra){return p+'% '+label+' ('+fmt(offset)+' / '+fmt(total)+')  -  '+fmtSpeed(bps)+'  -  '+u('Restzeit','ETA')+': '+fmtEta(eta)+updateChunkText(name,size,extra);}function updateAverageText(base,avg,name,size,extra){return base+': '+fmtSpeed(avg)+updateChunkText(name,size,extra);}function updateFailText(base,e,name,size,extra){return base+e+updateChunkText(name,size,extra);}");
@@ -158,6 +158,8 @@ static String module_update_stats_json() {
   json += (uint32_t)queue_count;
   json += F(",\"queue_size\":");
   json += (uint32_t)MODULE_FW_QUEUE_SIZE;
+  json += F(",\"queue_psram\":");
+  json += module_update_queue_psram ? F("true") : F("false");
   json += F(",\"queue_low\":");
   json += (uint32_t)queue_low;
   json += F(",\"empty_polls\":");
@@ -673,6 +675,24 @@ static void module_update_io_init() {
   if (!module_update_io_mutex) {
     module_update_io_mutex = xSemaphoreCreateMutexStatic(&module_update_io_mutex_storage);
   }
+  if (!module_update_queue) {
+    module_update_queue = static_cast<uint8_t*>(
+      heap_caps_malloc((size_t)MODULE_FW_QUEUE_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    module_update_queue_psram = module_update_queue != nullptr;
+    if (!module_update_queue) {
+      module_update_queue = static_cast<uint8_t*>(
+        heap_caps_malloc((size_t)MODULE_FW_QUEUE_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+      module_update_queue_psram = false;
+    }
+    if (module_update_queue) {
+      Serial.print(F("[MEM] Module OTA queue "));
+      Serial.print((unsigned long)(MODULE_FW_QUEUE_SIZE / 1024UL));
+      Serial.print(F(" KB in "));
+      Serial.println(module_update_queue_psram ? F("PSRAM") : F("internal DRAM (fallback)"));
+    } else {
+      Serial.println(F("[MEM] ERROR: module OTA queue allocation failed"));
+    }
+  }
 }
 
 static bool module_update_io_lock(uint32_t timeout_ms) {
@@ -686,7 +706,7 @@ static void module_update_io_unlock() {
 }
 
 static bool module_update_queue_push(const uint8_t* data, size_t len, uint32_t timeout_ms) {
-  if (!data && len) return false;
+  if ((!data && len) || !module_update_queue) return false;
   const uint32_t start = millis();
   const uint32_t now = start;
   if (module_update_last_http_ms) {
@@ -699,12 +719,16 @@ static bool module_update_queue_push(const uint8_t* data, size_t len, uint32_t t
   while (pos < len) {
     size_t wrote = 0;
     portENTER_CRITICAL(&module_update_queue_mux);
-    while (pos + wrote < len && module_update_queue_count < MODULE_FW_QUEUE_SIZE) {
-      module_update_queue[module_update_queue_head] = data[pos + wrote];
-      module_update_queue_head = (module_update_queue_head + 1) % MODULE_FW_QUEUE_SIZE;
-      module_update_queue_count++;
-      module_update_queued_offset++;
-      wrote++;
+    const size_t space = (size_t)MODULE_FW_QUEUE_SIZE - module_update_queue_count;
+    wrote = min(len - pos, space);
+    if (wrote) {
+      const size_t first = min(wrote, (size_t)MODULE_FW_QUEUE_SIZE - module_update_queue_head);
+      memcpy(module_update_queue + module_update_queue_head, data + pos, first);
+      const size_t second = wrote - first;
+      if (second) memcpy(module_update_queue, data + pos + first, second);
+      module_update_queue_head = (module_update_queue_head + wrote) % MODULE_FW_QUEUE_SIZE;
+      module_update_queue_count += wrote;
+      module_update_queued_offset += wrote;
     }
     portEXIT_CRITICAL(&module_update_queue_mux);
 
@@ -718,13 +742,18 @@ static bool module_update_queue_push(const uint8_t* data, size_t len, uint32_t t
 }
 
 static size_t module_update_queue_pop(uint8_t* out, size_t max_len) {
-  if (!out || !max_len) return 0;
+  if (!out || !max_len || !module_update_queue) return 0;
   size_t n = 0;
   portENTER_CRITICAL(&module_update_queue_mux);
-  while (n < max_len && module_update_queue_count > 0) {
-    out[n++] = module_update_queue[module_update_queue_tail];
-    module_update_queue_tail = (module_update_queue_tail + 1) % MODULE_FW_QUEUE_SIZE;
-    module_update_queue_count--;
+  const size_t queued = module_update_queue_count;
+  n = min(max_len, queued);
+  if (n) {
+    const size_t first = min(n, (size_t)MODULE_FW_QUEUE_SIZE - module_update_queue_tail);
+    memcpy(out, module_update_queue + module_update_queue_tail, first);
+    const size_t second = n - first;
+    if (second) memcpy(out + first, module_update_queue, second);
+    module_update_queue_tail = (module_update_queue_tail + n) % MODULE_FW_QUEUE_SIZE;
+    module_update_queue_count -= n;
   }
   if (module_update_queue_count < module_update_queue_low_water) module_update_queue_low_water = module_update_queue_count;
   if (n == 0) module_update_queue_empty_polls++;
@@ -1046,15 +1075,17 @@ static const char* module_firmware_signature_hint(uint8_t type) {
 
 static String module_firmware_signature_hint_for(const ModuleRecord& rec) {
   if (rec.type == MODULE_DISPLAY || (rec.caps & CAP_DISPLAY)) {
+    if (rec.caps & CAP_DISPLAY_ST7796) return F("OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;");
     if (rec.caps & CAP_DISPLAY_800X480) return F("OFE_FW_SIG:v1;target=DISPLAY_800X480;");
     if (rec.caps & CAP_DISPLAY_320X480) return F("OFE_FW_SIG:v1;target=DISPLAY_320X480;");
-    return F("OFE_FW_SIG:v1;target=DISPLAY_320X480; or DISPLAY_800X480;");
+    return F("OFE_FW_SIG:v1;target=DISPLAY_320X480; or DISPLAY_800X480; or DISPLAY_ST7796_320X480;");
   }
   return String(module_firmware_signature_hint(rec.type));
 }
 
 static const char* module_firmware_auth_target_for(const ModuleRecord& rec) {
   if (rec.type == MODULE_DISPLAY || (rec.caps & CAP_DISPLAY)) {
+    if (rec.caps & CAP_DISPLAY_ST7796) return "DISPLAY_ST7796_320X480";
     if (rec.caps & CAP_DISPLAY_800X480) return "DISPLAY_800X480";
     if (rec.caps & CAP_DISPLAY_320X480) return "DISPLAY_320X480";
     return "DISPLAY";
@@ -1082,6 +1113,7 @@ static bool firmware_signature_allowed(const String& sig, const char* expected) 
 
 static bool module_firmware_signature_allowed(const ModuleRecord& rec, const String& sig) {
   if (rec.type == MODULE_DISPLAY || (rec.caps & CAP_DISPLAY)) {
+    if (rec.caps & CAP_DISPLAY_ST7796) return firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;");
     if (rec.caps & CAP_DISPLAY_800X480) return firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_800X480;");
     if (rec.caps & CAP_DISPLAY_320X480) {
       // Explicit 320x480 hardware must only accept the matching firmware.
@@ -1090,7 +1122,8 @@ static bool module_firmware_signature_allowed(const ModuleRecord& rec, const Str
     }
     return firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY;") ||
            firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_320X480;") ||
-           firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_800X480;");
+           firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_800X480;") ||
+           firmware_signature_allowed(sig, "OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;");
   }
   return firmware_signature_allowed(sig, module_firmware_signature_hint(rec.type));
 }

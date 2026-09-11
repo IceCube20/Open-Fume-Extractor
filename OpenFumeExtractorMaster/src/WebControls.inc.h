@@ -455,7 +455,7 @@ static void web_handle_fanio_calibration() {
     }
     warn_raw = web.arg("enabled").toInt() ? 1 : 0;
   }
-  if (action < 1 || action > 5) {
+  if ((action < 1 || action > 5) && action != 7) {
     web.send(400, "text/plain; charset=utf-8", "bad action");
     return;
   }
@@ -584,6 +584,7 @@ static void web_handle_universal_profile() {
   master_prefs.putString(universal_profile_key(addr, "csum").c_str(), checksum);
   master_prefs.putString(universal_profile_key(addr, "lend").c_str(), line_end);
   master_prefs.end();
+  universal_profile_cache_invalidate(addr);
 
   if (rec->online && !master_cmd_set_universal_profile(addr, profile.c_str(), station.c_str(), baud_value, frame.c_str(), protocol.c_str(), checksum.c_str(), line_end.c_str(), profile_text_arg ? profile_text.c_str() : nullptr)) {
     web.send(503, "text/plain; charset=utf-8", "profile saved in master, but module did not acknowledge profile update");
@@ -614,16 +615,29 @@ static void web_handle_universal_profile_read() {
     web.send(503, "text/plain; charset=utf-8", "module offline");
     return;
   }
-  static char profile_text[8193];
+  static constexpr size_t PROFILE_TEXT_CAPACITY = 8193;
+  char* profile_text = static_cast<char*>(
+    heap_caps_malloc(PROFILE_TEXT_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!profile_text) {
+    profile_text = static_cast<char*>(
+      heap_caps_malloc(PROFILE_TEXT_CAPACITY, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (!profile_text) {
+    web.send(503, "text/plain; charset=utf-8", "profile buffer allocation failed");
+    return;
+  }
+  profile_text[0] = 0;
   uint32_t crc = 0;
   bool truncated = false;
-  if (!master_cmd_read_universal_profile(addr, profile_text, sizeof(profile_text), &crc, &truncated)) {
+  if (!master_cmd_read_universal_profile(addr, profile_text, PROFILE_TEXT_CAPACITY, &crc, &truncated)) {
+    heap_caps_free(profile_text);
     web.send(503, "text/plain; charset=utf-8", "module did not return profile text");
     return;
   }
   web.sendHeader("X-OFE-Profile-CRC", String(crc, HEX));
   web.sendHeader("X-OFE-Truncated", truncated ? "1" : "0");
   web.send(200, "text/plain; charset=utf-8", profile_text);
+  heap_caps_free(profile_text);
 }
 
 static void web_handle_universal_entity() {
@@ -634,8 +648,8 @@ static void web_handle_universal_entity() {
   const uint8_t addr = (uint8_t)strtoul(web.arg("addr").c_str(), nullptr, 0);
   const uint8_t entity_id = (uint8_t)strtoul(web.arg("id").c_str(), nullptr, 0);
   ModuleRecord* rec = registry.find(addr);
-  if (!rec || (rec->type != MODULE_UNIVERSAL_RS232 && rec->type != MODULE_MODBUS_RTU)) {
-    web.send(404, "text/plain; charset=utf-8", "universal module not found");
+  if (!rec || !(rec->caps & CAP_ENTITY_CONTROL)) {
+    web.send(404, "text/plain; charset=utf-8", "entity module not found");
     return;
   }
   if (!rec->online) {
@@ -716,6 +730,72 @@ static void web_handle_universal_entity() {
   web.send(200, "text/plain; charset=utf-8", "ok");
 }
 
+static void web_handle_io_config() {
+  if (!web.hasArg("addr") || !web.hasArg("kind")) {
+    web.send(400, "text/plain; charset=utf-8", "missing addr or kind");
+    return;
+  }
+  const uint8_t addr = (uint8_t)strtoul(web.arg("addr").c_str(), nullptr, 0);
+  ModuleRecord* rec = registry.find(addr);
+  if (!rec || !rec->online ||
+      (rec->type != MODULE_FAN_IO && rec->type != MODULE_FAN_IO_PRO) ||
+      !(rec->caps & CAP_DESCRIPTOR)) {
+    web.send(404, "text/plain; charset=utf-8", "configurable Fan/IO module not found");
+    return;
+  }
+  uint8_t payload[MAX_PAYLOAD] = {0};
+  uint8_t len = 0;
+  const String kind = web.arg("kind");
+  if (kind == "channel") {
+    if (!web.hasArg("output") || !web.hasArg("index") || !web.hasArg("pin")) {
+      web.send(400, "text/plain; charset=utf-8", "missing channel fields"); return;
+    }
+    payload[0] = IO_CONFIG_CHANNEL;
+    payload[1] = web.arg("output").toInt() ? 1 : 0;
+    payload[2] = (uint8_t)constrain(web.arg("index").toInt(), 0, 7);
+    payload[3] = web.hasArg("enabled") && web.arg("enabled").toInt() ? 1 : 0;
+    const int pin = web.arg("pin").toInt();
+    payload[4] = pin < 0 ? 0xFF : (uint8_t)pin;
+    payload[5] = web.hasArg("active_low") && web.arg("active_low").toInt() ? 1 : 0;
+    payload[6] = payload[1] ? 0 : (uint8_t)constrain(web.hasArg("pull") ? web.arg("pull").toInt() : 0, 0, 2);
+    len = 7;
+    String name = web.hasArg("name") ? web.arg("name") : "";
+    name.trim();
+    for (uint8_t i = 0; i < name.length() && len < 26; ++i) {
+      const uint8_t c = (uint8_t)name[i];
+      if (c >= 32 && c != 127 && c != '"' && c != '\'' && c != '<' && c != '>') payload[len++] = c;
+    }
+  } else if (kind == "fan") {
+    payload[0] = IO_CONFIG_FAN;
+    payload[1] = (uint8_t)(web.arg("enable_pin").toInt() < 0 ? 0xFF : web.arg("enable_pin").toInt());
+    payload[2] = (uint8_t)(web.arg("pwm_pin").toInt() < 0 ? 0xFF : web.arg("pwm_pin").toInt());
+    payload[3] = (uint8_t)(web.arg("tacho_pin").toInt() < 0 ? 0xFF : web.arg("tacho_pin").toInt());
+    payload[4] = web.hasArg("enabled") && web.arg("enabled").toInt() ? 1 : 0;
+    payload[5] = web.hasArg("active_low") && web.arg("active_low").toInt() ? 1 : 0;
+    payload[6] = (uint8_t)constrain(web.arg("ppr").toInt(), 1, 16);
+    len = 7;
+  } else if (kind == "filter" && rec->type == MODULE_FAN_IO_PRO) {
+    payload[0] = IO_CONFIG_FILTER;
+    payload[1] = (uint8_t)constrain(web.arg("mode").toInt(), 0, 3);
+    payload[2] = (uint8_t)constrain(web.arg("sensor").toInt(), 0, 2);
+    payload[3] = (uint8_t)(web.arg("pin_a").toInt() < 0 ? 0xFF : web.arg("pin_a").toInt());
+    payload[4] = (uint8_t)(web.arg("pin_b").toInt() < 0 ? 0xFF : web.arg("pin_b").toInt());
+    payload[5] = (uint8_t)constrain(web.arg("i2c_addr").toInt(), 8, 119);
+    put_u32_le(payload + 6, (uint32_t)constrain(web.arg("lifetime").toInt(), 1, 1000000));
+    len = 10;
+  } else if (kind == "reset") {
+    payload[0] = IO_CONFIG_RESET;
+    len = 1;
+  } else {
+    web.send(400, "text/plain; charset=utf-8", "invalid config kind"); return;
+  }
+  const bool finalize = !(web.hasArg("defer") && web.arg("defer").toInt());
+  if (!master_cmd_set_io_config(addr, payload, len, finalize)) {
+    web.send(503, "text/plain; charset=utf-8", "module rejected I/O configuration"); return;
+  }
+  web.send(200, "text/plain; charset=utf-8", "OK");
+}
+
 static void web_handle_main_input_select() {
   const uint8_t source_type = web.hasArg("st") ? (uint8_t)strtoul(web.arg("st").c_str(), nullptr, 0) : MasterScheduler::INPUT_SRC_NONE;
   const uint8_t source_addr = web.hasArg("sa") ? (uint8_t)strtoul(web.arg("sa").c_str(), nullptr, 0) : 0;
@@ -753,7 +833,7 @@ static void web_handle_routing_set() {
   }
   const uint8_t addr = (uint8_t)strtoul(web.arg("addr").c_str(), nullptr, 0);
   const uint8_t bit = (uint8_t)strtoul(web.arg("bit").c_str(), nullptr, 0);
-  if (bit > 1 || !master_cmd_set_io_input_route(addr, bit, enabled)) {
+  if (bit > 7 || !master_cmd_set_io_input_route(addr, bit, enabled)) {
     web.send(400, "text/plain; charset=utf-8", "bad route");
     return;
   }

@@ -31,6 +31,7 @@ static bool status_led_has_warning_alarm() {
 }
 
 static void update_status_leds() {
+  ofe_status_leds.setEcoMode(scheduler.powerSaveActive(), 51);
   ofe_status_leds.setBusOnline(status_led_has_online_module());
   ofe_status_leds.setFirmwareUpdate(scheduler.firmwareUpdateActive());
 

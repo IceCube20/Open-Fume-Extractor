@@ -190,9 +190,10 @@ bool MasterDisplayWifi::route(const Frame& frame) {
   }
   Peer* p=peer(frame.dst);
   if (!p || !active(frame.dst)) return false;
-  send(*p,DATA,&frame);
-  // No serial fallback within a request: that could execute a command twice.
-  return true;
+  // Suppress the serial path only after the complete command was accepted by
+  // the UDP socket. This keeps every display command retryable when WiFi has a
+  // transient send failure instead of silently losing an option/detail frame.
+  return send(*p,DATA,&frame);
 }
 bool MasterDisplayWifi::receive(Frame& frame) {
   if (!ready_ || WiFi.status()!=WL_CONNECTED) return false;
@@ -238,6 +239,11 @@ bool MasterDisplayWifi::receive(Frame& frame) {
     // identity, and only failed requests may turn an online module offline.
     rec->consecutive_timeouts=0;
     rec->last_seen_ms=now;
+    rec->display_async_pending=false;
+    rec->display_async_seq=0xFF;
+    rec->display_async_cmd=0;
+    rec->display_async_started_ms=0;
+    rec->display_async_timeout_ms=0;
     p->connected=false; publish(*p);
     p->addr=addr; p->client=msg.client; p->server=msg.server; p->endpoint=from;
     p->mode=msg.mode; p->rx=0; p->tx=0; p->seen=now; p->connected=true; p->wired_probes=0;

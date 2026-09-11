@@ -3,7 +3,7 @@ from pathlib import Path
 src = Path(__file__).resolve().parents[1] / "JbcUsbModule.ino"
 text = src.read_text(encoding="utf-8")
 
-assert "#define OFE_MODULE_FW_PATCH 75" in text
+assert "#define OFE_MODULE_FW_PATCH 81" in text
 
 # SOLD/HA InfoPort change bits mirror the original DLL callbacks and only pull
 # the affected slow tier forward.

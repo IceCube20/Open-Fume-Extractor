@@ -17,15 +17,15 @@ int main() {
   assert(!fits(17*1024,16*1024,RUNTIME_RESERVE));
   assert(!fits(160*1024,115200,RUNTIME_RESERVE));
   assert(!fits(0,SIZE_MAX,RUNTIME_RESERVE));
-  fake_heap::reset(160*1024,120*1024);
+  fake_heap::reset(240*1024,200*1024);
   uint8_t* draw=allocateDraw(80*1024,RUNTIME_RESERVE);
-  assert(draw && fake_heap::free_bytes==80*1024);
+  assert(draw && fake_heap::free_bytes==160*1024);
   heap_caps_free(draw);
   fake_heap::reset(160*1024,8*1024); // enough total RAM, fragmented
   assert(!allocateDraw(16*1024,RUNTIME_RESERVE));
-  fake_heap::reset(80*1024,80*1024,64); // allocator overhead must not eat the reserve
+  fake_heap::reset(152*1024,152*1024,64); // allocator overhead must not eat the reserve
   assert(!allocateDraw(16*1024,RUNTIME_RESERVE));
-  assert(fake_heap::free_bytes==80*1024 && fake_heap::allocations==1 && fake_heap::releases==1);
+  assert(fake_heap::free_bytes==152*1024 && fake_heap::allocations==1 && fake_heap::releases==1);
   fake_heap::reset(112*1024,112*1024);
   assert(!allocateDraw(16*1024,STARTUP_RESERVE)); // retain memory for a WiFi retry
   uint8_t key[16]; memset(key,0x0b,sizeof(key));

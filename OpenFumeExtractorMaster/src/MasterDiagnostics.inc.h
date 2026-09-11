@@ -5,6 +5,19 @@ static uint32_t loop_window_ms = 0;
 static uint32_t loop_max_us = 0;
 static uint8_t cpu_load_pct = 0;
 static uint16_t loop_max_ms = 0;
+// Developer phase maxima make the next latency report actionable. The phase
+// timers include time spent pre-empted while that phase was active, which is
+// exactly what matters for user-visible loop latency.
+static uint32_t loop_phase_command_max_us = 0;
+static uint32_t loop_phase_ota_max_us = 0;
+static uint32_t loop_phase_scheduler_max_us = 0;
+static uint32_t loop_phase_logic_max_us = 0;
+static uint16_t loop_phase_command_max_ms = 0;
+static uint16_t loop_phase_ota_max_ms = 0;
+static uint16_t loop_phase_scheduler_max_ms = 0;
+static uint16_t loop_phase_logic_max_ms = 0;
+static uint16_t loop_scheduler_job_max_ms = 0;
+static char loop_scheduler_job_name[20] = "-";
 static configRUN_TIME_COUNTER_TYPE cpu_prev_total = 0;
 static configRUN_TIME_COUNTER_TYPE cpu_prev_idle[configNUMBER_OF_CORES] = {};
 static bool cpu_runtime_valid = false;
@@ -160,7 +173,11 @@ static void heap_diag_probe_task(void* parameter) {
   (void)parameter;
   for (;;) {
     if (heap_diag_active()) heap_diag_sample("probe");
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // Developer diagnostics used to sample allocator state at 100 Hz.  That is
+    // useful for forensic work but unnecessarily expensive during normal tuning
+    // and adds contention on the same core as loopTask/web/MQTT. 40 Hz still
+    // catches short-lived fragmentation lows while cutting this background load.
+    vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
 

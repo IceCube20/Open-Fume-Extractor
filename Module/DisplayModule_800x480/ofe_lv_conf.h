@@ -1132,7 +1132,9 @@
 #endif /*LV_USE_SYSMON*/
 
 /** 1: Enable runtime performance profiler */
-#define LV_USE_PROFILER 1
+// Deep hooks are disabled in production: they execute inside hot draw/text/blend/object paths.
+// Lightweight sketch-level LVGL PERF and DISPLAY BENCHMARK counters remain enabled.
+#define LV_USE_PROFILER 0
 #if LV_USE_PROFILER
     /** 1: Enable the built-in profiler */
     #define LV_USE_PROFILER_BUILTIN 0

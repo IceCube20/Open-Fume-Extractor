@@ -92,9 +92,10 @@ static void master_setup() {
   web_begin();
   // Keep HTTP off core 0. Core 0 is the WiFi/lwIP core on ESP32-S3;
   // long module OTA requests there can starve IDLE0 and trip the task WDT.
-  // Give the web task a slightly higher priority than the loop task so a
-  // startup scan or a slow RS485 poll cannot make the UI feel dead.
-  if (xTaskCreatePinnedToCore(web_service_task, "web-http", 8192, nullptr, 2, &web_service_task_handle, 1) != pdPASS) {
+  // Keep HTTP at loopTask priority. Higher priority makes large /state builds
+  // pre-empt the control loop and inflates loop-max latency. Equal-priority
+  // time slicing keeps startup/status HTTP responsive without starving control.
+  if (xTaskCreatePinnedToCore(web_service_task, "web-http", 8192, nullptr, 1, &web_service_task_handle, 1) != pdPASS) {
     // Keep the server usable even if a fragmented heap cannot provide the
     // auxiliary task stack. master_loop_tick() runs the same service inline
     // as a controlled fallback.

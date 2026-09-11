@@ -2,7 +2,7 @@ from pathlib import Path
 
 src = (Path(__file__).resolve().parents[1] / "JbcUsbModule.ino").read_text()
 
-assert "#define OFE_MODULE_FW_PATCH 75" in src
+assert "#define OFE_MODULE_FW_PATCH 81" in src
 assert "JBC_CONTI_SPEED_OFF = 0" in src
 assert "JBC_CONTI_SPEED_10MS = 1" in src
 assert "jbc_station_kind == JBC_STATION_SOLD || jbc_station_kind == JBC_STATION_HA" in src

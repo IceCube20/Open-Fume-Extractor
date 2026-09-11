@@ -44,7 +44,9 @@ scheduler = (root / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text
 start = scheduler.index("  ModuleRecord* rec = registry_.find(dst);", scheduler.index("if (physical) return false;"))
 end = scheduler.index("    if (was_online && !rec->online) {", start)
 out.with_name("generated_module_timeout.inc.h").write_text(
-    "static void record_timeout(uint8_t dst, uint8_t cmd) {\n" + scheduler[start:end] + "  }\n}\n",
+    "static void record_timeout(uint8_t dst, uint8_t cmd, "
+    "bool disposable_wifi_display_frame = false) {\n" +
+    scheduler[start:end] + "  }\n}\n",
     encoding="utf-8")
 
 if resolution == "800x480":

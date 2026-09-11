@@ -36,6 +36,7 @@ struct JbcModelInfo;
 #define OFE_STATUS_LED_MASTER_TIMEOUT_MS 8000UL
 #endif
 #include "src/OfeStatusLed.h"
+#include "src/OfeModuleEco.h"
 
 using namespace jbc_rs485;
 
@@ -62,7 +63,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 77
+#define OFE_MODULE_FW_PATCH 81
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -82,12 +83,14 @@ static void ofe_keep_module_fw_signature() {
 
 static const uint8_t DEFAULT_MODULE_ADDR = 0x10; // every module family starts at its 0xX0 factory address
 static const uint32_t MODULE_CAPS =
-  CAP_JBC_USB | CAP_FW_UPDATE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE | CAP_LOCAL_PROTOCOL;
+  CAP_JBC_USB | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE | CAP_LOCAL_PROTOCOL;
 
 static HardwareSerial RS485(1);
 static Link bus(RS485);
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
+static bool module_eco_mode = false;
+static bool module_light_sleep_armed = false;
 static uint8_t module_addr = DEFAULT_MODULE_ADDR;
 static char module_label[24] = {0};
 static uint32_t last_master_ms = 0;
@@ -8510,7 +8513,7 @@ static void rs485_info(const Frame& req) {
   uint8_t suffix_len = (uint8_t)min(strlen(FW_SUFFIX), (size_t)7);
   resp.payload[o++] = suffix_len;
   for (uint8_t i = 0; i < suffix_len && o < MAX_PAYLOAD; ++i) resp.payload[o++] = (uint8_t)FW_SUFFIX[i];
-  const char* shown = module_label[0] ? module_label : "JBC USB";
+  const char* shown = module_label[0] ? module_label : ofe_module_default_name(MODULE_JBC_USB, CAP_JBC_USB);
   while (*shown && o < MAX_PAYLOAD) resp.payload[o++] = (uint8_t)*shown++;
   resp.len = (uint8_t)o;
   bus.send(resp);
@@ -9252,6 +9255,8 @@ static void handle_rs485(const Frame& req) {
     else if (req.cmd == CMD_SET_ADDRESS_UID) rs485_set_address_uid(req);
     return;
   }
+  if (ofe_handle_power_save_command(req, bus, module_addr, ofe_status_leds, false,
+                                    module_eco_mode, module_light_sleep_armed)) return;
   switch (req.cmd) {
     case CMD_PING: rs485_status_response(req, STATUS_OK); break;
     case CMD_INFO: rs485_info(req); break;

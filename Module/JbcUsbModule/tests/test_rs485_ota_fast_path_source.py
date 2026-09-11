@@ -2,7 +2,7 @@ from pathlib import Path
 
 SRC = (Path(__file__).resolve().parents[1] / "JbcUsbModule.ino").read_text()
 
-assert "#define OFE_MODULE_FW_PATCH 75" in SRC
+assert "#define OFE_MODULE_FW_PATCH 81" in SRC
 loop = SRC[SRC.index("void loop() {"):]
 
 # RS485 OTA must NOT suppress USB/JBC servicing.  The 1.1.69 early-return

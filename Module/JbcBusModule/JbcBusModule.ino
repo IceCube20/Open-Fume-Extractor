@@ -17,6 +17,7 @@
 #endif
 
 #include "src/OfeStatusLed.h"
+#include "src/OfeModuleEco.h"
 
 using namespace jbc_rs485;
 
@@ -52,7 +53,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 60
+#define OFE_MODULE_FW_PATCH 65
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -148,6 +149,8 @@ static HardwareSerial JBC(2);
 static Link bus(RS485);
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
+static bool module_eco_mode = false;
+static bool module_light_sleep_armed = false;
 
 static uint8_t module_addr = 0x10;
 static char module_label[24] = {0};
@@ -263,8 +266,8 @@ static uint8_t p02_data_len = 0;
 static uint8_t work_mask = 0;
 static uint8_t stand_mask = 0;
 // Effective OFE extractor output reported by the Master. This is deliberately
-// separate from work_mask/stand_mask: those masks are JBC intake requests, while
-// M_R_INTAKEACTIVATION must report the state of the FAE we emulate.
+// separate from work_mask/stand_mask: M_R_INTAKEACTIVATION reports the latched
+// request for the selected JBC port/intake, while this value is diagnostic data.
 static uint8_t extractor_output_active = 0;
 static uint8_t fast_flags = 0;
 static uint16_t event_seq = 1;
@@ -655,26 +658,29 @@ static void handle_p02_frame(const uint8_t* f, size_t n) {
   }
 
   if (ctrl == jbc_fe::M_W_INTAKEACTIVATION && data && len >= 2) {
-    // Real DDE -> FAE wire format: [OnOff, Port]. 0x39 is specifically the
-    // WORK-intake activation command. Keep the per-port request mask so the
-    // OFE Master can aggregate the demand, but do not use it as 0x38 readback.
+    // Real DDE -> FAE commonly uses [OnOff, Port] for WORK. Some station
+    // variants append the intake index, so keep WORK and STAND independently.
     const uint8_t val = data[0] ? 1U : 0U;
     const uint8_t port = data[1];
+    const uint8_t intake = len >= 3 ? data[2] : 0U;
     send_ack(reply_src_addr, reply_to, fid);
 
-    if (port < 8) {
+    if (port < 8 && intake < 2) {
       const uint8_t bit = (uint8_t)(1U << port);
-      const uint8_t old_work = work_mask;
-      if (val) work_mask |= bit;
-      else work_mask &= (uint8_t)~bit;
-      if (old_work != work_mask) {
+      uint8_t& mask = intake == 0 ? work_mask : stand_mask;
+      const uint8_t old_mask = mask;
+      if (val) mask |= bit;
+      else mask &= (uint8_t)~bit;
+      if (old_mask != mask) {
         mark_fast_changed();
-        Serial.print("JBC work intake port=");
+        Serial.print("JBC intake port=");
         Serial.print(port);
+        Serial.print(" intake=");
+        Serial.print(intake);
         Serial.print(" on=");
         Serial.print(val);
         Serial.print(" mask=0x");
-        Serial.println(work_mask, HEX);
+        Serial.println(mask, HEX);
       }
     }
     return;
@@ -787,10 +793,15 @@ static void handle_p02_frame(const uint8_t* f, size_t n) {
   if (ctrl == jbc_fe::M_R_INTAKEACTIVATION) {
     const uint8_t port = (len >= 1 && data) ? data[0] : 0;
     const uint8_t intake = (len >= 2 && data) ? data[1] : 0;
-    // We emulate the FAE itself, not a command register. Report whether the
-    // effective OFE extractor output is really ON. Echo Port/Intake exactly as
-    // the real FAE does on the DDE peripheral bus.
-    uint8_t out[] = { extractor_output_active ? 1U : 0U, port, intake };
+    uint8_t active = 0;
+    if (port < 8 && intake < 2) {
+      const uint8_t mask = intake == 0 ? work_mask : stand_mask;
+      active = (mask & (uint8_t)(1U << port)) ? 1U : 0U;
+    }
+    // Return the selected intake's latched request, not the physical extractor
+    // output. Otherwise an active afterrun looks like WORK to the station and
+    // suppresses the next tool-removal event.
+    uint8_t out[] = { active, port, intake };
     send_read_reply(reply_src_addr, reply_to, fid, ctrl, out, sizeof(out));
     return;
   }
@@ -1222,8 +1233,7 @@ static void rs485_info(const Frame& req) {
   if (suffix_len > 7) suffix_len = 7;
   resp.payload[o++] = suffix_len;
   for (uint8_t i = 0; i < suffix_len && o < MAX_PAYLOAD; ++i) resp.payload[o++] = (uint8_t)FW_SUFFIX[i];
-  const char name[] = "JBC FAE Bus";
-  const char* shown_name = module_label[0] ? module_label : name;
+  const char* shown_name = module_label[0] ? module_label : ofe_module_default_name(MODULE_JBC_BUS, CAP_JBC_BUS);
   while (*shown_name && o < MAX_PAYLOAD) resp.payload[o++] = (uint8_t)*shown_name++;
   resp.len = (uint8_t)o;
   bus.send(resp);
@@ -1237,7 +1247,7 @@ static void rs485_caps(const Frame& req) {
   resp.cmd = CMD_GET_CAPS | 0x80;
   resp.len = 5;
   resp.payload[0] = STATUS_OK;
-  put_u32_le(resp.payload + 1, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE);
+  put_u32_le(resp.payload + 1, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE);
   bus.send(resp);
 }
 
@@ -1323,7 +1333,7 @@ static void send_discover_response(uint8_t dst, uint8_t seq) {
   resp.payload[o++] = FW_MAJOR;
   resp.payload[o++] = FW_MINOR;
   resp.payload[o++] = FW_PATCH;
-  put_u32_le(resp.payload + o, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE); o += 4;
+  put_u32_le(resp.payload + o, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE); o += 4;
   resp.len = (uint8_t)o;
   bus.send(resp);
 }
@@ -1368,7 +1378,7 @@ static void send_join_announce() {
   resp.payload[o++] = FW_MAJOR;
   resp.payload[o++] = FW_MINOR;
   resp.payload[o++] = FW_PATCH;
-  put_u32_le(resp.payload + o, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE); o += 4;
+  put_u32_le(resp.payload + o, CAP_JBC_BUS | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_FAULT_REPORT | CAP_LOCAL_TRACE); o += 4;
   resp.len = (uint8_t)o;
   bus.send(resp);
 }
@@ -1518,6 +1528,9 @@ static void handle_rs485(const Frame& req) {
     return;
   }
 
+  if (ofe_handle_power_save_command(req, bus, module_addr, ofe_status_leds, false,
+                                    module_eco_mode, module_light_sleep_armed)) return;
+
   switch (req.cmd) {
     case CMD_PING:
       rs485_status_response(req, STATUS_OK);
@@ -1664,8 +1677,3 @@ void loop() {
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);
 }
-
-
-
-
-

@@ -22,17 +22,29 @@ static void master_loop_tick() {
 
   // External controls are serialized through the loop before OTA/background
   // traffic. Critical OFF commands are drained first inside this function.
+  uint32_t phase_start_us = micros();
   master_command_queue_process();
+  uint32_t phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  if (phase_busy_us > loop_phase_command_max_us) loop_phase_command_max_us = phase_busy_us;
 
   // Module OTA waits synchronously for the target ACK. Keep it after CLI and
   // LED servicing so a slow/lost ACK cannot starve the local control paths.
   // The pump owns the OTA I/O mutex while it talks to the target and the
   // scheduler skips normal polling while firmwareUpdateActive() is true.
+  phase_start_us = micros();
   module_update_pump();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  if (phase_busy_us > loop_phase_ota_max_us) loop_phase_ota_max_us = phase_busy_us;
 
+  phase_start_us = micros();
   scheduler.tick();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  if (phase_busy_us > loop_phase_scheduler_max_us) loop_phase_scheduler_max_us = phase_busy_us;
 #if WEB_ENABLE
+  phase_start_us = micros();
   logic_runtime_tick();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  if (phase_busy_us > loop_phase_logic_max_us) loop_phase_logic_max_us = phase_busy_us;
 #endif
 #if WEB_ENABLE
   const bool scan_finished = scheduler.consumeScanJobFinished();
@@ -57,10 +69,26 @@ static void master_loop_tick() {
     uint32_t max_ms = (loop_max_us + 999UL) / 1000UL;
     if (max_ms > 65535UL) max_ms = 65535UL;
     loop_max_ms = (uint16_t)max_ms;
+    auto phase_ms = [](uint32_t us) -> uint16_t {
+      uint32_t ms = (us + 999UL) / 1000UL;
+      return (uint16_t)(ms > 65535UL ? 65535UL : ms);
+    };
+    loop_phase_command_max_ms = phase_ms(loop_phase_command_max_us);
+    loop_phase_ota_max_ms = phase_ms(loop_phase_ota_max_us);
+    loop_phase_scheduler_max_ms = phase_ms(loop_phase_scheduler_max_us);
+    loop_phase_logic_max_ms = phase_ms(loop_phase_logic_max_us);
+    loop_scheduler_job_max_ms = scheduler.schedulerSlowJobMs();
+    strncpy(loop_scheduler_job_name, scheduler.schedulerSlowJobName(), sizeof(loop_scheduler_job_name) - 1);
+    loop_scheduler_job_name[sizeof(loop_scheduler_job_name) - 1] = 0;
+    scheduler.resetSchedulerSlowJob();
     sample_cpu_load();
     scheduler.setMasterTelemetry(cpu_load_pct, loop_max_ms);
     loop_window_ms = now;
     loop_max_us = 0;
+    loop_phase_command_max_us = 0;
+    loop_phase_ota_max_us = 0;
+    loop_phase_scheduler_max_us = 0;
+    loop_phase_logic_max_us = 0;
   }
   monitor_summary_tick(now);
 

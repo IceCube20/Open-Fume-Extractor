@@ -19,7 +19,7 @@
 #endif
 
 #ifndef JBC_FAST_POLL_PER_MODULE_MS
-#define JBC_FAST_POLL_PER_MODULE_MS 100
+#define JBC_FAST_POLL_PER_MODULE_MS 75
 #endif
 
 #ifndef FAST_POLL_TIMEOUT_MS
@@ -27,11 +27,15 @@
 #endif
 
 #ifndef JBC_BUS_FAST_POLL_TIMEOUT_MS
-#define JBC_BUS_FAST_POLL_TIMEOUT_MS 35
+#define JBC_BUS_FAST_POLL_TIMEOUT_MS 60
 #endif
 
 #ifndef JBC_USB_FAST_POLL_TIMEOUT_MS
-#define JBC_USB_FAST_POLL_TIMEOUT_MS 35
+#define JBC_USB_FAST_POLL_TIMEOUT_MS 75
+#endif
+
+#ifndef JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS
+#define JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS 500UL
 #endif
 
 #ifndef HOTPLUG_DISCOVERY_INTERVAL_MS
@@ -43,7 +47,7 @@
 #endif
 
 #ifndef OFFLINE_REPROBE_INTERVAL_MS
-#define OFFLINE_REPROBE_INTERVAL_MS 1500UL
+#define OFFLINE_REPROBE_INTERVAL_MS 750UL
 #endif
 
 #ifndef JBC_DEFAULT_PROBE_INTERVAL_MS
@@ -88,8 +92,29 @@ public:
     uint32_t requests = 0;
     uint32_t responses = 0;
     uint32_t timeouts = 0;
+    uint32_t late_responses = 0;
     uint32_t bad_seq = 0;
     uint32_t bad_cmd = 0;
+    // Timeout classes make sporadic bus misses actionable instead of one
+    // opaque total. They count raw request timeouts since master boot.
+    uint32_t timeout_fast = 0;
+    uint32_t timeout_state = 0;
+    uint32_t timeout_telemetry = 0;
+    uint32_t timeout_io = 0;
+    uint32_t timeout_universal = 0;
+    uint32_t timeout_display_status = 0;
+    uint32_t timeout_display_cache = 0;
+    uint32_t timeout_other = 0;
+    // Successful-response max latency per request class. This lets diagnostics
+    // show whether a timeout window is genuinely too short before we change it.
+    uint16_t latency_fast_max_ms = 0;
+    uint16_t latency_state_max_ms = 0;
+    uint16_t latency_telemetry_max_ms = 0;
+    uint16_t latency_io_max_ms = 0;
+    uint16_t latency_universal_max_ms = 0;
+    uint16_t latency_display_status_max_ms = 0;
+    uint16_t latency_display_cache_max_ms = 0;
+    uint16_t latency_other_max_ms = 0;
     uint32_t tx_frames = 0;
     uint32_t rx_frames = 0;
     uint64_t tx_wire_bytes = 0;
@@ -98,6 +123,12 @@ public:
     uint16_t latency_max_ms = 0;
     uint16_t latency_last_ms = 0;
     uint32_t last_activity_ms = 0;
+    // Last raw timeout identity is retained only to recognize a response that
+    // arrives during the immediately following request. Such a frame is late,
+    // not a protocol sequence error.
+    uint32_t last_timeout_ms = 0;
+    uint8_t last_timeout_seq = 0xFF;
+    uint8_t last_timeout_cmd = 0;
   };
 
   struct TraceStats {
@@ -162,13 +193,25 @@ public:
 
   void begin();
   void setLedConfig(bool enabled, uint8_t brightness_pct);
+  void setPowerSaveConfig(bool enabled, uint16_t idle_minutes);
+  bool powerSaveEnabled() const { return power_save_enabled_; }
+  bool powerSaveActive() const { return power_save_active_; }
+  uint16_t powerSaveIdleMinutes() const { return power_save_idle_minutes_; }
   uint32_t requestBadCmdCount() const { return request_bad_cmd_total_; }
   uint32_t requestBadSeqCount() const { return request_bad_seq_total_; }
+  uint32_t requestLateResponseCount() const { return request_late_response_total_; }
   uint32_t requestCount() const { return request_total_; }
   uint64_t requestTxPayloadBytes() const { return request_tx_payload_bytes_; }
   uint64_t responseRxPayloadBytes() const { return response_rx_payload_bytes_; }
   uint32_t compactIoPollCount() const { return compact_io_poll_total_; }
   uint32_t fullIoPollCount() const { return full_io_poll_total_; }
+  uint8_t schedulerSlowJobId() const { return scheduler_job_max_id_; }
+  uint16_t schedulerSlowJobMs() const {
+    uint32_t ms = (scheduler_job_max_us_ + 999UL) / 1000UL;
+    return (uint16_t)(ms > 65535UL ? 65535UL : ms);
+  }
+  const char* schedulerSlowJobName() const;
+  void resetSchedulerSlowJob() { scheduler_job_max_us_ = 0; scheduler_job_max_id_ = 0; }
   uint64_t ofeTxWireBytes() const { return ofe_tx_wire_bytes_; }
   uint64_t ofeRxWireBytes() const { return ofe_rx_wire_bytes_; }
   uint32_t ofeTxFrameCount() const { return ofe_tx_frames_; }
@@ -242,6 +285,7 @@ public:
   bool setJbcSettings(uint8_t addr, uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous);
   bool setIoOutput(uint8_t addr, uint16_t mask, uint16_t value);
   bool setIoAlias(uint8_t addr, uint8_t channel, const char* alias);
+  bool setIoConfig(uint8_t addr, const uint8_t* data, uint8_t len, bool finalize = true);
   bool setModulePower(uint8_t addr, uint16_t power);
   bool setModuleOutput(uint8_t addr, bool enabled, uint16_t power);
   bool setWellerSpeed(uint8_t addr, uint8_t percent);
@@ -273,6 +317,12 @@ public:
 
 private:
   bool request(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, jbc_rs485::Frame& resp, uint32_t timeout_ms, bool physical = false);
+  bool startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, uint32_t timeout_ms);
+  bool handleAsyncDisplayFrame(const jbc_rs485::Frame& frame);
+  void serviceAsyncDisplayRequests();
+  void recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq, uint32_t timeout_ms, bool disposable_wifi_sample);
+  void processDisplayStatusResponse(ModuleRecord& display, const jbc_rs485::Frame& resp);
+  void completeDisplayCacheResponse(ModuleRecord& display, uint8_t cmd);
   void serviceWhileWaiting();
   void serviceDelay(uint32_t delay_ms);
   void traceLog(uint8_t addr, TraceDirection direction, uint8_t cmd, uint8_t status, const uint8_t* data, uint8_t len, uint16_t latency_ms, const char* text = nullptr, uint8_t frame_seq = 0xFF);
@@ -289,6 +339,12 @@ private:
   void noticeDiscoveryResponse(const jbc_rs485::Frame& resp);
   void drainUnsolicitedFrames();
   void broadcastLedSync(uint32_t now);
+  bool setModulePowerSave(ModuleRecord& rec, bool enabled);
+  bool wakeModule(ModuleRecord& rec);
+  void wakeAllModules();
+  void refreshPowerSaveActive();
+  void updatePowerSave(uint32_t now);
+  bool powerSaveIdle() const;
   bool readInfo(uint8_t addr);
   bool readCaps(uint8_t addr);
   bool fastPollJbc(uint8_t addr);
@@ -296,12 +352,18 @@ private:
   bool readJbcUsbState(uint8_t addr);
   bool readOutputStatus(uint8_t addr);
   bool readIoStatus(uint8_t addr, bool include_aliases = false);
+  bool processTelemetryResponse(uint8_t addr, const jbc_rs485::Frame& resp);
   bool readTelemetry(uint8_t addr);
   bool pollNextJbc();
   uint8_t onlineJbcModuleCount() const;
   bool readNextJbcState();
   bool pollNextWeller();
   bool pollNextUniversal();
+  bool stepUniversalDescriptorRefresh();
+  bool queueUniversalDescriptorRefresh(uint8_t addr, bool force);
+  void cancelUniversalDescriptorRefresh();
+  void finishUniversalDescriptorRefresh(ModuleRecord& rec);
+  bool repairUniversalEntityOne();
   bool pollNextTelemetry();
   bool pollNextIoStatus();
   bool pollNextOutputStatus();
@@ -325,6 +387,7 @@ private:
   void buildDisplayAlarmSnapshot(bool jbc_present, DisplayAlarmSnapshot& snapshot) const;
 
   void pushDisplayStatus();
+  bool pushDisplayCache();
   bool sendDisplayStatus(uint8_t addr);
   bool sendDisplayAlarms(uint8_t display_addr, const DisplayAlarmSnapshot& snapshot);
   bool sendDisplayModuleList(uint8_t display_addr, uint8_t start_index);
@@ -339,6 +402,7 @@ private:
   uint16_t minSelectFlowForActiveOutput() const;
   void selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
   bool moduleProvidesExtractorOutput(const ModuleRecord& rec) const;
+  bool ioConfigBatchActive(uint8_t addr) const;
   bool universalFindMainOutputEntities(const ModuleRecord& rec, uint8_t& enable_id, uint8_t& power_id) const;
   bool universalSetMainOutput(ModuleRecord& rec, bool enabled, uint16_t power);
   bool universalEntityBoolActive(const ModuleRecord& rec, uint8_t entity_id) const;
@@ -346,6 +410,8 @@ private:
   void syncSystemJbcError(bool force = false);
   void updateInputRouting();
   bool inputRuleSourceActive(const InputActionRule& rule) const;
+  bool inputRuleTargetsActiveMainOutput(const InputActionRule& rule) const;
+  bool activeMainOutputDirectRuleOn() const;
   bool mainInputSourceActive() const;
   void applyInputRuleTarget(InputActionRule& rule, bool active);
   void processPendingExtractorActions();
@@ -357,6 +423,7 @@ private:
   void syncOtherJbcSettings(uint8_t source_addr);
   void pushOutputIfNeeded();
   void pollOneBackgroundJob(uint32_t now);
+  void noteSchedulerJob(uint8_t job_id, uint32_t started_us);
   bool sendOutputEnable(uint8_t addr, bool enabled);
   bool sendOutputPower(uint8_t addr, uint16_t power);
   bool firmwareTargetIsDisplay(uint8_t addr) const;
@@ -375,9 +442,17 @@ private:
   uint32_t last_led_sync_ms_ = 0;
   bool led_enabled_ = true;
   uint8_t led_brightness_pct_ = 20;
+  bool power_save_enabled_ = false;
+  bool power_save_active_ = false;
+  bool background_poll_active_ = false;
+  uint16_t power_save_idle_minutes_ = 30;
+  uint32_t power_save_idle_since_ms_ = 0;
+  uint32_t last_power_save_apply_ms_ = 0;
+  uint8_t next_power_save_sync_index_ = 0;
   bool serial_debug_log_ = false;
   uint32_t last_fast_poll_ms_ = 0;
   uint32_t last_output_status_ms_ = 0;
+  uint32_t last_io_status_ms_ = 0;
   uint32_t last_community_output_reassert_ms_ = 0;
   uint32_t last_weller_poll_ms_ = 0;
   uint32_t last_universal_poll_ms_ = 0;
@@ -396,6 +471,14 @@ private:
   uint16_t last_system_jbc_filter_sat_ = 0xFFFF;
   uint8_t last_system_jbc_output_enabled_ = 0xFF;
   uint32_t last_system_jbc_push_ms_ = 0;
+  uint8_t system_jbc_sync_index_ = 0;
+  uint8_t system_jbc_sync_remaining_ = 0;
+  bool system_jbc_sync_all_ok_ = true;
+  bool system_jbc_sync_force_pending_ = false;
+  uint16_t system_jbc_sync_error_ = 0;
+  uint16_t system_jbc_sync_filter_life_ = 0;
+  uint16_t system_jbc_sync_filter_sat_ = 0;
+  uint8_t system_jbc_sync_output_enabled_ = 0;
   uint32_t control_persist_due_ms_ = 0;
   uint32_t control_persist_first_dirty_ms_ = 0;
   bool control_persist_dirty_ = false;
@@ -403,13 +486,37 @@ private:
   uint8_t next_jbc_poll_index_ = 0;
   uint8_t next_jbc_state_index_ = 0;
   uint8_t pending_jbc_state_addr_ = 0;
+  uint8_t pending_jbc_usb_state_addr_ = 0;
   uint8_t next_weller_poll_index_ = 0;
   uint8_t next_universal_poll_index_ = 0;
+  uint8_t universal_descriptor_refresh_addr_ = 0;
+  uint8_t universal_descriptor_refresh_next_chunk_ = 0;
+  uint8_t universal_descriptor_refresh_chunk_count_ = 0;
+  uint8_t universal_descriptor_refresh_failures_ = 0;
+  uint32_t universal_descriptor_refresh_crc_ = 0;
+  size_t universal_descriptor_refresh_total_ = 0;
+  bool universal_descriptor_refresh_force_ = false;
+  bool universal_descriptor_refresh_was_valid_ = false;
+  bool universal_descriptor_refresh_truncated_ = false;
+  uint32_t universal_descriptor_refresh_old_crc_ = 0;
+  uint8_t universal_descriptor_refresh_old_chunks_ = 0;
   uint8_t universal_entity_repair_cursor_ = 20;
+  uint8_t universal_repair_addr_ = 0;
+  uint8_t universal_repair_seen_[32] = {0};
+  uint8_t universal_repair_remaining_ = 0;
+  uint8_t universal_repair_expected_ = 0;
   uint8_t next_telemetry_index_ = 0;
   uint8_t next_io_poll_index_ = 0;
   uint8_t next_output_status_index_ = 0;
+  uint8_t io_config_batch_addr_ = 0;
+  uint32_t io_config_batch_until_ms_ = 0;
   uint8_t next_display_index_ = 0;
+  uint8_t next_display_cache_index_ = 0;
+  // Responses may arrive while request() owns the bus mutex for an unrelated
+  // RS485 transaction. Capture them cheaply and process UI/events after the
+  // mutex is released on the next scheduler service pass.
+  jbc_rs485::Frame display_async_response_[16];
+  bool display_async_response_ready_[16] = {false};
   uint8_t next_background_poll_slot_ = 0;
   uint8_t next_offline_probe_index_ = 0;
   uint8_t active_jbc_addr_ = JBC_MODULE_ADDR;
@@ -460,11 +567,14 @@ private:
   uint32_t last_service_callback_ms_ = 0;
   uint32_t request_bad_cmd_total_ = 0;
   uint32_t request_bad_seq_total_ = 0;
+  uint32_t request_late_response_total_ = 0;
   uint32_t request_total_ = 0;
   uint64_t request_tx_payload_bytes_ = 0;
   uint64_t response_rx_payload_bytes_ = 0;
   uint32_t compact_io_poll_total_ = 0;
   uint32_t full_io_poll_total_ = 0;
+  uint32_t scheduler_job_max_us_ = 0;
+  uint8_t scheduler_job_max_id_ = 0;
 
   // Passive OFE-bus diagnostics. 0x10..0x6F map to 96 compact counters.
   // These counters never influence scheduling or timeout behavior.
@@ -482,6 +592,3 @@ private:
   bool trace_local_desired_ = false;
   bool trace_local_clear_pending_ = false;
 };
-
-
-

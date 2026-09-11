@@ -91,6 +91,8 @@ static bool web_password_change_required = false;
 static char master_device_id[40] = "open-fume-extractor";
 static bool status_led_enabled = true;
 static uint8_t status_led_brightness_pct = 20;
+static bool module_power_save_enabled = false;
+static uint16_t module_power_save_idle_min = 30;
 static bool wifi_static_enabled = false;
 static IPAddress wifi_static_ip(0, 0, 0, 0);
 static IPAddress wifi_static_gateway(0, 0, 0, 0);
@@ -136,6 +138,12 @@ static bool mqtt_discovery_published = false;
 static bool mqtt_discovery_publish_failed = false;
 static int mqtt_last_state = 0;
 static String mqtt_discovery_signature;
+// Large cold-path serializers live in PSRAM and are reused to avoid allocator
+// churn on the 500 ms /state path and during HA discovery bursts. The objects
+// themselves are only a few words in internal DRAM; their backing storage is
+// allocated lazily with MALLOC_CAP_SPIRAM.
+static OfePsramTextBuffer web_state_json_buffer;
+static OfePsramTextBuffer mqtt_discovery_payload_buffer;
 static uint32_t mqtt_next_discovery_check_ms = 0;
 static bool wifi_sta_pending = false;
 static bool wifi_time_configured = false;
@@ -160,7 +168,11 @@ static volatile uint32_t module_update_speed_bps = 0;
 static volatile uint32_t module_update_speed_sample_ms = 0;
 static volatile uint32_t module_update_speed_sample_offset = 0;
 static volatile uint32_t module_update_queued_offset = 0;
-static uint8_t module_update_queue[MODULE_FW_QUEUE_SIZE];
+// The module OTA ring is cold storage between the HTTP producer and the
+// RS485/WiFi update pump. Keep its ~25 KiB out of scarce internal DRAM; the
+// small active transmit staging buffer below deliberately stays internal.
+static uint8_t* module_update_queue = nullptr;
+static bool module_update_queue_psram = false;
 static uint8_t module_update_wifi_bulk[1024];
 static volatile size_t module_update_queue_head = 0;
 static volatile size_t module_update_queue_tail = 0;
@@ -218,6 +230,8 @@ struct MqttUniversalEntityDef {
   String values;
   String role;
   String access;
+  String time_base;
+  String time_display;
 };
 
 struct MasterAlarmJson {

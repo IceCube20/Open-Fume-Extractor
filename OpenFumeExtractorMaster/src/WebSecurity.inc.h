@@ -1,11 +1,13 @@
 #pragma once
 
 // Web security headers, CSRF, captive portal guard and HTTP auth.
-static const char* WEB_COLLECT_HEADERS[] = {"Host", "Origin", "Referer", "X-CSRF-Token"};
+static const char* WEB_COLLECT_HEADERS[] = {"Host", "Origin", "Referer", "X-CSRF-Token", "If-None-Match"};
 static char web_csrf_token[17] = {0};
 
-static void web_security_headers() {
-  web.sendHeader("Cache-Control", "no-store");
+static void web_security_headers(bool cacheable_private = false) {
+  web.sendHeader("Cache-Control", cacheable_private
+      ? "private, no-cache, max-age=0, must-revalidate"
+      : "no-store");
   web.sendHeader("X-Frame-Options", "DENY");
   web.sendHeader("X-Content-Type-Options", "nosniff");
   web.sendHeader("Referrer-Policy", "same-origin");
@@ -67,8 +69,8 @@ static bool web_password_change_blocked() {
   return true;
 }
 
-static bool web_require_auth() {
-  web_security_headers();
+static bool web_require_auth(bool cacheable_private) {
+  web_security_headers(cacheable_private);
   if (web_block_captive_non_config()) return false;
   if (!web_post_origin_ok()) {
     web.send(403, "text/plain; charset=utf-8", "forbidden origin");

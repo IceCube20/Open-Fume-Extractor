@@ -4,7 +4,7 @@ SRC = (Path(__file__).resolve().parents[1] / "JbcUsbModule.ino").read_text()
 
 
 def test_usb_patch_63():
-    assert "#define OFE_MODULE_FW_PATCH 75" in SRC
+    assert "#define OFE_MODULE_FW_PATCH 81" in SRC
 
 
 def test_exhausted_single_flight_request_does_not_rediscover():

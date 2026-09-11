@@ -36,6 +36,7 @@ struct DisplayUniversalControlPending;
 #define OFE_STATUS_LED_PIN -1
 #endif
 
+#define OFE_DISPLAY_HOSTNAME_PREFIX "OFE-Display-800x480"
 #include "src/Rs485PeripheralBus.h"
 #include "src/OfeDisplayWifi.h"
 #ifndef OFE_STATUS_LED_MASTER_TIMEOUT_MS
@@ -43,6 +44,7 @@ struct DisplayUniversalControlPending;
 #endif
 
 #include "src/OfeStatusLed.h"
+#include "src/OfeModuleEco.h"
 
 
 #include <Arduino_GFX_Library.h>
@@ -55,6 +57,7 @@ struct DisplayUniversalControlPending;
 static_assert(LV_MEM_SIZE == 32U * 1024U, "Use the bundled build_opt.h and ofe_lv_conf.h for the RGB display");
 static_assert(LV_OBJ_STYLE_CACHE == 1, "The RGB display requires the bundled LVGL style-cache configuration");
 #include "SolderIronIcon.h"
+#include "SproutIcon.h"
 #include "src/OfeSerialPortFont.h"
 
 // Eigene LVGL-Montserrat-Medium-Fonts mit deutschen Umlauten.
@@ -122,10 +125,12 @@ static const char* fan_io_alias_for(uint8_t addr, uint8_t slot, const char* fall
 #ifndef DISPLAY_RGB_BOUNCE_BUFFER_LINES
 // RGB scanout liest den Framebuffer aus PSRAM. Ein Bounce-Buffer in internem RAM
 // stabilisiert den DMA, wenn LVGL/RS485 parallel Speicherbandbreite brauchen.
-// 20 Zeilen = 2 * 800 * 20 * 2 = 64.000 Bytes internes RAM für beide Bounce-Buffer.
-// Espressif recommends increasing the bounce buffer when drift persists.
-// The LCD is initialized before application caches/LVGL so this DMA-critical SRAM is reserved first.
-#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 20
+// 8 Zeilen = 2 * 800 * 8 * 2 = 25.600 Bytes internes RAM für beide Bounce-Buffer.
+// v30p A/B test: reclaim another 12.8 KiB internal SRAM from the stable 12-line setup.
+// v30o already reached B44 without tearing; the allocator is capped at B48, so this
+// step should expose the intended maximum 48-line SRAM tile if the heap permits it.
+// PCLK/timings/framebuffer topology remain unchanged for an isolated comparison.
+#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 12
 #endif
 #ifndef DISPLAY_RGB_INVERT_COLORS
 #define DISPLAY_RGB_INVERT_COLORS 0
@@ -207,9 +212,10 @@ static const char* fan_io_alias_for(uint8_t addr, uint8_t slot, const char* fall
 #define DISPLAY_PANEL_STATIC_TEST 0
 #endif
 #ifndef DISPLAY_BACKGROUND_CACHE_ENABLED
-// The 800x480 RGB panel is sensitive to periodic PSRAM/bus bursts while scanning out.
-// Visible module pages still request fresh data; background cache is disabled by default.
-#define DISPLAY_BACKGROUND_CACHE_ENABLED 0
+// Keep the full module background cache enabled on the 800x480 display too.
+// The dashboard must receive fresh module details/descriptors without requiring
+// the user to open each module page first.
+#define DISPLAY_BACKGROUND_CACHE_ENABLED 1
 #endif
 
 #ifndef LVGL_DRAW_BUFFER_ALLOW_PSRAM_FALLBACK
@@ -240,7 +246,7 @@ static const char* fan_io_alias_for(uint8_t addr, uint8_t slot, const char* fall
 #ifndef DISPLAY_RS485_IDLE_DELAY_MS
 // Wenn keine UART-Daten anliegen, darf der RS485-Task kurz schlafen.
 // Das entlastet den zweiten Core und macht Touch/Scroll fluessiger.
-#define DISPLAY_RS485_IDLE_DELAY_MS 3
+#define DISPLAY_RS485_IDLE_DELAY_MS 2
 #endif
 
 #ifndef DISPLAY_STATUS_UI_MIN_INTERVAL_MS
@@ -251,7 +257,7 @@ static const char* fan_io_alias_for(uint8_t addr, uint8_t slot, const char* fall
 #endif
 #ifndef DISPLAY_RS485_ACTIVE_YIELD_MS
 // Nach empfangenen Frames kurz schlafen, damit RGB-DMA/LVGL beim Scrollen Luft bekommt.
-#define DISPLAY_RS485_ACTIVE_YIELD_MS 2
+#define DISPLAY_RS485_ACTIVE_YIELD_MS 1
 #endif
 
 #ifndef DISPLAY_RS485_PERIODIC_MS
@@ -299,8 +305,8 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 
 #define OFE_MODULE_FW_MAJOR 1
-#define OFE_MODULE_FW_MINOR 3
-#define OFE_MODULE_FW_PATCH 77
+#define OFE_MODULE_FW_MINOR 4
+#define OFE_MODULE_FW_PATCH 4
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -322,6 +328,8 @@ static Link bus(RS485);
 static OfeDisplayWifi display_wifi;
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
+static bool module_eco_mode = false;
+static bool module_light_sleep_armed = false;
 
 static const uint8_t DEFAULT_MODULE_ADDR = 0x40;
 static uint8_t module_addr = DEFAULT_MODULE_ADDR;
@@ -371,10 +379,10 @@ static uint8_t bus_update_last_scrolled_target = 0;
 static uint32_t bus_update_last_scroll_ms = 0;
 static uint32_t module_list_cache_last_request_ms = 0;
 static uint8_t module_list_cache_request_start = 0;
-static const uint32_t MODULE_LIST_CACHE_REQUEST_MS = 1000UL;
+static const uint32_t MODULE_LIST_CACHE_REQUEST_MS = 8000UL;
 static uint32_t module_detail_cache_last_request_ms = 0;
 static uint8_t module_detail_cache_phase = 0;
-static const uint32_t MODULE_DETAIL_CACHE_REQUEST_MS = 650UL;
+static const uint32_t MODULE_DETAIL_CACHE_REQUEST_MS = 1000UL;
 static const uint32_t HOME_DETAIL_CACHE_VALID_MS = 10000UL;
 
 // Lightweight Home-only cache maintenance.
@@ -744,6 +752,17 @@ struct DisplayModuleSummary {
   uint32_t caps = 0;
   uint32_t uptime_s = 0;
   char name[24] = {0};
+  // Fast live-I/O overlay from DISPLAY_STATUS A4/v1.  Static labels and
+  // descriptor metadata stay in the slower module/detail caches.
+  bool live_io_valid = false;
+  uint8_t live_io_flags = 0; // bit1 main-output valid, bit2 main-output enabled
+  uint16_t live_io_inputs = 0;
+  uint16_t live_io_outputs = 0;
+  uint16_t live_io_faults = 0;
+  uint8_t live_jbc_flags = 0;
+  uint8_t live_jbc_work = 0;
+  uint8_t live_jbc_stand = 0;
+  uint32_t live_io_ms = 0;
 };
 
 // Compact JBC USB detail extensions (Master B5/v1 + friendly B6/v1). These mirror only the
@@ -834,6 +853,7 @@ struct DisplayModuleDetail : DisplayModuleSummary {
   char io_in2_alias[19] = {0};
   char io_out1_alias[19] = {0};
   char io_out2_alias[19] = {0};
+  bool io_aliases_valid = false;
   DisplayJbcUsbCore jbc_usb_core;
   uint32_t universal_descriptor_crc = 0;
   uint8_t universal_entity_total = 0;
@@ -1615,8 +1635,10 @@ static lv_obj_t* ui_header_link_cards[10] = {nullptr};
 static lv_obj_t* ui_header_link_labels[10] = {nullptr};
 static lv_obj_t* ui_header_clock_labels[10] = {nullptr};
 static lv_obj_t* ui_header_alarm_labels[10] = {nullptr};
+static lv_obj_t* ui_header_eco_icons[10] = {nullptr};
 static uint8_t ui_header_link_count = 0;
 static uint8_t ui_header_link_draw_state = 255;
+static uint8_t ui_header_eco_draw_state = 255;
 
 static lv_obj_t* ui_boot_fw = nullptr;
 static lv_obj_t* ui_boot_addr = nullptr;
@@ -1718,6 +1740,7 @@ static lv_obj_t* ui_screensaver_modules = nullptr;
 static lv_obj_t* ui_screensaver_info = nullptr;
 static lv_obj_t* ui_screensaver_alarm = nullptr;
 static lv_obj_t* ui_screensaver_hint = nullptr;
+static lv_obj_t* ui_screensaver_eco_icon = nullptr;
 static lv_obj_t* ui_detail_jbc_mode_dropdown = nullptr;
 static lv_obj_t* ui_detail_jbc_power_input = nullptr;
 static lv_obj_t* ui_detail_jbc_delay_work_input = nullptr;
@@ -1767,6 +1790,22 @@ static bool output_power_pending = false;
 static uint8_t output_power_pending_addr = 0;
 static uint8_t output_power_pending_value = 0;
 static uint32_t output_power_pending_ms = 0;
+
+// Immediate visual feedback for classic detail-page toggle buttons. These
+// controls use the slower DISPLAY_MODULE_DETAIL readback path (Universal
+// entity controls already have their own pending cache). Keep the requested
+// state visible until real module data confirms it, or time out after 5 s.
+enum DetailTogglePendingBit : uint8_t {
+  DETAIL_PENDING_STAND = 0x01,
+  DETAIL_PENDING_CONTINUOUS = 0x02,
+  DETAIL_PENDING_MAIN_OUTPUT = 0x04,
+  DETAIL_PENDING_IO0 = 0x08,
+  DETAIL_PENDING_IO1 = 0x10,
+};
+static uint8_t detail_toggle_pending_addr = 0;
+static uint8_t detail_toggle_pending_mask = 0;
+static uint8_t detail_toggle_pending_values = 0;
+static uint32_t detail_toggle_pending_ms = 0;
 
 static lv_obj_t* ui_page_title = nullptr;
 static lv_obj_t* ui_output_card = nullptr;
@@ -2161,9 +2200,11 @@ static void perf_finish_window_if_due() {
   const uint32_t elapsed_ms = now_ms - perf_window_ms;
   if (elapsed_ms < 1000) return;
 
+#if defined(LV_USE_PROFILER) && LV_USE_PROFILER
   OfeLvProfileSample costs[OFE_LV_PROFILE_COUNT] = {};
   uint32_t profile_errors = 0;
   const bool costs_ready = ofe_lv_profile_take(costs, &profile_errors);
+#endif
 
   perf_fps_x10 = elapsed_ms ? (uint16_t)((perf_frames * 10000ULL) / elapsed_ms) : 0;
   perf_tiles_x10 = perf_frames ? (uint16_t)((perf_flush_calls * 10ULL) / perf_frames) : 0;
@@ -2194,6 +2235,7 @@ static void perf_finish_window_if_due() {
       (double)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) *
                (DISPLAY_RGB_HEIGHT + 8 + 4 + 8)));
 
+#if defined(LV_USE_PROFILER) && LV_USE_PROFILER
   if (costs_ready && perf_frames) {
     const double frame_ms = 1000.0 * perf_frames;
     const uint64_t render_us = costs[OFE_LV_RENDER].us;
@@ -2211,6 +2253,7 @@ static void perf_finish_window_if_due() {
   } else if (!costs_ready || profile_errors) {
     Serial.printf("LVGL PROFILE: incomplete hooks, errors=%lu\n", (unsigned long)profile_errors);
   }
+#endif
 
   perf_window_ms = now_ms;
   perf_frames = 0;
@@ -2492,6 +2535,37 @@ static void lv_set_toggle_style(lv_obj_t* button, bool active) {
   lv_set_border_color_if_changed(button, active ? lv_color_hex(0x42D88A) : ui_theme_color(0x3B5570, 0xB5C5D5), 0);
 }
 
+static bool detail_toggle_pending_value(uint8_t addr, uint8_t bit, bool actual) {
+  if (!addr || detail_toggle_pending_addr != addr || !(detail_toggle_pending_mask & bit)) return actual;
+  if ((uint32_t)(millis() - detail_toggle_pending_ms) >= 5000UL) {
+    detail_toggle_pending_mask &= (uint8_t)~bit;
+    if (!detail_toggle_pending_mask) detail_toggle_pending_addr = 0;
+    return actual;
+  }
+  const bool expected = (detail_toggle_pending_values & bit) != 0;
+  if (actual == expected) {
+    detail_toggle_pending_mask &= (uint8_t)~bit;
+    if (!detail_toggle_pending_mask) detail_toggle_pending_addr = 0;
+    return actual;
+  }
+  return expected;
+}
+
+static bool detail_toggle_pending_flip(uint8_t addr, uint8_t bit, bool actual) {
+  const bool shown = detail_toggle_pending_value(addr, bit, actual);
+  const bool expected = !shown;
+  if (detail_toggle_pending_addr != addr) {
+    detail_toggle_pending_addr = addr;
+    detail_toggle_pending_mask = 0;
+    detail_toggle_pending_values = 0;
+  }
+  detail_toggle_pending_mask |= bit;
+  if (expected) detail_toggle_pending_values |= bit;
+  else detail_toggle_pending_values &= (uint8_t)~bit;
+  detail_toggle_pending_ms = millis();
+  return expected;
+}
+
 static void lv_style_dropdown_popup(lv_obj_t* dropdown) {
   if (!dropdown) return;
   lv_obj_t* list = lv_dropdown_get_list(dropdown);
@@ -2657,8 +2731,8 @@ static String fault_name(uint16_t value, uint8_t module_type = MODULE_UNKNOWN) {
   };
   if (value & 0x0001) add_tr(module_type == MODULE_WELLER_ZERO_SMOG ? "Weller device bus error" : "No speed feedback", module_type == MODULE_WELLER_ZERO_SMOG ? "Weller Ger\303\244tebus Fehler" : "Drehzahlr\303\274ckmeldung fehlt");
   if (value & 0x0100) add_tr("No speed feedback", "Drehzahlr\303\274ckmeldung fehlt");
-  if (value & 0x0002) add_tr("Filter warn", "Filterwarnung");
   if (value & 0x0004) add_tr("Filter full", "Filter voll");
+  else if (value & 0x0002) add_tr("Filter warn", "Filterwarnung");
   if (value & 0x0008) add_tr("Filter missing", "Filter fehlt");
   if (value & 0x0010) add_tr("Sensor fault", "Sensorfehler");
   if (value & 0x0200) add("Timeout");
@@ -2810,6 +2884,14 @@ static int8_t module_summary_index_by_addr(uint8_t addr) {
     if (module_summaries[i].valid && module_summaries[i].addr == addr) return (int8_t)i;
   }
   return -1;
+}
+
+static const DisplayModuleSummary* module_live_io_summary(uint8_t addr) {
+  const int8_t idx = module_summary_index_by_addr(addr);
+  if (idx < 0) return nullptr;
+  const DisplayModuleSummary& m = module_summaries[(uint8_t)idx];
+  if (!m.live_io_valid || (uint32_t)(millis() - m.live_io_ms) > 1800UL) return nullptr;
+  return &m;
 }
 
 static void reset_expected_modules() {
@@ -3565,6 +3647,33 @@ static void lv_update_alarm_header_ui() {
     }
   }
 }
+
+static lv_obj_t* lv_create_eco_sprout(lv_obj_t* parent, int16_t x, int16_t y) {
+  lv_obj_t* icon = lv_image_create(parent);
+  lv_image_set_src(icon, &ofe_sprout_icon);
+  lv_obj_set_pos(icon, x, y);
+  lv_obj_set_size(icon, 20, 20);
+  lv_obj_set_style_image_recolor(icon, lv_color_hex(0x55D98A), 0);
+  lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+  lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+  lv_set_visible(icon, module_eco_mode);
+  return icon;
+}
+
+static void lv_update_eco_indicator_ui(bool force = false) {
+  const uint8_t state = module_eco_mode ? 1 : 0;
+  if (!force && state == ui_header_eco_draw_state) return;
+  for (uint8_t i = 0; i < ui_header_link_count; ++i) {
+    if (ui_header_eco_icons[i] && lv_obj_is_valid(ui_header_eco_icons[i])) {
+      lv_set_visible(ui_header_eco_icons[i], module_eco_mode);
+    }
+  }
+  if (ui_screensaver_eco_icon && lv_obj_is_valid(ui_screensaver_eco_icon)) {
+    lv_set_visible(ui_screensaver_eco_icon, module_eco_mode);
+  }
+  ui_header_eco_draw_state = state;
+}
+
 static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
   lv_obj_t* header = lv_obj_create(screen);
   lv_obj_set_pos(header, 0, 0);
@@ -3593,10 +3702,11 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
   lv_label_set_long_mode(sub, LV_LABEL_LONG_CLIP);
   lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_LEFT, 0);
 
-  lv_obj_t* title = lv_label(header, "Open Fume Extractor", 220, 3, lv_color_hex(0xF7FAFF), UI_FONT_DEFAULT, 360);
+  lv_obj_t* title = lv_label(header, "Open Fume Extractor", 220, 3, lv_color_hex(0xF7FAFF), UI_FONT_DEFAULT, 338);
   lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_t* author = lv_label(header, "by IceCube20", 220, 22, lv_color_hex(0x718092), UI_FONT_DEFAULT, 360);
+  lv_obj_t* author = lv_label(header, "by IceCube20", 220, 22, lv_color_hex(0x718092), UI_FONT_DEFAULT, 338);
   lv_obj_set_style_text_align(author, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_t* eco_icon = lv_create_eco_sprout(header, 560, 11);
 
   lv_obj_t* alarm_lbl = lv_label(header, LV_SYMBOL_BELL, 686, 11, lv_color_hex(0xFF5A67), UI_FONT_DEFAULT, 48);
   lv_obj_set_style_text_align(alarm_lbl, LV_TEXT_ALIGN_CENTER, 0);
@@ -3630,10 +3740,12 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
     ui_header_link_labels[ui_header_link_count] = link_lbl;
     ui_header_clock_labels[ui_header_link_count] = clock_lbl;
     ui_header_alarm_labels[ui_header_link_count] = alarm_lbl;
+    ui_header_eco_icons[ui_header_link_count] = eco_icon;
     ui_header_link_count++;
   }
   lv_update_master_link_ui(true);
   lv_update_alarm_header_ui();
+  lv_update_eco_indicator_ui(true);
 }
 static void lv_screen_switch(lv_obj_t* screen) {
   if (lvgl_ready && screen) {
@@ -3811,11 +3923,19 @@ static void lv_delay_stand_up_event(lv_event_t* e) {
 
 static void lv_stand_intakes_toggle_event(lv_event_t* e) {
   (void)e;
+  if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL && selected_module.valid && ui_detail_stand_button) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_STAND, selected_module.stand_intakes != 0);
+    lv_set_toggle_style(ui_detail_stand_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_STAND_INTAKES_TOGGLE);
 }
 
 static void lv_continuous_toggle_event(lv_event_t* e) {
   (void)e;
+  if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL && selected_module.valid && ui_detail_continuous_button) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_CONTINUOUS, selected_module.continuous != 0);
+    lv_set_toggle_style(ui_detail_continuous_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_CONTINUOUS_TOGGLE);
 }
 
@@ -4145,6 +4265,8 @@ static void lv_create_screensaver_screen() {
     tr("Touch to wake", "Zum Aufwecken ber\303\274hren"), 0, 412,
     lv_color_hex(0x91A0B2), UI_FONT_DEFAULT, DISPLAY_RGB_WIDTH);
   lv_obj_set_style_text_align(ui_screensaver_hint, LV_TEXT_ALIGN_CENTER, 0);
+  ui_screensaver_eco_icon = lv_create_eco_sprout(ui_screensaver_screen, 488, 34);
+  lv_update_eco_indicator_ui(true);
 }
 
 static String screensaver_addr_text(uint8_t addr) {
@@ -4273,7 +4395,7 @@ static uint16_t main_output_rpm_for_ui() {
 static String screensaver_jbc_text() {
   if (!status.jbc_present && !status.jbc_inputs) return String();
   DisplayStatus::JbcStation station = {};
-  const uint32_t rotation_step = millis() / 5000UL;
+  const uint32_t rotation_step = monotonic_uptime_seconds() / 5UL;
   portENTER_CRITICAL(&jbc_station_mux);
   const uint8_t count = status.jbc_station_count;
   const uint8_t index = count ? (uint8_t)(rotation_step % count) : 0;
@@ -4372,6 +4494,7 @@ static void screensaver_update_values() {
   lv_set_pos_if_changed(ui_screensaver_power_bar, 102 + shift_x, 294 + shift_y);
   lv_set_pos_if_changed(ui_screensaver_info, 60 + shift_x, 322 + shift_y);
   lv_set_pos_if_changed(ui_screensaver_hint, shift_x, 412 + shift_y);
+  lv_set_pos_if_changed(ui_screensaver_eco_icon, 488 + shift_x, 34 + shift_y);
 
   last_drawn_status = status;
   have_drawn_status = true;
@@ -4395,7 +4518,7 @@ static void screensaver_enter() {
   screensaver_update_values();
   screensaver_refresh_pending.store(false, std::memory_order_relaxed);
   screensaver_last_update_ms = millis();
-  const uint8_t dim_pct = display_brightness_pct < 18 ? display_brightness_pct : 18;
+  const uint8_t dim_pct = display_brightness_pct < 30 ? display_brightness_pct : 30;
   write_backlight_duty(backlight_duty_from_percent(dim_pct));
   lv_screen_load(ui_screensaver_screen);
 }
@@ -4464,18 +4587,7 @@ static void screensaver_tick() {
   }
 }
 static const char* display_module_type_name(uint8_t type) {
-  switch (type) {
-    case MODULE_JBC_BUS: return "JBC FAE Bus";
-    case MODULE_JBC_USB: return "JBC USB";
-    case MODULE_FAN_IO: return "Fan/IO";
-    case MODULE_FAN_IO_PRO: return "Fan/IO Pro";
-    case MODULE_SENSOR_RESERVED: return tr("Sensor", "Sensor");
-    case MODULE_WELLER_ZERO_SMOG: return "Weller Zero Smog Bus";
-    case MODULE_DISPLAY: return "Display";
-    case MODULE_UNIVERSAL_RS232: return tr("Universal RS232 Bridge", "Universal RS232 Bridge");
-    case MODULE_MODBUS_RTU: return tr("Modbus RTU Bridge", "Modbus RTU Bridge");
-    default: return tr("Module", "Modul");
-  }
+  return ofe_module_default_name(type);
 }
 
 static int16_t targeted_event_value(uint8_t addr, int8_t value = 0) {
@@ -4704,12 +4816,28 @@ static bool detail_fields_is_jbc(uint8_t type, uint32_t caps) {
   return detail_fields_is_jbc_usb(type, caps) || detail_fields_is_jbc_fae(type, caps);
 }
 
-static bool detail_fields_is_universal(uint8_t type, uint32_t) {
-  return type == MODULE_UNIVERSAL_RS232 || type == MODULE_MODBUS_RTU;
+static bool detail_fields_is_universal(uint8_t type, uint32_t caps) {
+  return (caps & CAP_DESCRIPTOR) || type == MODULE_UNIVERSAL_RS232 || type == MODULE_MODBUS_RTU;
 }
 
 static bool detail_fields_is_universal_output(uint8_t type, uint32_t caps) {
+  // Fan/IO uses CAP_ENTITY_CONTROL for configurable GPIO entities too. That
+  // capability alone must never make an unconfigured fan main output appear
+  // in the extractor output selector. Native output capability is authoritative.
+  if (type == MODULE_FAN_IO || type == MODULE_FAN_IO_PRO)
+    return (caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT)) != 0;
   return detail_fields_is_universal(type, caps) && (caps & CAP_ENTITY_CONTROL);
+}
+
+static bool module_summary_provides_extractor_output(const DisplayModuleSummary& m) {
+  if (!m.valid || !(m.flags & 0x01)) return false;
+  // Master v1.9.72+ evaluates the actual descriptor and marks the result in
+  // the existing summary flags byte. This prevents empty Universal/Modbus
+  // profiles from appearing as phantom extractor outputs. Bit4 says bit3 is
+  // authoritative; with older masters retain the capability-based fallback.
+  if (m.flags & 0x10) return (m.flags & 0x08) != 0;
+  const bool entity_output = detail_fields_is_universal_output(m.type, m.caps);
+  return (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_WELLER_INTERFACE)) || entity_output;
 }
 
 static DisplayUniversalModuleCache* universal_cache_find(uint8_t addr, bool create) {
@@ -4740,6 +4868,20 @@ static const DisplayUniversalEntity* universal_cached_entity_by_id(uint8_t addr,
   return nullptr;
 }
 
+static bool fan_io_cached_entity_configured(uint8_t addr, uint8_t entity_id) {
+  const int8_t idx = module_summary_index_by_addr(addr);
+  if (idx < 0) return false;
+  const DisplayModuleSummary& summary = module_summaries[(uint8_t)idx];
+  if (summary.type != MODULE_FAN_IO && summary.type != MODULE_FAN_IO_PRO) return false;
+  // The descriptor revision belongs to DisplayUniversalModuleCache, not to
+  // DisplayModuleSummary. handle_display_detail_page() clears cached entities
+  // whenever the descriptor CRC/total changes, so only the current cache may
+  // decide whether a configurable Fan-I/O entity exists.
+  const DisplayUniversalModuleCache* cache = universal_cache_find(addr, false);
+  if (!cache || !cache->valid) return false;
+  return universal_cached_entity_by_id(addr, entity_id) != nullptr;
+}
+
 static bool universal_entity_is_main_input_candidate(const DisplayUniversalEntity& e) {
   return e.valid && e.id >= 20 && (e.flags & 0x01) &&
     (e.type == DISPLAY_UNI_BINARY_SENSOR || e.type == DISPLAY_UNI_SWITCH);
@@ -4765,8 +4907,8 @@ static uint8_t universal_cache_request_start(uint8_t addr) {
 static bool module_summary_is_universal_addr(uint8_t addr) {
   const int8_t idx = module_summary_index_by_addr(addr);
   if (idx < 0) return addr >= 0x50 && addr <= 0x6F;
-  return module_summaries[(uint8_t)idx].type == MODULE_UNIVERSAL_RS232 ||
-         module_summaries[(uint8_t)idx].type == MODULE_MODBUS_RTU;
+  const DisplayModuleSummary& m = module_summaries[(uint8_t)idx];
+  return detail_fields_is_universal(m.type, m.caps);
 }
 
 static uint8_t first_universal_module_addr(bool online_only) {
@@ -4774,7 +4916,7 @@ static uint8_t first_universal_module_addr(bool online_only) {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid) continue;
     if (online_only && !(m.flags & 0x01)) continue;
-    if (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) return m.addr;
+    if (detail_fields_is_universal(m.type, m.caps)) return m.addr;
   }
   return 0;
 }
@@ -4783,7 +4925,7 @@ static uint8_t first_universal_module_addr_needing_cache() {
   for (uint8_t i = 0; i < module_total && i < 17; ++i) {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid || !(m.flags & 0x01)) continue;
-    if (m.type != MODULE_UNIVERSAL_RS232 && m.type != MODULE_MODBUS_RTU) continue;
+    if (!detail_fields_is_universal(m.type, m.caps)) continue;
     const DisplayUniversalModuleCache* c = universal_cache_find(m.addr, false);
     if (!c || !c->universal_entity_total ||
         c->universal_entity_count < (c->universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : c->universal_entity_total)) {
@@ -4795,8 +4937,12 @@ static uint8_t first_universal_module_addr_needing_cache() {
 }
 
 static bool detail_fields_is_fan_io(uint8_t type, uint32_t caps) {
-  if (type == MODULE_UNIVERSAL_RS232 || type == MODULE_MODBUS_RTU) return false;
+  // Fan/IO and Fan/IO Pro are native extractor modules even though they also
+  // expose a descriptor for configurable GPIO channels. Treating CAP_DESCRIPTOR
+  // as "Universal UI" first made the display build duplicate entity controls
+  // for the main fan output and caused unstable switch/slider behaviour.
   if (type == MODULE_FAN_IO || type == MODULE_FAN_IO_PRO) return true;
+  if (detail_fields_is_universal(type, caps)) return false;
   const uint32_t fan_caps = CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_TACHO_INPUT | CAP_CLOSED_LOOP_RPM | CAP_DIGITAL_OUTPUT;
   return (caps & fan_caps) && !(caps & (CAP_WELLER_INTERFACE | CAP_JBC_ACTIVITY | CAP_DISPLAY));
 }
@@ -4813,6 +4959,15 @@ static bool selected_detail_is_jbc() {
 
 static bool selected_detail_is_fan_io() {
   return detail_fields_is_fan_io(selected_module.type, selected_module.caps);
+}
+
+static bool fan_io_main_output_configured(uint8_t type, uint32_t caps) {
+  if (type != MODULE_FAN_IO && type != MODULE_FAN_IO_PRO) return false;
+  return (caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT)) != 0;
+}
+
+static bool selected_fan_io_main_output_configured() {
+  return selected_detail_is_fan_io() && fan_io_main_output_configured(selected_module.type, selected_module.caps);
 }
 
 static bool selected_detail_is_universal() {
@@ -4841,6 +4996,84 @@ static bool universal_entity_writable(const DisplayUniversalEntity& e) {
 
 static bool universal_entity_readable(const DisplayUniversalEntity& e) {
   return (e.flags & 0x01) != 0;
+}
+
+static bool fan_io_gpio_input_entity(const DisplayUniversalEntity& e) {
+  return e.valid && e.id >= 20 && e.id <= 27 &&
+    e.type == DISPLAY_UNI_BINARY_SENSOR && universal_entity_readable(e);
+}
+
+static bool fan_io_gpio_output_entity(const DisplayUniversalEntity& e) {
+  return e.valid && e.id >= 40 && e.id <= 47 &&
+    e.type == DISPLAY_UNI_SWITCH && universal_entity_writable(e);
+}
+
+static uint8_t selected_fan_io_gpio_output_count() {
+  if (!selected_detail_is_fan_io()) return 0;
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < selected_module.universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+    if (fan_io_gpio_output_entity(selected_module.universal_entities[i])) ++count;
+  }
+  return count;
+}
+
+static bool fan_io_addr_main_output_configured(uint8_t addr) {
+  const int8_t idx = module_summary_index_by_addr(addr);
+  if (idx < 0) return false;
+  const DisplayModuleSummary& m = module_summaries[(uint8_t)idx];
+  return fan_io_main_output_configured(m.type, m.caps);
+}
+
+static String fan_io_entity_label(const DisplayUniversalEntity& e, bool output) {
+  String label;
+  if (e.label[0]) label = String(e.label);
+  else {
+    const uint8_t first = output ? 40U : 20U;
+    label = String(output ? "OUT" : "IN") + String((uint8_t)(e.id - first + 1U));
+  }
+
+  // The GPIO pin and descriptor flags are implementation details. Older
+  // Master versions could accidentally append them to aliases with spaces
+  // (for example "Absaug Klappe gpio=22"). Keep the display human-facing:
+  // alias/name only; the current value is rendered separately by the UI.
+  static const char* technical_suffixes[] = {
+    " gpio=", " GPIO=", " idx=", " active_low=", " pull=",
+    " value_on=", " value_off=", " ppr="
+  };
+  int cut = -1;
+  for (uint8_t i = 0; i < sizeof(technical_suffixes) / sizeof(technical_suffixes[0]); ++i) {
+    const int pos = label.indexOf(technical_suffixes[i]);
+    if (pos >= 0 && (cut < 0 || pos < cut)) cut = pos;
+  }
+  if (cut >= 0) label.remove((unsigned int)cut);
+  label.trim();
+  return label;
+}
+
+static String fan_io_cached_gpio_summary(uint8_t addr, bool outputs, uint16_t state_mask, uint8_t max_items, bool state_known) {
+  const DisplayUniversalModuleCache* cache = universal_cache_find(addr, false);
+  if (!cache || !cache->valid) return String();
+  String text;
+  uint8_t total = 0;
+  uint8_t shown = 0;
+  for (uint8_t i = 0; i < cache->universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+    const DisplayUniversalEntity& e = cache->universal_entities[i];
+    const bool match = outputs ? fan_io_gpio_output_entity(e) : fan_io_gpio_input_entity(e);
+    if (!match) continue;
+    ++total;
+    if (max_items && shown >= max_items) continue;
+    if (text.length()) text += "   ";
+    const uint8_t bit = (uint8_t)(e.id - (outputs ? 40U : 20U));
+    text += fan_io_entity_label(e, outputs);
+    text += ": ";
+    text += state_known ? on_off((state_mask & (uint16_t)(1U << bit)) != 0) : "--";
+    ++shown;
+  }
+  if (max_items && total > shown) {
+    if (text.length()) text += "   ";
+    text += "+" + String((uint8_t)(total - shown));
+  }
+  return text;
 }
 
 static String universal_entity_value_text(const DisplayUniversalEntity& e) {
@@ -4961,13 +5194,21 @@ static uint8_t selected_universal_control_count() {
 
 static uint32_t selected_universal_controls_signature() {
   if (selected_detail_is_fan_io()) {
-    const char* aliases[3] = {selected_module.io_main_alias, selected_module.io_out1_alias, selected_module.io_out2_alias};
-    uint32_t sig = 0xF10A0000UL;
-    for (uint8_t i = 0; i < 3; ++i) {
-      const char* s = aliases[i];
-      while (s && *s) sig = (sig * 33UL) ^ (uint8_t)(*s++);
-      sig ^= (uint32_t)i << 24;
+    // Fan/IO controls are descriptor-driven too. Include the descriptor
+    // revision and every currently cached entity so adding/removing GPIOs
+    // rebuilds the control card immediately instead of leaving OUT1/OUT2.
+    uint32_t sig = 0xF10A0000UL ^ selected_module.universal_descriptor_crc ^
+      ((uint32_t)selected_module.universal_entity_total << 24) ^
+      ((uint32_t)selected_module.universal_entity_count << 16) ^ selected_module.caps;
+    for (uint8_t i = 0; i < selected_module.universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+      const DisplayUniversalEntity& e = selected_module.universal_entities[i];
+      if (!e.valid) continue;
+      sig = (sig * 33UL) ^ e.id;
+      sig = (sig * 33UL) ^ e.type;
+      sig = (sig * 33UL) ^ e.flags;
     }
+    const char* main_alias = selected_module.io_main_alias;
+    while (main_alias && *main_alias) sig = (sig * 33UL) ^ (uint8_t)(*main_alias++);
     return sig;
   }
   if (!selected_detail_is_universal()) return 0;
@@ -5342,12 +5583,13 @@ static void lv_refresh_input_dropdown() {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid || !(m.flags & 0x01)) continue;
     if ((m.caps & CAP_JBC_ACTIVITY) && count < (sizeof(values) / sizeof(values[0]))) values[count++] = main_input_encode(1, m.addr, 0);
-    if ((m.caps & CAP_INPUT_KEYS) && count + 1 < (sizeof(values) / sizeof(values[0]))) {
+    if ((m.caps & CAP_INPUT_KEYS) && !detail_fields_is_universal(m.type, m.caps) &&
+        count + 1 < (sizeof(values) / sizeof(values[0]))) {
       values[count++] = main_input_encode(2, m.addr, 0);
       values[count++] = main_input_encode(2, m.addr, 1);
     }
     const DisplayUniversalModuleCache* uc = universal_cache_find(m.addr, false);
-    if (uc && (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU)) {
+    if (uc && detail_fields_is_universal(m.type, m.caps)) {
       for (uint8_t u = 0; u < uc->universal_entity_count && u < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX && count < (sizeof(values) / sizeof(values[0])); ++u) {
         const DisplayUniversalEntity& ent = uc->universal_entities[u];
         if (universal_entity_is_main_input_candidate(ent)) values[count++] = main_input_encode(3, m.addr, ent.id);
@@ -5397,9 +5639,7 @@ static void lv_refresh_output_dropdown() {
   addrs[0] = 0;  // 0 means master-side automatic main-output selection.
   for (uint8_t i = 0; i < module_total && i < 17 && count < (sizeof(addrs) / sizeof(addrs[0])); ++i) {
     const DisplayModuleSummary& m = module_summaries[i];
-    const bool entity_output = detail_fields_is_universal_output(m.type, m.caps);
-    if (!m.valid || !(m.flags & 0x01) ||
-        (!(m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_WELLER_INTERFACE)) && !entity_output)) continue;
+    if (!module_summary_provides_extractor_output(m)) continue;
     if (!first_output_addr) first_output_addr = m.addr;
     addrs[count++] = m.addr;
   }
@@ -5409,7 +5649,15 @@ static void lv_refresh_output_dropdown() {
     for (uint8_t i = 0; i < count; ++i) {
       if (addrs[i] == status.preferred_output_addr) { preferred_present = true; break; }
     }
-    if (!preferred_present && count < (sizeof(addrs) / sizeof(addrs[0]))) addrs[count++] = status.preferred_output_addr;
+    // Do not resurrect a stale/manual route that the Master has explicitly
+    // marked as not providing an extractor output. This is the second half of
+    // the Universal/Modbus phantom-output fix.
+    const int8_t preferred_idx = module_summary_index_by_addr(status.preferred_output_addr);
+    if (!preferred_present && preferred_idx >= 0 &&
+        module_summary_provides_extractor_output(module_summaries[(uint8_t)preferred_idx]) &&
+        count < (sizeof(addrs) / sizeof(addrs[0]))) {
+      addrs[count++] = status.preferred_output_addr;
+    }
   }
 
   const uint8_t auto_addr = status.auto_output_addr ? status.auto_output_addr : (status.preferred_output_addr ? 0 : (status.output_addr ? status.output_addr : first_output_addr));
@@ -5495,14 +5743,26 @@ static void lv_enable_home_module_card(lv_obj_t* card, uint8_t type) {
 }
 
 static void lv_detail_fan_event(lv_event_t*) {
+  if (selected_module.valid && selected_module.addr) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_MAIN_OUTPUT, selected_module.output_enabled);
+    lv_set_toggle_style(ui_detail_fan_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_MODULE_OUTPUT_TOGGLE, targeted_event_value(selected_module.addr));
 }
 
 static void lv_detail_io1_event(lv_event_t*) {
+  if (selected_module.valid && selected_module.addr) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_IO0, (selected_module.io_outputs & 0x0001U) != 0);
+    lv_set_toggle_style(ui_detail_out1_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_IO_OUT_TOGGLE, targeted_event_value(selected_module.addr, 0));
 }
 
 static void lv_detail_io2_event(lv_event_t*) {
+  if (selected_module.valid && selected_module.addr) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_IO1, (selected_module.io_outputs & 0x0002U) != 0);
+    lv_set_toggle_style(ui_detail_out2_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_IO_OUT_TOGGLE, targeted_event_value(selected_module.addr, 1));
 }
 
@@ -5553,11 +5813,19 @@ static void lv_detail_weller_speed_slider_event(lv_event_t* e) {
 }
 static void lv_detail_weller_fan_event(lv_event_t*) {
   hold_current_weller_speed(selected_module.addr);
+  if (selected_module.valid && selected_module.addr) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_IO0, (selected_module.io_outputs & 0x0001U) != 0);
+    lv_set_toggle_style(ui_detail_weller_fan_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_WELLER_FAN_TOGGLE, targeted_event_value(selected_module.addr));
 }
 
 static void lv_detail_weller_light_event(lv_event_t*) {
   hold_current_weller_speed(selected_module.addr);
+  if (selected_module.valid && selected_module.addr) {
+    const bool expected = detail_toggle_pending_flip(selected_module.addr, DETAIL_PENDING_IO1, selected_module.weller_light != 0);
+    lv_set_toggle_style(ui_detail_weller_light_button, expected);
+  }
   queue_display_event(DISPLAY_EVENT_WELLER_LIGHT_TOGGLE, targeted_event_value(selected_module.addr));
 }
 
@@ -6159,16 +6427,19 @@ static void lv_rebuild_app_ui() {
   ui_screensaver_info = nullptr;
   ui_screensaver_alarm = nullptr;
   ui_screensaver_hint = nullptr;
+  ui_screensaver_eco_icon = nullptr;
   ui_status_msg = nullptr;
   ui_home_io1_button = nullptr;
   ui_home_io2_button = nullptr;
   ui_home_work_icon = nullptr;
   ui_header_link_count = 0;
+  ui_header_eco_draw_state = 255;
   for (uint8_t i = 0; i < 10; ++i) {
     ui_header_link_cards[i] = nullptr;
     ui_header_link_labels[i] = nullptr;
     ui_header_clock_labels[i] = nullptr;
     ui_header_alarm_labels[i] = nullptr;
+    ui_header_eco_icons[i] = nullptr;
   }
   detail_controls_addr = 0;
   detail_controls_type = MODULE_UNKNOWN;
@@ -6328,7 +6599,12 @@ static uint16_t lv_detail_controls_h() {
   if (selected_detail_is_jbc()) return 144;
   if (selected_detail_is_weller()) return 132;
   if (selected_module.type == MODULE_DISPLAY) return 76;
-  if (selected_detail_is_fan_io()) return 126;
+  if (selected_detail_is_fan_io()) {
+    const bool main_configured = selected_fan_io_main_output_configured();
+    const uint8_t gpio_outputs = selected_fan_io_gpio_output_count();
+    if (!gpio_outputs) return main_configured ? 126 : 62;
+    return (uint16_t)((main_configured ? 132U : 18U) + gpio_outputs * 58U);
+  }
   if (selected_detail_is_universal()) {
     const uint8_t n = selected_universal_control_count();
     return n ? (uint16_t)(28 + n * 68U) : 58;
@@ -6406,25 +6682,62 @@ static void lv_build_detail_controls() {
     lv_label(ui_detail_controls, tr("Stand delay (s)", "Stand Nachlauf (s)"), 224, 76, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 202);
     ui_detail_jbc_delay_stand_input = lv_numeric_field(ui_detail_controls, 224, 96, 202, selected_module.delay_stand, NUMERIC_FIELD_JBC_DELAY_STAND);
   } else if (selected_detail_is_fan_io()) {
-    String main_label = detail_alias_or(selected_module.io_main_alias, tr("Relay/Fan", "Relais/L\303\274fter"));
-    String out1_label = detail_alias_or(selected_module.io_out1_alias, "OUT1");
-    String out2_label = detail_alias_or(selected_module.io_out2_alias, "OUT2");
-    ui_detail_fan_button = lv_small_button(ui_detail_controls, 10, 10, 112, main_label.c_str(), lv_detail_fan_event);
-    ui_detail_out1_button = lv_small_button(ui_detail_controls, 132, 10, 90, out1_label.c_str(), lv_detail_io1_event);
-    ui_detail_out2_button = lv_small_button(ui_detail_controls, 232, 10, 90, out2_label.c_str(), lv_detail_io2_event);
-    lv_label(ui_detail_controls, tr("Power", "Leistung"), 10, 62, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 96);
-    ui_detail_output_power_value = lv_label(ui_detail_controls, "-", 360, 62, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 64);
-    ui_detail_output_power_slider = lv_slider_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_output_power_slider, 116, 86);
-    lv_obj_set_size(ui_detail_output_power_slider, 240, 12);
-    lv_slider_set_range(ui_detail_output_power_slider, 10, 100);
-    lv_slider_set_value(ui_detail_output_power_slider, constrain(selected_module.output_power / 10, 10, 100), LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(ui_detail_output_power_slider, ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0x2997FF), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-    lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_RELEASED, NULL);
+    const bool main_configured = selected_fan_io_main_output_configured();
+    const String main_label = detail_alias_or(selected_module.io_main_alias, tr("Relay/Fan", "Relais/L\303\274fter"));
+    if (main_configured) {
+      ui_detail_fan_button = lv_small_button(ui_detail_controls, 10, 10, 172, main_label.c_str(), lv_detail_fan_event);
+      lv_label(ui_detail_controls, tr("Power", "Leistung"), 10, 62, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 96);
+      ui_detail_output_power_value = lv_label(ui_detail_controls, "-", 360, 62, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 64);
+      ui_detail_output_power_slider = lv_slider_create(ui_detail_controls);
+      lv_obj_set_pos(ui_detail_output_power_slider, 116, 86);
+      lv_obj_set_size(ui_detail_output_power_slider, 240, 12);
+      lv_slider_set_range(ui_detail_output_power_slider, 10, 100);
+      lv_slider_set_value(ui_detail_output_power_slider, constrain(selected_module.output_power / 10, 10, 100), LV_ANIM_OFF);
+      lv_obj_set_style_bg_color(ui_detail_output_power_slider, ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0x2997FF), LV_PART_INDICATOR);
+      lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_PRESSED, NULL);
+      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_VALUE_CHANGED, NULL);
+      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_RELEASED, NULL);
+    }
+
+    // Additional Fan/IO GPIO outputs are ordinary descriptor switch entities
+    // (40..47). Build every configured output dynamically and use the same
+    // entity write/readback path as Universal modules. Disabled channels are
+    // absent from the descriptor and therefore cannot leave phantom controls.
+    uint8_t row = 0;
+    const uint16_t gpio_y0 = main_configured ? 124U : 10U;
+    for (uint8_t i = 0; i < selected_module.universal_entity_count &&
+         i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX && row < DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX; ++i) {
+      const DisplayUniversalEntity& e = selected_module.universal_entities[i];
+      if (!fan_io_gpio_output_entity(e)) continue;
+      const uint8_t slot = row;
+      const uint16_t y = (uint16_t)(gpio_y0 + row * 58U);
+      const String label = fan_io_entity_label(e, true);
+      lv_label(ui_detail_controls, label.c_str(), 10, y + 6, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 220);
+      const int16_t actual_value = e.value ? 1 : 0;
+      int16_t control_value = actual_value;
+      universal_pending_value(selected_module.addr, e.id, DISPLAY_UNI_SWITCH, control_value);
+      ui_detail_universal_values[slot] = lv_label(ui_detail_controls, on_off(control_value != 0),
+        350, y + 4, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 76);
+      ui_detail_universal_switches[slot] = lv_switch_create(ui_detail_controls);
+      lv_obj_set_pos(ui_detail_universal_switches[slot], 254, y + 18);
+      lv_obj_set_size(ui_detail_universal_switches[slot], 74, 34);
+      lv_obj_set_user_data(ui_detail_universal_switches[slot], (void*)(uintptr_t)e.id);
+      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0x167A4A), LV_PART_INDICATOR);
+      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+      lv_obj_set_style_border_width(ui_detail_universal_switches[slot], 1, LV_PART_MAIN);
+      lv_obj_set_style_border_color(ui_detail_universal_switches[slot], ui_theme_color(0x3B5570, 0xB5C5D5), LV_PART_MAIN);
+      if (control_value) lv_obj_add_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
+      else lv_obj_clear_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
+      lv_obj_add_event_cb(ui_detail_universal_switches[slot], lv_detail_universal_switch_event, LV_EVENT_VALUE_CHANGED, NULL);
+      ++row;
+    }
+    if (!main_configured && !row) {
+      lv_label(ui_detail_controls, tr("No configured outputs", "Keine konfigurierten Ausg\303\244nge"),
+        10, 18, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 380);
+    }
   } else if (selected_detail_is_universal()) {
     uint8_t row = 0;
     for (uint8_t i = 0; i < selected_module.universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX && row < DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX; ++i) {
@@ -6686,11 +6999,13 @@ static void sync_selected_module_detail_to_home_cache() {
     home_fan_io_cache.filter_zero_raw = m.filter_zero_raw;
     home_fan_io_cache.filter_clean_raw = m.filter_clean_raw;
     home_fan_io_cache.filter_full_raw = m.filter_full_raw;
-    copy_cstr_alias(home_fan_io_cache.io_main_alias, sizeof(home_fan_io_cache.io_main_alias), m.io_main_alias);
-    copy_cstr_alias(home_fan_io_cache.io_in1_alias, sizeof(home_fan_io_cache.io_in1_alias), m.io_in1_alias);
-    copy_cstr_alias(home_fan_io_cache.io_in2_alias, sizeof(home_fan_io_cache.io_in2_alias), m.io_in2_alias);
-    copy_cstr_alias(home_fan_io_cache.io_out1_alias, sizeof(home_fan_io_cache.io_out1_alias), m.io_out1_alias);
-    copy_cstr_alias(home_fan_io_cache.io_out2_alias, sizeof(home_fan_io_cache.io_out2_alias), m.io_out2_alias);
+    if (m.io_aliases_valid) {
+      copy_cstr_alias(home_fan_io_cache.io_main_alias, sizeof(home_fan_io_cache.io_main_alias), m.io_main_alias);
+      copy_cstr_alias(home_fan_io_cache.io_in1_alias, sizeof(home_fan_io_cache.io_in1_alias), m.io_in1_alias);
+      copy_cstr_alias(home_fan_io_cache.io_in2_alias, sizeof(home_fan_io_cache.io_in2_alias), m.io_in2_alias);
+      copy_cstr_alias(home_fan_io_cache.io_out1_alias, sizeof(home_fan_io_cache.io_out1_alias), m.io_out1_alias);
+      copy_cstr_alias(home_fan_io_cache.io_out2_alias, sizeof(home_fan_io_cache.io_out2_alias), m.io_out2_alias);
+    }
     home_fan_io_cache.last_ms = now;
 
     set_bool(status.fan_present, true);
@@ -6986,6 +7301,12 @@ static void lv_update_module_detail() {
   }
   if (!selected_module.valid) return;
   const DisplayModuleDetail& m = selected_module;
+  const bool shown_stand_intakes = detail_toggle_pending_value(m.addr, DETAIL_PENDING_STAND, m.stand_intakes != 0);
+  const bool shown_continuous = detail_toggle_pending_value(m.addr, DETAIL_PENDING_CONTINUOUS, m.continuous != 0);
+  const bool shown_output_enabled = detail_toggle_pending_value(m.addr, DETAIL_PENDING_MAIN_OUTPUT, m.output_enabled);
+  const bool shown_io0 = detail_toggle_pending_value(m.addr, DETAIL_PENDING_IO0, (m.io_outputs & 0x0001U) != 0);
+  const bool shown_io1 = detail_toggle_pending_value(m.addr, DETAIL_PENDING_IO1,
+    detail_fields_is_weller(m.type, m.caps) ? (m.weller_light != 0) : ((m.io_outputs & 0x0002U) != 0));
   const bool master_lost_now = master_link_lost();
   const String detail_type = m.addr == ADDR_MASTER ? String("Master") : detail_type_name(m.type, m.caps);
   lv_set_text(ui_detail_title, lv_addr_text(m.addr) + "  " + (m.name[0] ? String(m.name) : detail_type));
@@ -7019,11 +7340,15 @@ static void lv_update_module_detail() {
       "\n" + tr("Mode: ", "Stufe: ") + suction_name(m.suction) + tr("    Power: ", "    Leistung: ") + String(m.select_flow / 10) + "%" +
       "\n" + tr("Afterrun: Work ", "Nachlauf: Work ") + String(m.delay_work) + "s   Stand " + String(m.delay_stand) + "s" +
       "\nDevice ID: " + jbc_device_id_text();
-  } else if (detail_fields_is_universal(m.type, m.caps)) {
+  } else if (detail_fields_is_universal(m.type, m.caps) && !detail_fields_is_fan_io(m.type, m.caps)) {
     const bool local_bus_online = ((m.output_fault | m.io_faults) & 0x0001U) == 0;
-    values = String(tr("Bridge: ", "Bridge: ")) + (m.type == MODULE_MODBUS_RTU ? "Modbus RTU" : "RS232") +
-      "\n" + tr("Device bus: ", "Ger\303\244tebus: ") + on_off(local_bus_online) +
-      "\n" + tr("Profile entities: ", "Profil-Entities: ") + String(m.universal_entity_total ? m.universal_entity_total : m.universal_entity_count);
+    const bool fan_profile = m.type == MODULE_FAN_IO || m.type == MODULE_FAN_IO_PRO;
+    values = fan_profile
+      ? String(tr("Configurable GPIO", "Konfigurierbare GPIO"))
+      : String(tr("Bridge: ", "Bridge: ")) + (m.type == MODULE_MODBUS_RTU ? "Modbus RTU" : "RS232") +
+        "\n" + tr("Device bus: ", "Ger\303\244tebus: ") + on_off(local_bus_online);
+    values += String("\n") + tr("Profile entities: ", "Profil-Entities: ") +
+      String(m.universal_entity_total ? m.universal_entity_total : m.universal_entity_count);
     if (!m.universal_entity_count) {
       values += "\n" + String((m.universal_entity_total || m.universal_descriptor_crc)
         ? tr("Profile entities are loading", "Profil-Entities werden geladen")
@@ -7037,23 +7362,47 @@ static void lv_update_module_detail() {
     }
     values += "\n" + String(tr("Fault: ", "Fehler: ")) + fault_name(m.output_fault | m.io_faults, m.type);
   } else if (detail_fields_is_fan_io(m.type, m.caps)) {
-    const bool fan_active = m.output_enabled;
+    const bool main_configured = fan_io_main_output_configured(m.type, m.caps);
+    const bool fan_active = main_configured && shown_output_enabled;
     const char* main_label = detail_alias_or(m.io_main_alias, tr("Relay/Fan", "Relais/L\303\274fter"));
-    const char* in1_label = detail_alias_or(m.io_in1_alias, "IN1");
-    const char* in2_label = detail_alias_or(m.io_in2_alias, "IN2");
-    const char* out1_label = detail_alias_or(m.io_out1_alias, "OUT1");
-    const char* out2_label = detail_alias_or(m.io_out2_alias, "OUT2");
-    values = String(main_label) + ": " + on_off(fan_active) + "  " + String(m.output_power / 10) + "%" +
-      "\nRPM: " + String(m.output_rpm) +
-      "\n" + String(in1_label) + ": " + on_off((m.io_inputs & 0x01) != 0) + "   " + String(in2_label) + ": " + on_off((m.io_inputs & 0x02) != 0) +
-      "\n" + String(out1_label) + ": " + on_off((m.io_outputs & 0x01) != 0) + "   " + String(out2_label) + ": " + on_off((m.io_outputs & 0x02) != 0) +
-      "\n" + tr("Fault: ", "Fehler: ") + fault_name(m.output_fault | m.io_faults, m.type);
+    values = main_configured
+      ? (String(main_label) + ": " + on_off(fan_active) + "  " + String(m.output_power / 10) + "%" + "\nRPM: " + String(m.output_rpm))
+      : String(tr("Main output: not configured", "Hauptausgang: nicht konfiguriert"));
+
+    // Render exactly the GPIO entities in the current descriptor. This supports
+    // all eight inputs/outputs and removes the old unconditional IN1/IN2 and
+    // OUT1/OUT2 placeholders.
+    uint8_t input_count = 0;
+    uint8_t output_count = 0;
+    String input_lines;
+    String output_lines;
+    for (uint8_t i = 0; i < m.universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+      const DisplayUniversalEntity& e = m.universal_entities[i];
+      if (fan_io_gpio_input_entity(e)) {
+        const uint8_t bit = (uint8_t)(e.id - 20U);
+        input_lines += "\n  " + fan_io_entity_label(e, false) + ": " + on_off((m.io_inputs & (uint16_t)(1U << bit)) != 0);
+        ++input_count;
+      } else if (fan_io_gpio_output_entity(e)) {
+        const uint8_t bit = (uint8_t)(e.id - 40U);
+        output_lines += "\n  " + fan_io_entity_label(e, true) + ": " + on_off((m.io_outputs & (uint16_t)(1U << bit)) != 0);
+        ++output_count;
+      }
+    }
+    const bool descriptor_incomplete = m.universal_entity_total != 0 &&
+      m.universal_entity_count < (m.universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX
+        ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : m.universal_entity_total);
+    values += "\n" + String(tr("Inputs", "Eing\303\244nge")) + ":";
+    values += input_count ? input_lines : String(" -");
+    values += "\n" + String(tr("Outputs", "Ausg\303\244nge")) + ":";
+    values += output_count ? output_lines : String(" -");
+    if (descriptor_incomplete) values += "\n" + String(tr("GPIO configuration loading...", "GPIO-Konfiguration wird geladen..."));
+    values += "\n" + String(tr("Fault: ", "Fehler: ")) + fault_name(m.output_fault | m.io_faults, m.type);
     if (m.caps & CAP_FILTER_SENSOR) {
       values += "\n" + String(tr("Filter: ", "Filter: ")) + pro_filter_text(m.filter_saturation_permille, m.filter_pressure_raw);
       values += "\n" + pro_calibration_text(m.filter_zero_raw, m.filter_clean_raw, m.filter_full_raw);
     }
   } else if (detail_fields_is_weller(m.type, m.caps)) {
-    values = String(tr("Link: ", "Verbindung: ")) + on_off(m.weller_uart_age <= 10) + tr("   Fan: ", "   L\303\274fter: ") + on_off((m.io_outputs & 1) != 0) + tr("   Light: ", "   Licht: ") + on_off(m.weller_light != 0) +
+    values = String(tr("Link: ", "Verbindung: ")) + on_off(m.weller_uart_age <= 10) + tr("   Fan: ", "   L\303\274fter: ") + on_off(shown_io0) + tr("   Light: ", "   Licht: ") + on_off(shown_io1) +
       "\n" + tr("Speed: ", "Drehzahl: ") + String(m.weller_speed) + "%   RPM: " + String(m.weller_rpm) +
       "\n" + tr("Filter: ", "Filter: ") + filter_name(m.weller_filter) + "   SW: " + weller_sw_name(m.weller_version) +
       "\n" + tr("Filter runtime: ", "Filterlaufzeit: ") + fmt_dhm(m.weller_runtime) + " / " + fmt_dhm(m.weller_programmed) +
@@ -7088,13 +7437,13 @@ static void lv_update_module_detail() {
     lv_textarea_set_text(ui_detail_jbc_delay_stand_input, String(m.delay_stand).c_str());
   }
 
-  lv_set_toggle_style(ui_detail_stand_button, m.stand_intakes != 0);
-  lv_set_toggle_style(ui_detail_continuous_button, m.continuous != 0);
-  lv_set_toggle_style(ui_detail_fan_button, m.output_enabled);
-  lv_set_toggle_style(ui_detail_out1_button, (m.io_outputs & 0x01) != 0);
-  lv_set_toggle_style(ui_detail_out2_button, (m.io_outputs & 0x02) != 0);
-  lv_set_toggle_style(ui_detail_weller_fan_button, (m.io_outputs & 0x01) != 0);
-  lv_set_toggle_style(ui_detail_weller_light_button, m.weller_light != 0);
+  lv_set_toggle_style(ui_detail_stand_button, shown_stand_intakes);
+  lv_set_toggle_style(ui_detail_continuous_button, shown_continuous);
+  lv_set_toggle_style(ui_detail_fan_button, shown_output_enabled);
+  lv_set_toggle_style(ui_detail_out1_button, shown_io0);
+  lv_set_toggle_style(ui_detail_out2_button, shown_io1);
+  lv_set_toggle_style(ui_detail_weller_fan_button, shown_io0);
+  lv_set_toggle_style(ui_detail_weller_light_button, shown_io1);
 
   if (weller_speed_pending && weller_speed_pending_addr == m.addr) {
     if (m.weller_speed == weller_speed_pending_value ||
@@ -7370,21 +7719,25 @@ static void lv_update_app_values() {
 
   const bool fan_cache_ok = home_fan_io_cache_fresh();
 
-  // DISPLAY_STATUS io_* belongs to the currently selected/main output. It is
-  // valid for the Fan/IO Home card only when Fan/IO itself is that output.
-  // Otherwise OUT1/OUT2 must come from the independent Fan/IO detail cache.
-  const bool fan_main_output_live =
-    status.fan_present && active_output_is_fan_io();
+  // A4/v1 carries live I/O for every module, independent of the selected main
+  // output. Prefer it over the multi-second detail cache on both Home and the
+  // module detail page. The old active-output fields remain the fallback for
+  // mixed Master/Display firmware.
+  const bool fan_main_output_live = status.fan_present && active_output_is_fan_io();
+  const uint8_t fan_live_addr = first_module_addr_by_group(MODULE_FAN_IO, false);
+  const DisplayModuleSummary* fan_live = module_live_io_summary(fan_live_addr);
+  const bool fan_live_ok = fan_live != nullptr;
 
-  const bool fan_io_state_known = fan_cache_ok || fan_main_output_live;
-  const uint16_t home_fan_inputs = fan_cache_ok ? home_fan_io_cache.inputs :
-    (fan_main_output_live ? status.io_input_mask : 0U);
-  const uint16_t home_fan_outputs = fan_cache_ok ? home_fan_io_cache.outputs :
-    (fan_main_output_live ? status.io_output_mask : 0U);
-  const uint16_t home_fan_faults = fan_cache_ok ? home_fan_io_cache.faults :
-    (fan_main_output_live ? status.io_fault_mask : 0U);
-  const bool home_fan_enabled = fan_cache_ok ? home_fan_io_cache.output_enabled :
-    (fan_main_output_live ? status.module_output_enabled : false);
+  const bool fan_io_state_known = fan_live_ok || fan_cache_ok || fan_main_output_live;
+  const uint16_t home_fan_inputs = fan_live_ok ? fan_live->live_io_inputs :
+    (fan_cache_ok ? home_fan_io_cache.inputs : (fan_main_output_live ? status.io_input_mask : 0U));
+  const uint16_t home_fan_outputs = fan_live_ok ? fan_live->live_io_outputs :
+    (fan_cache_ok ? home_fan_io_cache.outputs : (fan_main_output_live ? status.io_output_mask : 0U));
+  const uint16_t home_fan_faults = fan_live_ok ? fan_live->live_io_faults :
+    (fan_cache_ok ? home_fan_io_cache.faults : (fan_main_output_live ? status.io_fault_mask : 0U));
+  const bool fan_live_output_valid = fan_live_ok && (fan_live->live_io_flags & 0x02);
+  const bool home_fan_enabled = fan_live_output_valid ? ((fan_live->live_io_flags & 0x04) != 0) :
+    (fan_cache_ok ? home_fan_io_cache.output_enabled : (fan_main_output_live ? status.module_output_enabled : false));
   const uint16_t home_fan_power = fan_cache_ok ? home_fan_io_cache.output_power :
     (fan_main_output_live ? status.module_output_power : 0U);
   const uint16_t home_fan_rpm = fan_cache_ok ? home_fan_io_cache.output_rpm :
@@ -7393,14 +7746,19 @@ static void lv_update_app_values() {
     (fan_main_output_live ? status.module_output_fault : 0U);
 
   const bool weller_cache_ok = home_weller_cache_fresh();
+  const uint8_t weller_live_addr = first_module_addr_by_group(MODULE_WELLER_ZERO_SMOG, false);
+  const DisplayModuleSummary* weller_live = module_live_io_summary(weller_live_addr);
+  const bool weller_live_ok = weller_live != nullptr;
   const bool home_weller_connected = weller_cache_ok ? home_weller_cache.connected : status.weller_connected;
   const uint8_t home_weller_speed = weller_cache_ok ? home_weller_cache.speed : status.weller_speed;
   const uint8_t home_weller_filter_status = weller_cache_ok ? home_weller_cache.filter : status.weller_filter_status;
   const uint16_t home_weller_runtime_min = weller_cache_ok ? home_weller_cache.runtime : status.weller_filter_runtime_min;
   const uint16_t home_weller_programmed_min = weller_cache_ok ? home_weller_cache.programmed : status.weller_filter_programmed_min;
   const uint16_t home_weller_version = weller_cache_ok ? home_weller_cache.version : status.weller_version;
-  const uint8_t home_weller_light = weller_cache_ok ? home_weller_cache.light : status.weller_light;
-  const uint16_t home_weller_outputs = weller_cache_ok ? home_weller_cache.io_outputs : status.io_output_mask;
+  const uint16_t home_weller_outputs = weller_live_ok ? weller_live->live_io_outputs :
+    (weller_cache_ok ? home_weller_cache.io_outputs : status.io_output_mask);
+  const uint8_t home_weller_light = weller_live_ok ? ((home_weller_outputs & 0x0002U) ? 1 : 0) :
+    (weller_cache_ok ? home_weller_cache.light : status.weller_light);
 
   lv_layout_home_cards(master_ok);
   if (ui_home_suction_title) lv_set_text(ui_home_suction_title, home_fan_io_title());
@@ -7463,26 +7821,29 @@ static void lv_update_app_values() {
     if (!fan_module_count) {
       fan_detail = "-";
     } else {
+      const uint8_t fan_addr = home_fan_io_cache.addr ? home_fan_io_cache.addr : first_module_addr_by_group(MODULE_FAN_IO, false);
+      const bool main_configured = fan_io_addr_main_output_configured(fan_addr);
       const char* main_label = detail_alias_or(home_fan_io_cache.io_main_alias, tr("Relay/Fan", "Relais/L\303\274fter"));
-      const char* in1_label = detail_alias_or(home_fan_io_cache.io_in1_alias, "IN1");
-      const char* in2_label = detail_alias_or(home_fan_io_cache.io_in2_alias, "IN2");
-      const char* out1_label = detail_alias_or(home_fan_io_cache.io_out1_alias, "OUT1");
-      const char* out2_label = detail_alias_or(home_fan_io_cache.io_out2_alias, "OUT2");
-      const String main_state = fan_io_state_known ? String(on_off(home_fan_enabled)) : String("--");
-      const String power_text = fan_io_state_known ? (String(home_fan_power / 10) + "%") : String("--%");
-      const String rpm_text = fan_io_state_known ? String(home_fan_rpm) : String("--");
-      const String out1_state = fan_io_state_known ? String(on_off((home_fan_outputs & 0x01) != 0)) : String("--");
-      const String out2_state = fan_io_state_known ? String(on_off((home_fan_outputs & 0x02) != 0)) : String("--");
-      const String in1_state = fan_io_state_known ? String(on_off((home_fan_inputs & 0x01) != 0)) : String("--");
-      const String in2_state = fan_io_state_known ? String(on_off((home_fan_inputs & 0x02) != 0)) : String("--");
+      fan_detail = "";
+      if (main_configured) {
+        const String main_state = fan_io_state_known ? String(on_off(home_fan_enabled)) : String("--");
+        const String power_text = fan_io_state_known ? (String(home_fan_power / 10) + "%") : String("--%");
+        const String rpm_text = fan_io_state_known ? String(home_fan_rpm) : String("--");
+        fan_detail = (active_output_is_fan_io() ? String(tr("Main output | ", "Hauptausgang | ")) : String("")) +
+          String(main_label) + " " + main_state + "   " + power_text + "   RPM " + rpm_text;
+      }
 
-      fan_detail = (active_output_is_fan_io() ? String(tr("Main output | ", "Hauptausgang | ")) : String("")) +
-        String(main_label) + " " + main_state +
-        "   " + power_text + "   RPM " + rpm_text +
-        "   " + String(out1_label) + ": " + out1_state +
-        "   " + String(out2_label) + ": " + out2_state +
-        "   " + String(in1_label) + ": " + in1_state +
-        "   " + String(in2_label) + ": " + in2_state;
+      const String gpio_outputs = fan_io_cached_gpio_summary(fan_addr, true, home_fan_outputs, 2, fan_io_state_known);
+      const String gpio_inputs = fan_io_cached_gpio_summary(fan_addr, false, home_fan_inputs, 2, fan_io_state_known);
+      if (gpio_outputs.length()) {
+        if (fan_detail.length()) fan_detail += "   |   ";
+        fan_detail += gpio_outputs;
+      }
+      if (gpio_inputs.length()) {
+        if (fan_detail.length()) fan_detail += "   |   ";
+        fan_detail += gpio_inputs;
+      }
+      if (!fan_detail.length()) fan_detail = tr("No configured GPIO", "Keine GPIO konfiguriert");
     }
     if (fan_module_count && fan_cache_ok && home_fan_io_cache.relay_style && (home_fan_io_cache.filter_saturation_permille || home_fan_io_cache.filter_pressure_raw)) {
       fan_detail += "   |   " + String(tr("Filter ", "Filter ")) + String((home_fan_io_cache.filter_saturation_permille + 5) / 10) + "%";
@@ -7557,12 +7918,15 @@ static void lv_update_app_values() {
   const bool fan_io_is_output = master_ok && active_output_is_fan_io();
   lv_set_toggle_style(ui_home_fan_button, weller_is_output && home_weller_connected && (home_weller_outputs & 0x01) != 0);
   lv_set_toggle_style(ui_home_light_button, weller_is_output && home_weller_light != 0);
-  lv_set_toggle_style(ui_home_io1_button, fan_io_is_output && (home_fan_outputs & 0x01) != 0);
-  lv_set_toggle_style(ui_home_io2_button, fan_io_is_output && (home_fan_outputs & 0x02) != 0);
+  const uint8_t home_fan_addr = home_fan_io_cache.addr ? home_fan_io_cache.addr : first_module_addr_by_group(MODULE_FAN_IO, false);
+  const bool home_io1_configured = fan_io_cached_entity_configured(home_fan_addr, 40);
+  const bool home_io2_configured = fan_io_cached_entity_configured(home_fan_addr, 41);
+  lv_set_toggle_style(ui_home_io1_button, fan_io_is_output && home_io1_configured && (home_fan_outputs & 0x01) != 0);
+  lv_set_toggle_style(ui_home_io2_button, fan_io_is_output && home_io2_configured && (home_fan_outputs & 0x02) != 0);
   if (ui_home_fan_button) lv_set_visible(ui_home_fan_button, weller_is_output);
   if (ui_home_light_button) lv_set_visible(ui_home_light_button, weller_is_output);
-  if (ui_home_io1_button) lv_set_visible(ui_home_io1_button, fan_io_is_output);
-  if (ui_home_io2_button) lv_set_visible(ui_home_io2_button, fan_io_is_output);
+  if (ui_home_io1_button) lv_set_visible(ui_home_io1_button, fan_io_is_output && home_io1_configured);
+  if (ui_home_io2_button) lv_set_visible(ui_home_io2_button, fan_io_is_output && home_io2_configured);
   // No extra Fan/IO controls on the start page.
   // Buttons are selected by the configured main output above; power remains in Extraction settings.
 
@@ -7631,24 +7995,47 @@ static void lv_update_dashboard_values() {
   }
 
   const bool fan_cache_ok = home_fan_io_cache_fresh();
-  const uint16_t home_fan_inputs = fan_cache_ok ? home_fan_io_cache.inputs : status.io_input_mask;
-  const uint16_t home_fan_outputs = fan_cache_ok ? home_fan_io_cache.outputs : status.io_output_mask;
-  const bool home_fan_enabled = fan_cache_ok ?
-    home_fan_io_cache.output_enabled :
-    status.module_output_enabled;
-  const uint16_t home_fan_power = fan_cache_ok ? home_fan_io_cache.output_power : status.module_output_power;
-  const uint16_t home_fan_rpm = fan_cache_ok ? home_fan_io_cache.output_rpm : status.module_output_rpm;
-  const uint16_t home_fan_fault = fan_cache_ok ? home_fan_io_cache.output_fault : status.module_output_fault;
+
+  // A4/v1 carries live I/O for every module, independent of the selected main
+  // output. Prefer it over the multi-second detail cache on both Home and the
+  // module detail page. The old active-output fields remain the fallback for
+  // mixed Master/Display firmware.
+  const bool fan_main_output_live = status.fan_present && active_output_is_fan_io();
+  const uint8_t fan_live_addr = first_module_addr_by_group(MODULE_FAN_IO, false);
+  const DisplayModuleSummary* fan_live = module_live_io_summary(fan_live_addr);
+  const bool fan_live_ok = fan_live != nullptr;
+
+  const bool fan_io_state_known = fan_live_ok || fan_cache_ok || fan_main_output_live;
+  const uint16_t home_fan_inputs = fan_live_ok ? fan_live->live_io_inputs :
+    (fan_cache_ok ? home_fan_io_cache.inputs : (fan_main_output_live ? status.io_input_mask : 0U));
+  const uint16_t home_fan_outputs = fan_live_ok ? fan_live->live_io_outputs :
+    (fan_cache_ok ? home_fan_io_cache.outputs : (fan_main_output_live ? status.io_output_mask : 0U));
+  const uint16_t home_fan_faults = fan_live_ok ? fan_live->live_io_faults :
+    (fan_cache_ok ? home_fan_io_cache.faults : (fan_main_output_live ? status.io_fault_mask : 0U));
+  const bool fan_live_output_valid = fan_live_ok && (fan_live->live_io_flags & 0x02);
+  const bool home_fan_enabled = fan_live_output_valid ? ((fan_live->live_io_flags & 0x04) != 0) :
+    (fan_cache_ok ? home_fan_io_cache.output_enabled : (fan_main_output_live ? status.module_output_enabled : false));
+  const uint16_t home_fan_power = fan_cache_ok ? home_fan_io_cache.output_power :
+    (fan_main_output_live ? status.module_output_power : 0U);
+  const uint16_t home_fan_rpm = fan_cache_ok ? home_fan_io_cache.output_rpm :
+    (fan_main_output_live ? status.module_output_rpm : 0U);
+  const uint16_t home_fan_fault = fan_cache_ok ? home_fan_io_cache.output_fault :
+    (fan_main_output_live ? status.module_output_fault : 0U);
 
   const bool weller_cache_ok = home_weller_cache_fresh();
+  const uint8_t weller_live_addr = first_module_addr_by_group(MODULE_WELLER_ZERO_SMOG, false);
+  const DisplayModuleSummary* weller_live = module_live_io_summary(weller_live_addr);
+  const bool weller_live_ok = weller_live != nullptr;
   const bool home_weller_connected = weller_cache_ok ? home_weller_cache.connected : status.weller_connected;
   const uint8_t home_weller_speed = weller_cache_ok ? home_weller_cache.speed : status.weller_speed;
   const uint8_t home_weller_filter_status = weller_cache_ok ? home_weller_cache.filter : status.weller_filter_status;
   const uint16_t home_weller_runtime_min = weller_cache_ok ? home_weller_cache.runtime : status.weller_filter_runtime_min;
   const uint16_t home_weller_programmed_min = weller_cache_ok ? home_weller_cache.programmed : status.weller_filter_programmed_min;
   const uint16_t home_weller_version = weller_cache_ok ? home_weller_cache.version : status.weller_version;
-  const uint8_t home_weller_light = weller_cache_ok ? home_weller_cache.light : status.weller_light;
-  const uint16_t home_weller_outputs = weller_cache_ok ? home_weller_cache.io_outputs : status.io_output_mask;
+  const uint16_t home_weller_outputs = weller_live_ok ? weller_live->live_io_outputs :
+    (weller_cache_ok ? home_weller_cache.io_outputs : status.io_output_mask);
+  const uint8_t home_weller_light = weller_live_ok ? ((home_weller_outputs & 0x0002U) ? 1 : 0) :
+    (weller_cache_ok ? home_weller_cache.light : status.weller_light);
 
   uint8_t output_pct = 0;
   if (master_link_online() && status.output_enabled) {
@@ -7722,14 +8109,13 @@ static void lv_update_dashboard_values() {
   lv_set_text_c(ui_fan_detail_power, app_text);
   snprintf(app_text, sizeof(app_text), "%u rpm", (unsigned)home_fan_rpm);
   lv_set_text_c(ui_fan_detail_rpm, app_text);
-  snprintf(app_text, sizeof(app_text), "%s: %s   %s: %s",
-           detail_alias_or(home_fan_io_cache.io_in1_alias, "IN1"), (home_fan_inputs & 1) ? "on" : "off",
-           detail_alias_or(home_fan_io_cache.io_in2_alias, "IN2"), (home_fan_inputs & 2) ? "on" : "off");
-  lv_set_text_c(ui_fan_detail_inputs, app_text);
-  snprintf(app_text, sizeof(app_text), "%s: %s   %s: %s",
-           detail_alias_or(home_fan_io_cache.io_out1_alias, "OUT1"), (home_fan_outputs & 0x01) ? "on" : "off",
-           detail_alias_or(home_fan_io_cache.io_out2_alias, "OUT2"), (home_fan_outputs & 0x02) ? "on" : "off");
-  lv_set_text_c(ui_fan_detail_outputs, app_text);
+  {
+    const uint8_t fan_addr = home_fan_io_cache.addr ? home_fan_io_cache.addr : first_module_addr_by_group(MODULE_FAN_IO, false);
+    const String input_text = fan_io_cached_gpio_summary(fan_addr, false, home_fan_inputs, 0, fan_io_state_known);
+    const String output_text = fan_io_cached_gpio_summary(fan_addr, true, home_fan_outputs, 0, fan_io_state_known);
+    lv_set_text(ui_fan_detail_inputs, input_text.length() ? input_text : String("-"));
+    lv_set_text(ui_fan_detail_outputs, output_text.length() ? output_text : String("-"));
+  }
   lv_set_text(ui_fan_detail_fault, fault_name(home_fan_fault));
   lv_set_text_c(ui_weller_detail_link, home_weller_connected ? "online" : "offline");
   snprintf(app_text, sizeof(app_text), "%u%%", (unsigned)home_weller_speed);
@@ -8327,12 +8713,23 @@ static void send_display_status_response(const Frame& req) {
   const bool user_needs_detail = display_view_mode == DISPLAY_VIEW_MODULE_DETAIL;
   const bool user_on_module_list = display_view_mode == DISPLAY_VIEW_MODULE_LIST;
 
+  // INFO/CAPS can still be incomplete while freshly flashed modules are being
+  // discovered. Periodically restart the list transfer so an early name or
+  // capability snapshot cannot remain cached until the next presence change.
+  if (!fw_update_active && !status.update_active && !user_needs_detail && !user_on_module_list &&
+      !home_module_list_refresh_pending &&
+      (!module_list_cache_last_request_ms ||
+       (uint32_t)(now - module_list_cache_last_request_ms) >= MODULE_LIST_CACHE_REQUEST_MS)) {
+    home_module_list_refresh_pending = true;
+    module_list_cache_request_start = 0;
+  }
+
   if (user_needs_detail && module_summary_is_universal_addr(display_view_arg) && resp.len + 2 <= MAX_PAYLOAD) {
     const bool descriptor_incomplete = selected_module.valid && selected_module.addr == display_view_arg &&
       selected_module.universal_entity_total != 0 &&
       selected_module.universal_entity_count < (selected_module.universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX
         ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : selected_module.universal_entity_total);
-    const uint32_t entity_request_interval_ms = selected_universal_readback_id ? 350UL : 1000UL;
+    const uint32_t entity_request_interval_ms = selected_universal_readback_id ? 350UL : 1500UL;
     if (descriptor_incomplete || !selected_universal_request_ms ||
         (uint32_t)(now - selected_universal_request_ms) >= entity_request_interval_ms) {
       resp.payload[resp.len++] = 0xAC; // visible detail-page entity request
@@ -8423,6 +8820,174 @@ static void send_display_status_response(const Frame& req) {
   pending_display_event_value = 0;
 }
 
+enum DisplayLiveIoChange : uint8_t {
+  DISPLAY_LIVE_IO_NONE = 0,
+  DISPLAY_LIVE_IO_ANY = 0x01,
+  DISPLAY_LIVE_IO_SELECTED = 0x02,
+};
+
+static bool display_live_set_entity(DisplayUniversalEntity& e, uint8_t raw, uint8_t addr) {
+  if (!e.valid || (e.type != DISPLAY_UNI_SWITCH && e.type != DISPLAY_UNI_BINARY_SENSOR)) return false;
+  const int16_t next = (raw != 0 && raw != (uint8_t)'0') ? 1 : 0;
+  const bool changed = e.value != next;
+  e.value = next;
+  universal_pending_observe(addr, e);
+  return changed;
+}
+
+static uint8_t apply_display_live_native(uint8_t addr, uint8_t flags,
+                                         uint16_t inputs, uint16_t outputs, uint16_t faults) {
+  uint8_t changed = DISPLAY_LIVE_IO_NONE;
+  const uint32_t now = millis();
+  const int8_t idx = module_summary_index_by_addr(addr);
+  if (idx >= 0) {
+    DisplayModuleSummary& m = module_summaries[(uint8_t)idx];
+    if (!m.live_io_valid || m.live_io_flags != flags || m.live_io_inputs != inputs ||
+        m.live_io_outputs != outputs || m.live_io_faults != faults) changed |= DISPLAY_LIVE_IO_ANY;
+    m.live_io_valid = true;
+    m.live_io_flags = flags;
+    m.live_io_inputs = inputs;
+    m.live_io_outputs = outputs;
+    m.live_io_faults = faults;
+    m.live_io_ms = now;
+  }
+
+  auto apply_fan_entities = [&](DisplayUniversalEntity* entities, uint8_t count) {
+    if (!entities) return false;
+    bool local_changed = false;
+    for (uint8_t i = 0; i < count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+      DisplayUniversalEntity& e = entities[i];
+      if (fan_io_gpio_input_entity(e)) {
+        const uint8_t bit = (uint8_t)(e.id - 20U);
+        local_changed |= display_live_set_entity(e, (inputs & (uint16_t)(1U << bit)) ? 1 : 0, addr);
+      } else if (fan_io_gpio_output_entity(e)) {
+        const uint8_t bit = (uint8_t)(e.id - 40U);
+        local_changed |= display_live_set_entity(e, (outputs & (uint16_t)(1U << bit)) ? 1 : 0, addr);
+      }
+    }
+    return local_changed;
+  };
+
+  DisplayUniversalModuleCache* uc = universal_cache_find(addr, false);
+  if (uc && apply_fan_entities(uc->universal_entities, uc->universal_entity_count)) changed |= DISPLAY_LIVE_IO_ANY;
+
+  if (selected_module.valid && selected_module.addr == addr) {
+    bool selected_changed = selected_module.io_inputs != inputs || selected_module.io_outputs != outputs ||
+      selected_module.io_faults != faults;
+    selected_module.io_inputs = inputs;
+    selected_module.io_outputs = outputs;
+    selected_module.io_faults = faults;
+    if (flags & 0x02) {
+      const bool enabled = (flags & 0x04) != 0;
+      selected_changed |= selected_module.output_enabled != enabled;
+      selected_module.output_enabled = enabled;
+    }
+    selected_changed |= apply_fan_entities(selected_module.universal_entities, selected_module.universal_entity_count);
+    if (selected_changed) changed |= DISPLAY_LIVE_IO_ANY | DISPLAY_LIVE_IO_SELECTED;
+  }
+  return changed;
+}
+
+static uint8_t apply_display_live_jbc(uint8_t addr, uint8_t link_flags, uint8_t work, uint8_t stand) {
+  uint8_t changed = DISPLAY_LIVE_IO_NONE;
+  const uint32_t now = millis();
+  const int8_t idx = module_summary_index_by_addr(addr);
+  if (idx >= 0) {
+    DisplayModuleSummary& m = module_summaries[(uint8_t)idx];
+    if (!m.live_io_valid || m.live_jbc_flags != link_flags || m.live_jbc_work != work || m.live_jbc_stand != stand)
+      changed |= DISPLAY_LIVE_IO_ANY;
+    m.live_io_valid = true;
+    m.live_jbc_flags = link_flags;
+    m.live_jbc_work = work;
+    m.live_jbc_stand = stand;
+    m.live_io_ms = now;
+  }
+  if (selected_module.valid && selected_module.addr == addr) {
+    if (selected_module.jbc_flags != link_flags || selected_module.jbc_work != work || selected_module.jbc_stand != stand) {
+      selected_module.jbc_flags = link_flags;
+      selected_module.jbc_work = work;
+      selected_module.jbc_stand = stand;
+      changed |= DISPLAY_LIVE_IO_ANY | DISPLAY_LIVE_IO_SELECTED;
+    }
+  }
+  return changed;
+}
+
+static uint8_t apply_display_live_entity(uint8_t addr, uint8_t id, uint8_t raw) {
+  uint8_t changed = DISPLAY_LIVE_IO_NONE;
+  DisplayUniversalModuleCache* uc = universal_cache_find(addr, false);
+  if (uc) {
+    for (uint8_t i = 0; i < uc->universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX; ++i) {
+      DisplayUniversalEntity& e = uc->universal_entities[i];
+      if (e.valid && e.id == id) {
+        if (display_live_set_entity(e, raw, addr)) changed |= DISPLAY_LIVE_IO_ANY;
+        break;
+      }
+    }
+  }
+  if (selected_module.valid && selected_module.addr == addr) {
+    DisplayUniversalEntity* e = selected_universal_entity_by_id(id);
+    if (e && display_live_set_entity(*e, raw, addr)) changed |= DISPLAY_LIVE_IO_ANY | DISPLAY_LIVE_IO_SELECTED;
+  }
+  return changed;
+}
+
+static uint8_t parse_display_live_io(const Frame& req) {
+  if (req.len < 58 || req.payload[55] < 5) return DISPLAY_LIVE_IO_NONE;
+  uint16_t p = 56;
+  ++p; // preferred output
+  if (p + 2 > req.len) return DISPLAY_LIVE_IO_NONE;
+  p += 2; // JBC status error
+
+  if (p + 4 <= req.len && req.payload[p] == 0xA9) {
+    const uint8_t item_count = req.payload[p + 2] > 6 ? 6 : req.payload[p + 2];
+    const uint16_t skip = (uint16_t)4U + (uint16_t)item_count * 6U;
+    if (p + skip > req.len) return DISPLAY_LIVE_IO_NONE;
+    p += skip;
+  }
+  if (p + 4 <= req.len && req.payload[p] == 0xAA) p += 4;
+  if (p + 4 <= req.len && req.payload[p] == 0xAB) p += 4;
+  if (p + 2 <= req.len && req.payload[p] == 0xA8) p += 2;
+  if (p + 4 > req.len || req.payload[p] != 0xA4) return DISPLAY_LIVE_IO_NONE;
+
+  const uint8_t block_len = req.payload[p + 1];
+  const uint16_t block_end = (uint16_t)p + 2U + block_len;
+  if (block_end > req.len || block_len < 2) return DISPLAY_LIVE_IO_NONE;
+  p += 2;
+  const uint8_t version = req.payload[p++];
+  if (version != 1 || p >= block_end) return DISPLAY_LIVE_IO_NONE;
+  const uint8_t record_count = req.payload[p++];
+  uint8_t changed = DISPLAY_LIVE_IO_NONE;
+  for (uint8_t r = 0; r < record_count && p < block_end; ++r) {
+    const uint8_t kind = req.payload[p++];
+    if (kind == 1) {
+      if (p + 8 > block_end) break;
+      const uint8_t addr = req.payload[p++];
+      const uint8_t flags = req.payload[p++];
+      const uint16_t inputs = get_u16_le(req.payload + p); p += 2;
+      const uint16_t outputs = get_u16_le(req.payload + p); p += 2;
+      const uint16_t faults = get_u16_le(req.payload + p); p += 2;
+      changed |= apply_display_live_native(addr, flags, inputs, outputs, faults);
+    } else if (kind == 2) {
+      if (p + 4 > block_end) break;
+      const uint8_t addr = req.payload[p++];
+      const uint8_t link_flags = req.payload[p++];
+      const uint8_t work = req.payload[p++];
+      const uint8_t stand = req.payload[p++];
+      changed |= apply_display_live_jbc(addr, link_flags, work, stand);
+    } else if (kind == 3) {
+      if (p + 3 > block_end) break;
+      const uint8_t addr = req.payload[p++];
+      const uint8_t id = req.payload[p++];
+      const uint8_t raw = req.payload[p++];
+      changed |= apply_display_live_entity(addr, id, raw);
+    } else {
+      break; // Unknown record kind: stop at this versioned block safely.
+    }
+  }
+  return changed;
+}
+
 static void parse_display_extension(const Frame& req) {
   if (req.len < 57) return;
   const uint8_t ext_version = req.payload[55];
@@ -8475,6 +9040,12 @@ static void parse_display_extension(const Frame& req) {
   if (ext_version >= 5 && p + 2 <= req.len && req.payload[p] == 0xA8) {
     p++; // auto output candidate marker
     status.auto_output_addr = req.payload[p++];
+  }
+
+  if (ext_version >= 5 && p + 2 <= req.len && req.payload[p] == 0xA4) {
+    const uint16_t skip = (uint16_t)2U + req.payload[p + 1];
+    if (p + skip > req.len) return;
+    p += skip;
   }
 
   if (ext_version >= 5 && p + 2 <= req.len && req.payload[p] == 0xA7) {
@@ -8543,12 +9114,27 @@ static void parse_display_extension(const Frame& req) {
       memcpy(m.name, req.payload + p, copy_len);
       m.name[copy_len] = 0;
       p += wire_name_len;
+      // Address 0x01 is always the OFE master. Keep the UI correct even when an
+      // older master firmware sends MODULE_UNKNOWN or an empty/generic name.
       if (m.addr == ADDR_MASTER) {
+        strncpy(m.name, "OFE Master", sizeof(m.name) - 1);
+        m.name[sizeof(m.name) - 1] = 0;
         if (master_uptime_valid && m.uptime_s + 2 < last_master_uptime_s) reset_expected_modules();
         last_master_uptime_s = m.uptime_s;
         master_uptime_valid = true;
       }
       DisplayModuleSummary& current = module_summaries[start + parsed];
+      if (current.valid && current.addr == next_summary.addr) {
+        next_summary.live_io_valid = current.live_io_valid;
+        next_summary.live_io_flags = current.live_io_flags;
+        next_summary.live_io_inputs = current.live_io_inputs;
+        next_summary.live_io_outputs = current.live_io_outputs;
+        next_summary.live_io_faults = current.live_io_faults;
+        next_summary.live_jbc_flags = current.live_jbc_flags;
+        next_summary.live_jbc_work = current.live_jbc_work;
+        next_summary.live_jbc_stand = current.live_jbc_stand;
+        next_summary.live_io_ms = current.live_io_ms;
+      }
       if (memcmp(&current, &next_summary, sizeof(next_summary)) != 0) {
         current = next_summary;
         list_changed = true;
@@ -8830,8 +9416,8 @@ static void send_info(const Frame& req) {
   if (suffix_len > 7) suffix_len = 7;
   resp.payload[o++] = suffix_len;
   for (uint8_t i = 0; i < suffix_len && o < MAX_PAYLOAD; ++i) resp.payload[o++] = (uint8_t)FW_SUFFIX[i];
-  const char name[24] = "Display";
-  const char* shown_name = module_label[0] ? module_label : name;
+  const char* shown_name = module_label[0] ? module_label :
+    ofe_module_default_name(MODULE_DISPLAY, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
   while (*shown_name && o < MAX_PAYLOAD) resp.payload[o++] = (uint8_t)*shown_name++;
   resp.len = o;
   bus.send(resp);
@@ -8845,7 +9431,7 @@ static void send_caps(const Frame& req) {
   resp.cmd = CMD_GET_CAPS | 0x80;
   resp.len = 5;
   resp.payload[0] = STATUS_OK;
-  put_u32_le(resp.payload + 1, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_DISPLAY_HYBRID);
+  put_u32_le(resp.payload + 1, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
   bus.send(resp);
 }
 
@@ -8902,7 +9488,7 @@ static void send_discover_response(uint8_t dst, uint8_t seq) {
   resp.payload[o++] = FW_MAJOR;
   resp.payload[o++] = FW_MINOR;
   resp.payload[o++] = FW_PATCH;
-  put_u32_le(resp.payload + o, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_DISPLAY_HYBRID); o += 4;
+  put_u32_le(resp.payload + o, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID); o += 4;
   resp.len = o;
   bus.send(resp);
 }
@@ -9129,6 +9715,7 @@ static uint8_t normalized_bus_update_progress(uint8_t target, uint8_t incoming_p
 
 static bool parse_detail_io_aliases(const Frame& req, uint16_t& p, DisplayModuleDetail& m) {
   char* aliases[5] = {m.io_main_alias, m.io_in1_alias, m.io_in2_alias, m.io_out1_alias, m.io_out2_alias};
+  m.io_aliases_valid = false;
   for (uint8_t i = 0; i < 5; ++i) {
     if (p >= req.len) return false;
     const uint8_t wire_len = req.payload[p++];
@@ -9139,6 +9726,7 @@ static bool parse_detail_io_aliases(const Frame& req, uint16_t& p, DisplayModule
     aliases[i][copy_len] = 0;
     p += wire_len;
   }
+  m.io_aliases_valid = true;
   return true;
 }
 
@@ -9382,6 +9970,7 @@ static void handle_display_status(const Frame& req) {
   // ACK first, draw afterwards. LVGL/full-screen redraws can take long enough
   // to disturb the master's update timing if the ACK is delayed.
   send_display_status_response(req);
+  const uint8_t live_io_change = parse_display_live_io(req);
   parse_display_extension(req);
 
   // Do not touch LVGL from the RS485 task. Fresh Home data (especially Weller/FanIO)
@@ -9407,12 +9996,13 @@ static void handle_display_status(const Frame& req) {
       // parse_display_extension() can update caches before this point, so do
       // not use have_drawn_status as the first-frame detector here.
       ui_defer_flags(UI_DEFER_DASHBOARD);
-    } else if (display_view_mode == DISPLAY_VIEW_HOME && draw_changed) {
+    } else if (display_view_mode == DISPLAY_VIEW_HOME && (draw_changed || (live_io_change & DISPLAY_LIVE_IO_ANY))) {
       // Identical telemetry must not rebuild the large Home widget tree.
       // Caches are still updated by the parser; only redundant LVGL work is skipped.
       ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
     }
-    if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL && selected_jbc_detail_changed) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
+    if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL &&
+        (selected_jbc_detail_changed || (live_io_change & DISPLAY_LIVE_IO_SELECTED))) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
     if (display_view_mode == DISPLAY_VIEW_ALARMS && draw_changed) {
       ui_defer_app_values_throttled(DISPLAY_STATUS_UI_MIN_INTERVAL_MS);
     }
@@ -9428,17 +10018,18 @@ static void handle_display_status(const Frame& req) {
     if (status_changed_for_draw()) screensaver_request_refresh();
     return;
   }
-  if (selected_jbc_detail_changed && display_view_mode == DISPLAY_VIEW_MODULE_DETAIL) lv_update_module_detail();
+  if (display_view_mode == DISPLAY_VIEW_MODULE_DETAIL &&
+      (selected_jbc_detail_changed || (live_io_change & DISPLAY_LIVE_IO_SELECTED))) lv_update_module_detail();
   if (status.update_active) {
     if (update_is_local_display_target(status.update_target)) {
       draw_update_progress_throttled(status.update_target, status.update_progress, "Bus update");
     } else {
       if (status.update_active) refresh_bus_update_inline_ui_throttled(false);
-      if (status_changed_for_draw()) show_dashboard();
+      if (status_changed_for_draw() || (live_io_change & DISPLAY_LIVE_IO_ANY)) show_dashboard();
     }
   } else {
     if (status.update_active) refresh_bus_update_inline_ui_throttled(false);
-    if (status_changed_for_draw()) show_dashboard();
+    if (status_changed_for_draw() || (live_io_change & DISPLAY_LIVE_IO_ANY)) show_dashboard();
   }
 }
 
@@ -9569,12 +10160,27 @@ static void handle_display_module_list(const Frame& req) {
     memcpy(m.name, req.payload + p, copy_len);
     m.name[copy_len] = 0;
     p += wire_name_len;
+    // Address 0x01 is always the OFE master. Keep the UI correct even when an
+    // older master firmware sends MODULE_UNKNOWN or an empty/generic name.
     if (m.addr == ADDR_MASTER) {
+      strncpy(m.name, "OFE Master", sizeof(m.name) - 1);
+      m.name[sizeof(m.name) - 1] = 0;
       if (master_uptime_valid && m.uptime_s + 2 < last_master_uptime_s) reset_expected_modules();
       last_master_uptime_s = m.uptime_s;
       master_uptime_valid = true;
     }
     DisplayModuleSummary& current = module_summaries[start + parsed];
+    if (current.valid && current.addr == next_summary.addr) {
+      next_summary.live_io_valid = current.live_io_valid;
+      next_summary.live_io_flags = current.live_io_flags;
+      next_summary.live_io_inputs = current.live_io_inputs;
+      next_summary.live_io_outputs = current.live_io_outputs;
+      next_summary.live_io_faults = current.live_io_faults;
+      next_summary.live_jbc_flags = current.live_jbc_flags;
+      next_summary.live_jbc_work = current.live_jbc_work;
+      next_summary.live_jbc_stand = current.live_jbc_stand;
+      next_summary.live_io_ms = current.live_io_ms;
+    }
     if (memcmp(&current, &next_summary, sizeof(next_summary)) != 0) {
       current = next_summary;
       list_changed = true;
@@ -9799,6 +10405,24 @@ static bool parse_display_module_detail_record(const Frame& req, uint16_t p, Dis
 }
 
 static void apply_display_module_detail(DisplayModuleDetail& m) {
+  if (detail_fields_is_fan_io(m.type, m.caps) && !m.io_aliases_valid) {
+    const DisplayModuleDetail* previous = (selected_module.valid && selected_module.addr == m.addr) ? &selected_module : nullptr;
+    if (previous && previous->io_aliases_valid) {
+      copy_cstr_alias(m.io_main_alias, sizeof(m.io_main_alias), previous->io_main_alias);
+      copy_cstr_alias(m.io_in1_alias, sizeof(m.io_in1_alias), previous->io_in1_alias);
+      copy_cstr_alias(m.io_in2_alias, sizeof(m.io_in2_alias), previous->io_in2_alias);
+      copy_cstr_alias(m.io_out1_alias, sizeof(m.io_out1_alias), previous->io_out1_alias);
+      copy_cstr_alias(m.io_out2_alias, sizeof(m.io_out2_alias), previous->io_out2_alias);
+      m.io_aliases_valid = true;
+    } else if (home_fan_io_cache.valid && home_fan_io_cache.addr == m.addr) {
+      copy_cstr_alias(m.io_main_alias, sizeof(m.io_main_alias), home_fan_io_cache.io_main_alias);
+      copy_cstr_alias(m.io_in1_alias, sizeof(m.io_in1_alias), home_fan_io_cache.io_in1_alias);
+      copy_cstr_alias(m.io_in2_alias, sizeof(m.io_in2_alias), home_fan_io_cache.io_in2_alias);
+      copy_cstr_alias(m.io_out1_alias, sizeof(m.io_out1_alias), home_fan_io_cache.io_out1_alias);
+      copy_cstr_alias(m.io_out2_alias, sizeof(m.io_out2_alias), home_fan_io_cache.io_out2_alias);
+      m.io_aliases_valid = true;
+    }
+  }
   if (detail_fields_is_universal(m.type, m.caps)) {
     const DisplayUniversalModuleCache* old_uc = universal_cache_find(m.addr, false);
     if (old_uc) {
@@ -9864,6 +10488,35 @@ static void handle_display_module_detail(const Frame& req) {
   apply_display_module_detail(m);
 }
 
+static bool validate_display_detail_page_payload(const Frame& req, uint8_t detail_page_version, uint16_t p, uint8_t count) {
+  for (uint8_t i = 0; i < count; ++i) {
+    // id,type,flags,min,max,step,value,label_len
+    if (p + 12 > req.len) return false;
+    p += 11;
+    const uint8_t label_len = req.payload[p++];
+    if ((uint32_t)p + label_len > req.len) return false;
+    p += label_len;
+
+    if (p >= req.len) return false;
+    const uint8_t unit_len = req.payload[p++];
+    if ((uint32_t)p + unit_len > req.len) return false;
+    p += unit_len;
+
+    if (p >= req.len) return false;
+    const uint8_t text_len = req.payload[p++];
+    if ((uint32_t)p + text_len > req.len) return false;
+    p += text_len;
+
+    if (detail_page_version >= 2) {
+      if (p >= req.len) return false;
+      const uint8_t options_len = req.payload[p++];
+      if ((uint32_t)p + options_len > req.len) return false;
+      p += options_len;
+    }
+  }
+  return p <= req.len;
+}
+
 static void handle_display_detail_page(const Frame& req) {
   if (req.len < 11 || (req.payload[0] != 1 && req.payload[0] != 2)) {
     send_status_response(req, req.len < 11 ? STATUS_BAD_LEN : STATUS_BAD_VALUE);
@@ -9879,11 +10532,21 @@ static void handle_display_detail_page(const Frame& req) {
   const uint8_t start = req.payload[p++];
   uint8_t count = req.payload[p++];
 
+  // Validate the complete variable-length page before acknowledging it. Once
+  // validated, acknowledge immediately so UI/cache work cannot consume the
+  // master's short disposable WiFi response window.
+  if (!validate_display_detail_page_payload(req, detail_page_version, p, count)) {
+    send_status_response(req, STATUS_BAD_LEN);
+    return;
+  }
+
   DisplayUniversalModuleCache* uc = universal_cache_find(addr, true);
   if (!uc) {
     send_status_response(req, STATUS_BAD_VALUE);
     return;
   }
+  send_status_response(req, STATUS_OK);
+
   if (uc->universal_descriptor_crc != crc || uc->universal_entity_total != total) {
     memset(uc->universal_entities, 0, sizeof(uc->universal_entities));
     uc->universal_entity_count = 0;
@@ -10007,9 +10670,7 @@ static void handle_display_detail_page(const Frame& req) {
     else lv_update_app_values();
   }
 
-  send_status_response(req, STATUS_OK);
 }
-
 static void handle_display_update(const Frame& req) {
   if (req.len < 3) {
     send_status_response(req, STATUS_BAD_LEN);
@@ -10163,6 +10824,9 @@ static void handle_frame(const Frame& req) {
     return;
   }
   if (req.src == ADDR_MASTER) last_master_ms = millis();
+
+  if (ofe_handle_power_save_command(req, bus, module_addr, ofe_status_leds, false,
+                                    module_eco_mode, module_light_sleep_armed)) return;
 
   switch (req.cmd) {
     case CMD_PING: send_status_response(req, STATUS_OK); break;
@@ -10340,7 +11004,7 @@ static void serial_cli_print_status() {
   debug_printf("STATUS FW=%s addr=0x%02X uptime=%lus master=%s CPU=%u%% loopMax=%ums LVGL=B%u\n",
     OFE_MODULE_FW_VERSION,
     (unsigned)module_addr,
-    (unsigned long)(millis() / 1000UL),
+    (unsigned long)monotonic_uptime_seconds(),
     master_link_online() ? "online" : "offline",
     (unsigned)cpu_load_pct,
     (unsigned)loop_max_ms,
@@ -10445,7 +11109,7 @@ void setup() {
   serial_cli_prompt();
   backlight_off();
 
-  Serial.printf("Display mode: RGB 800x480 SYNCFIX-v16 JC8048W550 LIVE-HOME-MODULES, %u-line internal bounce, %s LVGL flush, PCLK %u Hz, H/V idle-low=1, lv_color_t %u B\n",
+  Serial.printf("Display mode: RGB 800x480 SYNCFIX-v20 JC8048W550 BOUNCE8 PROFILER-LIGHT LIVE-HOME-MODULES, %u-line internal bounce, %s LVGL flush, PCLK %u Hz, H/V idle-low=1, lv_color_t %u B\n",
                 (unsigned)DISPLAY_RGB_BOUNCE_BUFFER_LINES,
                 DISPLAY_LVGL_FULL_REFRESH ? "full" : "partial",
                 (unsigned)DISPLAY_RGB_PCLK_HZ,
@@ -10485,6 +11149,7 @@ void setup() {
   Serial.printf("LVGL renderer: style cache=%u, circle cache=%u, SDK string ops=%u\n",
     (unsigned)LV_OBJ_STYLE_CACHE, (unsigned)LV_DRAW_SW_CIRCLE_CACHE_SIZE,
     (unsigned)(LV_USE_STDLIB_STRING == LV_STDLIB_CLIB));
+  Serial.println("LVGL deep profiler: OFF (production fast path; lightweight PERF counters remain enabled)");
   log_internal_ram("After gfx->begin");
   if (!display_ok) {
     Serial.println("RGB display begin failed");
@@ -10579,6 +11244,7 @@ void loop() {
       screensaver_wake();
     }
     apply_deferred_ui_updates();
+    lv_update_eco_indicator_ui();
     if (!fw_update_active) {
       detail_request_watchdog_tick();
       // Safety net: if the Master is online and valid Home data exists, never stay

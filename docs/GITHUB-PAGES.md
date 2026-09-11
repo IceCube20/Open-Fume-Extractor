@@ -37,7 +37,7 @@ The generator performs the following work:
 - verifies that every merged image contains the matching application image
 - signs and verifies the OTA packages
 - refreshes firmware files and SHA-256 checksums
-- regenerates the ten ESP Web Tools manifests
+- regenerates the eleven ESP Web Tools manifests
 - refreshes the firmware catalog used by the web flasher
 
 Do not edit generated manifest versions or firmware paths manually. Commit the
@@ -49,7 +49,7 @@ refreshed `GitHub-Release` tree after the generator completes successfully.
 - Signed normal `.bin` files belong in the master or display OTA updater.
 - Selecting the wrong module family can make a device unbootable until the
   correct merged image is written again.
-- Display 320x480 and Display 800x480 are separate targets.
+- Display 320x480, Display ST7796 320x480 and Display 800x480 are separate targets.
 
 The manifests set `new_install_prompt_erase` so the user can choose whether to
 erase existing flash data. Erasing is required for a first installation, a

@@ -28,6 +28,7 @@ $targets = @(
   @{ Name='Weller-Zero-Smog'; Label='Weller Zero Smog'; Target='WELLER_ZERO_SMOG'; Chip='ESP32'; Flash='4 MB'; App='Module\WellerZeroSmogModule\build\esp32.esp32.esp32\WellerZeroSmogModule.ino.bin'; Merged='Module\WellerZeroSmogModule\build\esp32.esp32.esp32\WellerZeroSmogModule.ino.merged.bin' },
   @{ Name='Display-320x480'; Label='Display 320x480'; Target='DISPLAY_320X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_320x480\build\esp32.esp32.esp32s3\DisplayModule_320x480.ino.bin'; Merged='Module\DisplayModule_320x480\build\esp32.esp32.esp32s3\DisplayModule_320x480.ino.merged.bin' },
   @{ Name='Display-800x480'; Label='Display 800x480'; Target='DISPLAY_800X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_800x480\build\ofe.esp32.ofe800\DisplayModule_800x480.ino.bin'; Merged='Module\DisplayModule_800x480\build\ofe.esp32.ofe800\DisplayModule_800x480.ino.merged.bin' },
+  @{ Name='Display-ST7796-320x480'; Label='Display ST7796 320x480'; Target='DISPLAY_ST7796_320X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_ST7796_320x480\build\esp32.esp32.esp32s3\DisplayModule_ST7796_320x480.ino.bin'; Merged='Module\DisplayModule_ST7796_320x480\build\esp32.esp32.esp32s3\DisplayModule_ST7796_320x480.ino.merged.bin' },
   @{ Name='Universal-RS232'; Label='Universal RS232'; Target='UNIVERSAL_RS232'; Chip='ESP32'; Flash='4 MB'; App='Module\UniversalRs232Module\build\esp32.esp32.esp32\UniversalRs232Module.ino.bin'; Merged='Module\UniversalRs232Module\build\esp32.esp32.esp32\UniversalRs232Module.ino.merged.bin' },
   @{ Name='Modbus-RTU'; Label='Modbus RTU'; Target='MODBUS_RTU'; Chip='ESP32'; Flash='4 MB'; App='Module\ModbusRtuModule\build\esp32.esp32.esp32\ModbusRtuModule.ino.bin'; Merged='Module\ModbusRtuModule\build\esp32.esp32.esp32\ModbusRtuModule.ino.merged.bin' }
 )
@@ -199,7 +200,7 @@ $lines.Add('## Update rules')
 $lines.Add('')
 $lines.Add('- Never use a merged image in the web updater.')
 $lines.Add('- Never flash an OTA package at address `0x0`.')
-$lines.Add('- Display 320x480 and Display 800x480 are different firmware targets.')
+$lines.Add('- Display 320x480, Display 800x480 and Display ST7796 320x480 are different firmware targets.')
 $lines.Add('- The web updater rejects a file whose target or Ed25519 signature does not match the selected device.')
 
 [IO.File]::WriteAllLines((Join-Path $docsRoot 'FIRMWARE.md'), $lines, [Text.UTF8Encoding]::new($false))

@@ -1,6 +1,15 @@
 #pragma once
 #include <mbedtls/sha256.h>
 
+// Stagger module-state publishes across short MQTT service ticks. Publishing
+// every module back-to-back created a periodic CPU/heap burst on the same core
+// as loopTask.
+static uint8_t mqtt_state_module_order[ModuleRegistry::MAX_MODULES] = {};
+static uint8_t mqtt_state_module_count = 0;
+static uint8_t mqtt_state_module_cursor = 0;
+static uint32_t mqtt_state_module_last_ms = 0;
+static bool mqtt_state_module_cycle_pending = false;
+
 // MQTT/Home Assistant integration. Included from the master sketch so it can
 // use the sketch-local static configuration while the main file stays readable.
 static void mqtt_service_task(void* parameter) {
@@ -10,7 +19,7 @@ static void mqtt_service_task(void* parameter) {
       MqttConfigGuard guard;
       if (guard.locked()) mqtt_loop();
     }
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(MASTER_MQTT_SERVICE_MS));
   }
 }
 
@@ -65,10 +74,48 @@ static void web_handle_state() {
   const bool include_heap_diag = developer_mode_enabled;
   heap_diag_set_context(HEAP_DIAG_CTX_WEB, include_universal_descriptor ? "state+descriptor" : "state");
   heap_diag_sample("state_begin");
-  String payload = build_state_json(include_universal_descriptor, include_heap_diag);
+  OfePsramTextBuffer& payload = web_state_json_buffer;
+  const bool state_ok = build_state_json(payload, include_universal_descriptor, include_heap_diag);
   heap_diag_sample("state_built");
-  web.send(200, "application/json", payload);
+  if (!state_ok || payload.empty()) {
+    web.send(503, "application/json", "{\"error\":\"state buffer allocation failed\"}");
+  } else {
+    // WebServer::send(const char*) would first copy the whole payload into an
+    // Arduino String. Send only the small header as String, then write the
+    // explicit PSRAM body directly to the client.
+    web.setContentLength(payload.length());
+    web.send(200, "application/json", "");
+    web.sendContent(payload.c_str(), payload.length());
+    web.setContentLength(CONTENT_LENGTH_NOT_SET);
+  }
   heap_diag_sample("state_sent");
+  heap_diag_clear_context(HEAP_DIAG_CTX_WEB);
+}
+
+static void web_handle_descriptors() {
+  // Small static-metadata endpoint used by the status page when descriptor CRCs
+  // change. The old UI fetched /state?desc=1, rebuilding the entire large live
+  // state a second time just to obtain these strings.
+  heap_diag_set_context(HEAP_DIAG_CTX_WEB, "descriptors");
+  String json;
+  json.reserve(master_extmem_malloc_enabled ? 32768UL : 12000UL);
+  json += "{\"modules\":[";
+  bool first = true;
+  for (uint8_t i = 0; i < registry.count(); ++i) {
+    const ModuleRecord& m = registry.at(i);
+    if (!(m.caps & CAP_DESCRIPTOR)) continue;
+    if (!first) json += ',';
+    first = false;
+    json += "{\"addr\":"; json += m.addr;
+    json += ",\"caps\":"; json += m.caps;
+    json += ",\"universal_descriptor_valid\":"; json += m.universal_descriptor_valid ? "true" : "false";
+    json += ",\"universal_descriptor_crc\":"; json += m.universal_descriptor_crc;
+    json += ",\"universal_descriptor\":\"";
+    if (m.universal_descriptor_valid) json += json_escape(m.universal_descriptor);
+    json += "\"}";
+  }
+  json += "]}";
+  web.send(200, "application/json", json);
   heap_diag_clear_context(HEAP_DIAG_CTX_WEB);
 }
 
@@ -83,6 +130,7 @@ static void web_handle_led_state() {
   json += ",\"enabled\":"; json += status_led_enabled ? "true" : "false";
   json += ",\"master_ofe\":"; json += (uint8_t)ofe_status_leds.busEvent();
   json += ",\"master_evt\":"; json += (uint8_t)ofe_status_leds.moduleEvent();
+  json += ",\"master_eco\":"; json += scheduler.powerSaveActive() ? "true" : "false";
   json += ",\"modules\":[";
   for (uint8_t i = 0; i < registry.count(); ++i) {
     const ModuleRecord& m = registry.at(i);
@@ -93,6 +141,7 @@ static void web_handle_led_state() {
     json += ",\"valid\":"; json += (m.led_status_valid || ota_target) ? "true" : "false";
     json += ",\"ofe\":"; json += m.led_ofe_event;
     json += ",\"evt\":"; json += ota_target ? (uint8_t)OFE_LED_EVENT_FW_UPDATE : m.led_evt_event;
+    json += ",\"eco\":"; json += m.eco_mode ? "true" : "false";
     json += '}';
   }
   json += "]}";
@@ -777,7 +826,13 @@ static void mqtt_publish_discovery_entity(const char* component, const char* suf
   String object = master_device_id;
   object += "_";
   object += suffix;
-  String payload = F("{\"name\":\"");
+  OfePsramTextBuffer& payload = mqtt_discovery_payload_buffer;
+  payload.clear();
+  if (master_extmem_malloc_enabled)
+    payload.reservePreferred(MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM, 1536UL);
+  else
+    payload.reserveInternal(1536UL);
+  payload += F("{\"name\":\"");
   payload += name;
   payload += F("\",\"uniq_id\":\"");
   payload += object;
@@ -820,7 +875,13 @@ static void mqtt_publish_discovery_control(const char* component, const char* su
   String object = master_device_id;
   object += "_";
   object += suffix;
-  String payload = F("{\"name\":\"");
+  OfePsramTextBuffer& payload = mqtt_discovery_payload_buffer;
+  payload.clear();
+  if (master_extmem_malloc_enabled)
+    payload.reservePreferred(MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM, 1536UL);
+  else
+    payload.reserveInternal(1536UL);
+  payload += F("{\"name\":\"");
   payload += name;
   payload += F("\",\"uniq_id\":\"");
   payload += object;
@@ -916,11 +977,18 @@ static bool mqtt_universal_output_def(const MqttUniversalEntityDef& def) {
   return role == "main_output_enable" || role == "main_output_power" || role == "output_enable" || role == "output_power" || role == "output";
 }
 
+static bool mqtt_module_has_descriptor(const ModuleRecord& m) {
+  return (m.caps & CAP_DESCRIPTOR) && m.universal_descriptor_valid;
+}
+
 static bool mqtt_module_provides_extractor_output(const ModuleRecord& m) {
   if (!m.online) return false;
+  if ((m.type == MODULE_FAN_IO || m.type == MODULE_FAN_IO_PRO) && m.universal_descriptor_valid) {
+    const char* configured = strstr(m.universal_descriptor, "fan_enabled=");
+    if (configured && configured[12] == '0') return false;
+  }
   if (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT)) return true;
-  if ((m.type != MODULE_UNIVERSAL_RS232 && m.type != MODULE_MODBUS_RTU) ||
-      !(m.caps & CAP_ENTITY_CONTROL) || !m.universal_descriptor_valid) return false;
+  if (!(m.caps & CAP_ENTITY_CONTROL) || !mqtt_module_has_descriptor(m)) return false;
   bool has_enable = false;
   bool has_power = false;
   const char* scan = m.universal_descriptor;
@@ -1045,7 +1113,7 @@ static String mqtt_main_input_label(uint8_t source_type, uint8_t source_addr, ui
       }
     }
     if (!suffix.length()) suffix = String("Entity ") + String(source_bit);
-    if (!m || !m->online || !(m->type == MODULE_UNIVERSAL_RS232 || m->type == MODULE_MODBUS_RTU) || !m->universal_descriptor_valid) {
+    if (!m || !m->online || !mqtt_module_has_descriptor(*m)) {
       String out = mqtt_unavailable_route_label("Kein Eingang", "No input", source_addr);
       out += " - ";
       out += suffix;
@@ -1098,11 +1166,11 @@ static String mqtt_main_input_options_extra() {
     const ModuleRecord& m = registry.at(order[oi]);
     if (!m.online) continue;
     if (m.caps & CAP_JBC_ACTIVITY) add(mqtt_main_input_label(MasterScheduler::INPUT_SRC_JBC_WORK, m.addr, 0));
-    if (m.caps & CAP_INPUT_KEYS) {
+    if ((m.caps & CAP_INPUT_KEYS) && !mqtt_module_has_descriptor(m)) {
       add(mqtt_main_input_label(MasterScheduler::INPUT_SRC_IO_INPUT, m.addr, 0));
       add(mqtt_main_input_label(MasterScheduler::INPUT_SRC_IO_INPUT, m.addr, 1));
     }
-    if ((m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) && m.universal_descriptor_valid) {
+    if (mqtt_module_has_descriptor(m)) {
       const char* scan = m.universal_descriptor;
       while (scan && *scan) {
         const char* next = strchr(scan, '\n');
@@ -1188,10 +1256,10 @@ static bool mqtt_find_main_input_by_label(const String& value, uint8_t& source_t
     const ModuleRecord& m = registry.at(i);
     if (!m.online) continue;
     if ((m.caps & CAP_JBC_ACTIVITY) && value == mqtt_main_input_label(MasterScheduler::INPUT_SRC_JBC_WORK, m.addr, 0)) { source_type = MasterScheduler::INPUT_SRC_JBC_WORK; source_addr = m.addr; source_bit = 0; return true; }
-    if (m.caps & CAP_INPUT_KEYS) {
+    if ((m.caps & CAP_INPUT_KEYS) && !mqtt_module_has_descriptor(m)) {
       for (uint8_t bit = 0; bit < 2; ++bit) if (value == mqtt_main_input_label(MasterScheduler::INPUT_SRC_IO_INPUT, m.addr, bit)) { source_type = MasterScheduler::INPUT_SRC_IO_INPUT; source_addr = m.addr; source_bit = bit; return true; }
     }
-    if ((m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) && m.universal_descriptor_valid) {
+    if (mqtt_module_has_descriptor(m)) {
       const char* scan = m.universal_descriptor;
       while (scan && *scan) {
         const char* next = strchr(scan, '\n');
@@ -1313,6 +1381,12 @@ static bool mqtt_parse_universal_descriptor_line(const char* line, MqttUniversal
   out.values = mqtt_descriptor_meta(line, "values");
   out.role = mqtt_descriptor_meta(line, "role");
   out.access = mqtt_descriptor_meta(line, "access");
+  out.time_base = mqtt_descriptor_meta(line, "time_base");
+  if (!out.time_base.length()) out.time_base = mqtt_descriptor_meta(line, "tb");
+  out.time_display = mqtt_descriptor_meta(line, "time_display");
+  if (!out.time_display.length()) out.time_display = mqtt_descriptor_meta(line, "tf");
+  out.time_base.trim(); out.time_base.toLowerCase();
+  out.time_display.trim(); out.time_display.toLowerCase();
   return out.valid;
 }
 
@@ -1356,7 +1430,7 @@ static String mqtt_universal_entity_value(const UniversalEntityState& e) {
 }
 
 static bool mqtt_universal_descriptor_def_for_entity(const ModuleRecord& m, uint8_t entity_id, MqttUniversalEntityDef& out) {
-  if (!(m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) || !m.universal_descriptor_valid) return false;
+  if (!mqtt_module_has_descriptor(m)) return false;
   const char* p = m.universal_descriptor;
   while (p && *p) {
     const char* next = strchr(p, '\n');
@@ -1412,12 +1486,32 @@ static String mqtt_universal_select_command_value(const MqttUniversalEntityDef& 
   return selected;
 }
 
+static bool mqtt_universal_duration_minutes(const MqttUniversalEntityDef& def, const String& raw, uint32_t& minutes) {
+  if (!mqtt_ascii_ci_eq(def.time_display, "dhm") || !def.time_base.length() || mqtt_ascii_ci_eq(def.time_base, "none")) return false;
+  const char* begin = raw.c_str();
+  char* end = nullptr;
+  unsigned long long value = strtoull(begin, &end, 10);
+  if (!end || end == begin) return false;
+  while (*end == ' ' || *end == '\t') ++end;
+  if (*end) return false;
+  unsigned long long total = value;
+  if (mqtt_ascii_ci_eq(def.time_base, "s") || mqtt_ascii_ci_eq(def.time_base, "sec") || mqtt_ascii_ci_eq(def.time_base, "seconds")) total = (value + 30ULL) / 60ULL;
+  else if (mqtt_ascii_ci_eq(def.time_base, "h") || mqtt_ascii_ci_eq(def.time_base, "hour") || mqtt_ascii_ci_eq(def.time_base, "hours")) total = value * 60ULL;
+  else if (mqtt_ascii_ci_eq(def.time_base, "d") || mqtt_ascii_ci_eq(def.time_base, "day") || mqtt_ascii_ci_eq(def.time_base, "days")) total = value * 1440ULL;
+  else if (!(mqtt_ascii_ci_eq(def.time_base, "m") || mqtt_ascii_ci_eq(def.time_base, "min") || mqtt_ascii_ci_eq(def.time_base, "minutes"))) return false;
+  if (total > 0xFFFFFFFFULL) total = 0xFFFFFFFFULL;
+  minutes = (uint32_t)total;
+  return true;
+}
+
 static String mqtt_universal_entity_value_for_def(const ModuleRecord& m, const UniversalEntityState& e) {
   MqttUniversalEntityDef def;
   const bool has_def = mqtt_universal_descriptor_def_for_entity(m, e.id, def);
   String raw = mqtt_universal_entity_value(e);
   raw.trim();
   if (!has_def) return raw;
+  uint32_t duration_minutes = 0;
+  if (mqtt_universal_duration_minutes(def, raw, duration_minutes)) return duration_text_minutes(duration_minutes);
   if (mqtt_ascii_ci_eq(def.type, "switch") || mqtt_ascii_ci_eq(def.type, "binary_sensor")) {
     const bool on = raw == "1" || raw == "ON" || raw == "on" || raw == "true" || raw == "100";
     return on ? String("1") : String("0");
@@ -1461,14 +1555,17 @@ static String mqtt_universal_entity_extra(const MqttUniversalEntityDef& def, con
     }
     extra += ']';
   }
-  if (def.unit.length()) { extra += F(",\"unit_of_meas\":\""); extra += json_escape(def.unit.c_str()); extra += '"'; }
+  // d/h/m is emitted as human-readable text (e.g. "6d 16h 5m"), so a raw
+  // unit such as "min" would make Home Assistant display a misleading suffix.
+  const bool duration_text = mqtt_ascii_ci_eq(def.time_display, "dhm") && def.time_base.length() && !mqtt_ascii_ci_eq(def.time_base, "none");
+  if (def.unit.length() && !duration_text) { extra += F(",\"unit_of_meas\":\""); extra += json_escape(def.unit.c_str()); extra += '"'; }
   return extra;
 }
 
 static void mqtt_clear_module_entity(uint8_t addr, const char* component, const char* suffix);
 
 static void mqtt_publish_universal_descriptor_entities(const ModuleRecord& m, const String& base) {
-  if (!(m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) || !m.universal_descriptor_valid) return;
+  if (!mqtt_module_has_descriptor(m)) return;
   bool seen_entity_id[256] = {false};
   const char* p = m.universal_descriptor;
   while (p && *p) {
@@ -1540,7 +1637,7 @@ static String mqtt_alias_or(const char* alias, const char* fallback) {
 }
 
 static uint16_t mqtt_universal_descriptor_entity_fingerprint(const ModuleRecord& m) {
-  if (!(m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) || !m.universal_descriptor_valid) return 0;
+  if (!mqtt_module_has_descriptor(m)) return 0;
   uint16_t fp = 0x4F45U;
   const char* p = m.universal_descriptor;
   while (p && *p) {
@@ -1556,6 +1653,9 @@ static uint16_t mqtt_universal_descriptor_entity_fingerprint(const ModuleRecord&
       fp ^= ((uint16_t)def.id << 8) ^ (uint16_t)def.type.length() ^ ((uint16_t)def.mode.length() << 3);
       fp ^= (uint16_t)def.key.length() << 1;
       fp ^= (uint16_t)def.label.length() << 4;
+      fp ^= (uint16_t)def.unit.length() << 7;
+      fp ^= (uint16_t)def.time_base.length() << 10;
+      fp ^= (uint16_t)def.time_display.length() << 13;
     }
     p = next ? next + 1 : nullptr;
   }
@@ -1563,7 +1663,7 @@ static uint16_t mqtt_universal_descriptor_entity_fingerprint(const ModuleRecord&
 }
 
 static uint8_t mqtt_universal_descriptor_entity_count(const ModuleRecord& m) {
-  if (!(m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) || !m.universal_descriptor_valid) return 0;
+  if (!mqtt_module_has_descriptor(m)) return 0;
   uint8_t count = 0;
   bool seen_entity_id[256] = {false};
   const char* p = m.universal_descriptor;
@@ -1621,7 +1721,7 @@ static String mqtt_module_discovery_signature_now() {
       sig += ':'; sig += core.family;
       sig += ':'; sig += core.port_count;
     }
-    if (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) {
+    if (mqtt_module_has_descriptor(m)) {
       sig += ':';
       sig += m.universal_descriptor_crc;
       sig += ':';
@@ -1643,7 +1743,13 @@ static void mqtt_publish_discovery_custom(const char* component, const char* suf
   String object = master_device_id;
   object += "_";
   object += suffix;
-  String payload = F("{\"name\":\"");
+  OfePsramTextBuffer& payload = mqtt_discovery_payload_buffer;
+  payload.clear();
+  if (master_extmem_malloc_enabled)
+    payload.reservePreferred(MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM, 1536UL);
+  else
+    payload.reserveInternal(1536UL);
+  payload += F("{\"name\":\"");
   payload += json_escape(name);
   payload += F("\",\"uniq_id\":\"");
   payload += object;
@@ -1675,7 +1781,13 @@ static void mqtt_publish_module_entity(const ModuleRecord& m, const char* compon
   object += full_suffix;
   String cmd_topic;
   if (command_leaf.length()) cmd_topic = mqtt_topic_path(command_leaf.c_str());
-  String payload = F("{\"name\":\"");
+  OfePsramTextBuffer& payload = mqtt_discovery_payload_buffer;
+  payload.clear();
+  if (master_extmem_malloc_enabled)
+    payload.reservePreferred(MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM, 1536UL);
+  else
+    payload.reserveInternal(1536UL);
+  payload += F("{\"name\":\"");
   payload += json_escape(name.c_str());
   payload += F("\",\"uniq_id\":\"");
   payload += object;
@@ -2099,7 +2211,9 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_jbc_usb_core_discovery(m, base);
   }
 
-  if (m.type != MODULE_WELLER_ZERO_SMOG && (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_DIGITAL_OUTPUT | CAP_INPUT_KEYS))) {
+  if (m.type != MODULE_WELLER_ZERO_SMOG &&
+      (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_DIGITAL_OUTPUT | CAP_INPUT_KEYS)) &&
+      !mqtt_module_has_descriptor(m)) {
     mqtt_publish_module_entity(m, "binary_sensor", "in1", mqtt_alias_or(m.io_in1_alias, "IN1"), "{{ 'ON' if value_json.in1 else 'OFF' }}");
     mqtt_publish_module_entity(m, "binary_sensor", "in2", mqtt_alias_or(m.io_in2_alias, "IN2"), "{{ 'ON' if value_json.in2 else 'OFF' }}");
     mqtt_publish_module_entity(m, "switch", "out1", mqtt_alias_or(m.io_out1_alias, "OUT1"), "{{ 'ON' if value_json.out1 else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "io_out1"));
@@ -2571,7 +2685,7 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"view_mode\":"; json += m.display_view_mode;
   }
 
-  if (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) {
+  if (mqtt_module_has_descriptor(m)) {
     bool emitted_entity_id[256] = {false};
     if (m.universal_descriptor_valid) {
       const char* p = m.universal_descriptor;
@@ -2672,7 +2786,7 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
 static void mqtt_publish_state(bool force = false) {
   if (!mqtt_connect_if_needed()) return;
   const uint32_t now = millis();
-  if (!force && (uint32_t)(now - mqtt_last_publish_ms) < 1000UL) return;
+  if (!force && (uint32_t)(now - mqtt_last_publish_ms) < MASTER_MQTT_STATE_PUBLISH_MS) return;
   mqtt_last_publish_ms = now;
   heap_diag_set_context(HEAP_DIAG_CTX_MQTT, "publish_state");
   heap_diag_sample("mqtt_state_begin");
@@ -2734,15 +2848,38 @@ static void mqtt_publish_state(bool force = false) {
            cs.stand_intakes ? "true" : "false",
            cs.continuous ? "true" : "false");
   mqtt_client.publish(mqtt_topic_path("state").c_str(), payload, true);
-  uint8_t order[ModuleRegistry::MAX_MODULES];
-  const uint8_t count = mqtt_sorted_module_indices(order, sizeof(order));
-  for (uint8_t oi = 0; oi < count; ++oi) {
-    const ModuleRecord& m = registry.at(order[oi]);
+
+  // Start a non-blocking module publish cycle. The MQTT task sends one module
+  // every MASTER_MQTT_MODULE_PUBLISH_GAP_MS instead of serializing/publishing
+  // all module JSON documents in this one call. This keeps MQTT state fresh
+  // while removing the large periodic CPU/allocator burst.
+  mqtt_state_module_count = mqtt_sorted_module_indices(
+    mqtt_state_module_order, (uint8_t)sizeof(mqtt_state_module_order));
+  mqtt_state_module_cursor = 0;
+  mqtt_state_module_last_ms = 0;
+  mqtt_state_module_cycle_pending = mqtt_state_module_count != 0;
+  heap_diag_sample("mqtt_state_end");
+  heap_diag_clear_context(HEAP_DIAG_CTX_MQTT);
+}
+
+static void mqtt_publish_module_cycle_tick() {
+  if (!mqtt_state_module_cycle_pending || !mqtt_client.connected()) return;
+  const uint32_t now = millis();
+  if (mqtt_state_module_last_ms &&
+      (uint32_t)(now - mqtt_state_module_last_ms) < MASTER_MQTT_MODULE_PUBLISH_GAP_MS) return;
+  mqtt_state_module_last_ms = now;
+
+  if (mqtt_state_module_cursor >= mqtt_state_module_count) {
+    mqtt_state_module_cycle_pending = false;
+    return;
+  }
+  const uint8_t registry_index = mqtt_state_module_order[mqtt_state_module_cursor++];
+  if (registry_index < registry.count()) {
+    const ModuleRecord& m = registry.at(registry_index);
     if (m.online) mqtt_publish_module_state(m);
     else mqtt_publish_module_offline(m.addr);
   }
-  heap_diag_sample("mqtt_state_end");
-  heap_diag_clear_context(HEAP_DIAG_CTX_MQTT);
+  if (mqtt_state_module_cursor >= mqtt_state_module_count) mqtt_state_module_cycle_pending = false;
 }
 
 static void mqtt_loop() {
@@ -2771,13 +2908,14 @@ static void mqtt_loop() {
     mqtt_cleanup_tick();
     if (mqtt_ha_discovery) {
       const uint32_t now = millis();
-      if (!mqtt_discovery_published || (uint32_t)(now - mqtt_next_discovery_check_ms) >= 5000UL) {
+      if (!mqtt_discovery_published || (uint32_t)(now - mqtt_next_discovery_check_ms) >= MASTER_MQTT_DISCOVERY_CHECK_MS) {
         mqtt_next_discovery_check_ms = now;
         const String sig = mqtt_module_discovery_signature_now();
         if (!mqtt_discovery_published || sig != mqtt_discovery_signature) mqtt_publish_discovery();
       }
     }
     mqtt_publish_state(false);
+    mqtt_publish_module_cycle_tick();
   } else {
     mqtt_connect_if_needed();
   }

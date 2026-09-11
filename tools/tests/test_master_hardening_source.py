@@ -176,6 +176,88 @@ class MasterHardeningSourceTest(unittest.TestCase):
             with self.subTest(module=path):
                 self.assertIn(declaration, self.read(path))
 
+    def test_module_power_save_is_consistent_and_discovery_safe(self):
+        bus = self.read("OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h")
+        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        leds = self.read("OpenFumeExtractorMaster/src/OfeStatusLed.h")
+        config = self.read("OpenFumeExtractorMaster/src/WebConfig.inc.h")
+        self.assertIn("CMD_POWER_SAVE = 0x14", bus)
+        self.assertIn("CAP_POWER_SAVE = 1UL << 26", bus)
+        self.assertIn("void sendWakePreamble", bus)
+        self.assertIn("setEcoMode(bool active", leds)
+        self.assertIn("OFE_LED_PURPLE_WHITE_BREATH", leds)
+        self.assertIn("OFE- und EVT-LED behalten ihren normalen Status", config)
+
+        tick = scheduler.split("void MasterScheduler::tick()", 1)[1]
+        self.assertLess(
+            tick.index("hotplug_discovery_window_until_ms_ = 0;"),
+            tick.index("updatePowerSave(now);"),
+        )
+        discovery = scheduler.split("void MasterScheduler::noticeDiscoveryResponse", 1)[1].split(
+            "void MasterScheduler::setLedConfig", 1
+        )[0]
+        self.assertNotIn("rec->light_sleep", discovery)
+        power_save = scheduler.split("void MasterScheduler::updatePowerSave", 1)[1].split(
+            "void MasterScheduler::broadcastLedSync", 1
+        )[0]
+        self.assertIn("|| rec.eco_mode) continue;", power_save)
+        self.assertIn("last_power_save_apply_ms_", power_save)
+        self.assertIn("setModulePowerSave(rec, true);", power_save)
+        self.assertNotIn("allow_light_sleep", power_save)
+        self.assertNotIn("sendWakePreamble", scheduler)
+        idle_check = scheduler.split("bool MasterScheduler::powerSaveIdle() const", 1)[1].split(
+            "void MasterScheduler::updatePowerSave", 1
+        )[0]
+        self.assertIn("rec.output_status_valid && rec.output_enabled", idle_check)
+        self.assertIn("rec.io_output_mask", idle_check)
+        led_api = self.read("OpenFumeExtractorMaster/src/MasterMqtt.inc.h")
+        web_status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
+        self.assertIn('json += ",\\\"master_eco\\\":"', led_api)
+        self.assertIn('json += ",\\\"eco\\\":"', led_api)
+        self.assertIn("kind:'purplewhite'", web_status)
+        self.assertIn("!!d.master_eco", web_status)
+        self.assertIn("!!m.eco", web_status)
+        self.assertIn("moduleEcoBadgeHtml", web_status)
+        self.assertIn("applyModuleEcoBadges(d)", web_status)
+        self.assertIn("module-eco-badge", web_status)
+        self.assertIn("master_eco_icon", web_status)
+        self.assertIn("document.getElementById('master_eco_icon')", web_status)
+        self.assertNotIn("let me=el('master_eco_icon')", web_status)
+        self.assertIn("led.insertAdjacentHTML('afterend',html)", web_status)
+        self.assertIn("ofeLedGlow(e,c,1);return}if(st.kind==='blink'", web_status)
+        diagnostics = self.read("OpenFumeExtractorMaster/src/WebDiagnostics.inc.h")
+        self.assertIn('json += F(",\\\"power_save_active\\\":")', diagnostics)
+        self.assertIn('json += F(",\\\"eco_mode\\\":")', diagnostics)
+        self.assertIn("diag_master_eco_icon", diagnostics)
+        self.assertIn("diag-eco-banner", diagnostics)
+        for path in ROOT.glob("Module/*/*.ino"):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(module=str(path)):
+                self.assertIn("CAP_POWER_SAVE", text)
+                self.assertIn("ofe_handle_power_save_command", text)
+
+        for path in (
+            "Module/FanIoModule/FanIoModule.ino",
+            "Module/FanIoProModule/FanIoProModule.ino",
+        ):
+            fan_io = self.read(path)
+            self.assertNotIn("OfeModulePowerSave", fan_io)
+            self.assertNotIn("module_power_save.service", fan_io)
+            command_handler = fan_io.split("if (ofe_handle_power_save_command", 1)[1].split(
+                "return;", 1
+            )[0]
+            self.assertIn("false,", command_handler)
+            self.assertFalse((ROOT / pathlib.Path(path).parent / "src/OfeModulePowerSave.h").exists())
+
+        for path in (
+            "Module/DisplayModule_320x480/DisplayModule_320x480.ino",
+            "Module/DisplayModule_800x480/DisplayModule_800x480.ino",
+        ):
+            display = self.read(path)
+            self.assertIn('#include "SproutIcon.h"', display)
+            self.assertIn("lv_update_eco_indicator_ui", display)
+            self.assertIn("ui_screensaver_eco_icon", display)
+
 
 if __name__ == "__main__":
     unittest.main()

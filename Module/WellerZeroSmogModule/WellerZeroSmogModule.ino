@@ -17,6 +17,7 @@
 #endif
 
 #include "src/OfeStatusLed.h"
+#include "src/OfeModuleEco.h"
 
 using namespace jbc_rs485;
 
@@ -60,7 +61,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 74
+#define OFE_MODULE_FW_PATCH 78
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -82,6 +83,8 @@ static HardwareSerial WELLER(2);
 static Link bus(RS485);
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
+static bool module_eco_mode = false;
+static bool module_light_sleep_armed = false;
 
 static const uint8_t DEFAULT_MODULE_ADDR = 0x30;
 static uint8_t module_addr = DEFAULT_MODULE_ADDR;
@@ -937,15 +940,14 @@ static void handle_info(const Frame& req) {
   if (suffix_len > 7) suffix_len = 7;
   resp.payload[o++] = suffix_len;
   for (uint8_t i = 0; i < suffix_len && o < MAX_PAYLOAD; ++i) resp.payload[o++] = (uint8_t)FW_SUFFIX[i];
-  const char name[] = "Weller Zero Smog Bus";
-  const char* shown_name = module_label[0] ? module_label : name;
+  const char* shown_name = module_label[0] ? module_label : ofe_module_default_name(MODULE_WELLER_ZERO_SMOG);
   while (*shown_name && o < MAX_PAYLOAD) resp.payload[o++] = (uint8_t)*shown_name++;
   resp.len = (uint8_t)o;
   bus.send(resp);
 }
 
 static uint32_t module_caps() {
-  return CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_WELLER_INTERFACE | CAP_FILTER_SENSOR | CAP_FAULT_REPORT | CAP_FW_UPDATE | CAP_DIGITAL_OUTPUT | CAP_LOCAL_TRACE;
+  return CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_WELLER_INTERFACE | CAP_FILTER_SENSOR | CAP_FAULT_REPORT | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DIGITAL_OUTPUT | CAP_LOCAL_TRACE;
 }
 
 static void handle_caps(const Frame& req) {
@@ -1254,6 +1256,9 @@ static void handle_frame(const Frame& req) {
 
   if (req.src == ADDR_MASTER) last_master_ms = millis();
 
+  if (ofe_handle_power_save_command(req, bus, module_addr, ofe_status_leds, false,
+                                    module_eco_mode, module_light_sleep_armed)) return;
+
   switch (req.cmd) {
     case CMD_PING:
       send_status_response(req, STATUS_OK);
@@ -1421,12 +1426,6 @@ void loop() {
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);
 }
-
-
-
-
-
-
 
 
 

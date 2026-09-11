@@ -114,9 +114,23 @@ Target: Guition JC8048W550 with RGB565 panel and GT911 touch.
 | Green G0..G5 | 5, 6, 7, 15, 16, 4 |
 | Blue B0..B4 | 8, 3, 46, 9, 1 |
 
+## Display ST7796 320x480
+
+Target: ST7796 SPI panel with FT63x6 touch.
+
+| Function | GPIO |
+|---|---:|
+| OFE RS485 RX / TX | 7 / 15 |
+| backlight PWM | 9 |
+| display SCK / MOSI | 10 / 11 |
+| display CS / DC / RESET | 12 / 13 / 14 |
+| touch SDA / SCL | 18 / 3 |
+| touch INT / RESET | 17 / 8 |
+
+GPIO16 remains unused because it is connected to SD-CS on this display board.
+
 ## Mechanical envelope
 
 The current cartridge concept uses the same **30 x 100 x 100 mm** enclosure size
 for master and modules. Module USB and RS485 screw terminals remain accessible
 from the rear. The master's two USB-C ports are accessible from the front.
-

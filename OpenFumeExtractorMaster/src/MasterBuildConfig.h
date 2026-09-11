@@ -97,9 +97,59 @@
 #endif
 
 #ifndef DISPLAY_STATUS_SLOT_MS
-// One display is serviced per slot. With two displays 200 ms means roughly
-// 2.5 DISPLAY_STATUS updates/s per display instead of 1 Hz at the old 500 ms.
-#define DISPLAY_STATUS_SLOT_MS 200UL
+// One display is serviced per slot. With two displays 150 ms means roughly
+// 3.3 DISPLAY_STATUS updates/s per display. Home/live feedback remains fast,
+// while leaving more air for cache replies and avoiding UDP queue buildup.
+#define DISPLAY_STATUS_SLOT_MS 150UL
+#endif
+
+
+// Responsiveness profile. These intervals deliberately remain above the normal
+// RS485 frame time; the scheduler still rotates one background class per loop
+// so faster UI feedback does not turn into bursty bus traffic.
+#ifndef MASTER_OUTPUT_STATUS_POLL_MS
+#define MASTER_OUTPUT_STATUS_POLL_MS 125UL
+#endif
+
+#ifndef MASTER_IO_STATUS_POLL_MS
+#define MASTER_IO_STATUS_POLL_MS 180UL
+#endif
+
+#ifndef MASTER_WELLER_POLL_MS
+#define MASTER_WELLER_POLL_MS 400UL
+#endif
+
+#ifndef MASTER_UNIVERSAL_POLL_MS
+#define MASTER_UNIVERSAL_POLL_MS 400UL
+#endif
+
+#ifndef MASTER_TELEMETRY_POLL_MS
+#define MASTER_TELEMETRY_POLL_MS 100UL
+#endif
+
+#ifndef MASTER_JBC_STATE_POLL_MS
+#define MASTER_JBC_STATE_POLL_MS 200UL
+#endif
+
+#ifndef MASTER_MQTT_SERVICE_MS
+#define MASTER_MQTT_SERVICE_MS 10UL
+#endif
+
+#ifndef MASTER_MQTT_STATE_PUBLISH_MS
+#define MASTER_MQTT_STATE_PUBLISH_MS 350UL
+#endif
+
+#ifndef MASTER_MQTT_MODULE_PUBLISH_GAP_MS
+// Publish one module at a time instead of bursting every module state in the
+// same MQTT tick. Eight modules complete in about 200 ms at this setting.
+#define MASTER_MQTT_MODULE_PUBLISH_GAP_MS 25UL
+#endif
+
+#ifndef MASTER_MQTT_DISCOVERY_CHECK_MS
+// Topology/config writes explicitly invalidate discovery. The periodic signature
+// check is only a safety net and does not need to rebuild descriptor signatures
+// every five seconds.
+#define MASTER_MQTT_DISCOVERY_CHECK_MS 15000UL
 #endif
 
 #ifndef MASTER_COMMAND_QUEUE_LENGTH
@@ -114,10 +164,17 @@
 #define MASTER_EXTMEM_MALLOC_THRESHOLD 2048UL
 #endif
 
+#ifndef MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM
+// Home Assistant discovery is cold/background work. v25 uses an explicit
+// capability-aware text buffer so this reserve is physically allocated from
+// PSRAM instead of relying on Arduino String/realloc placement.
+#define MASTER_MQTT_DISCOVERY_PAYLOAD_RESERVE_PSRAM 3072UL
+#endif
+
 #ifndef MASTER_STATE_JSON_RESERVE_PSRAM
-// /state is a large, short-lived web payload. The Master target has 8 MB PSRAM
-// and supports up to 16 modules, so reserve the worst-case response up front in
-// external RAM instead of repeatedly growing/reallocating the Arduino String.
+// /state is a large, short-lived web payload. v25 allocates this capacity
+// explicitly with MALLOC_CAP_SPIRAM and sends it directly through WebServer,
+// avoiding a large Arduino String in internal DRAM.
 #define MASTER_STATE_JSON_RESERVE_PSRAM (256UL * 1024UL)
 #endif
 
@@ -190,7 +247,7 @@
 
 #define MASTER_FW_MAJOR 1
 #define MASTER_FW_MINOR 9
-#define MASTER_FW_PATCH 35
+#define MASTER_FW_PATCH 78
 #define MASTER_FW_SUFFIX "beta"
 #define MASTER_FW_NAME "Open Fume Extractor"
 #define MASTER_FW_VERSION OFE_STR(MASTER_FW_MAJOR) "." OFE_STR(MASTER_FW_MINOR) "." OFE_STR(MASTER_FW_PATCH) MASTER_FW_SUFFIX

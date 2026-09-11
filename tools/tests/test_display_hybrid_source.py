@@ -39,13 +39,27 @@ class DisplayHybridIntegration(unittest.TestCase):
             expected = read(MASTER / "src/bus" / name)
             for path in (ROOT / "Module").glob("*/src/" + name):
                 actual = read(path)
-                if name.endswith(".h"):
-                    # Older modules intentionally have different JBC USB command enums.
-                    self.assertIn("CAP_DISPLAY_HYBRID = 1UL << 25", actual)
-                    self.assertEqual(expected.split("class Link {", 1)[1],
-                                     actual.split("class Link {", 1)[1], str(path))
-                else:
-                    self.assertEqual(expected, actual, str(path))
+                self.assertEqual(expected, actual, str(path))
+
+    def test_canonical_module_names_have_one_source(self):
+        bus = read(MASTER / "src/bus/Rs485PeripheralBus.h")
+        expected_names = (
+            "JBC FAE Bus", "JBC USB", "Fan/IO", "Fan/IO Pro", "Sensor",
+            "Weller Zero Smog Bus", "Display 320x480", "Display 800x480",
+            "Universal RS232 Bridge", "Modbus RTU Bridge",
+        )
+        for name in expected_names:
+            self.assertIn('return "' + name + '";', bus)
+        scheduler = read(MASTER / "src/MasterScheduler.cpp")
+        status = read(MASTER / "src/WebStatus.inc.h")
+        self.assertIn("return ofe_module_default_name(rec.type, rec.caps);", scheduler)
+        self.assertIn("return ofe_module_default_name(m.type, m.caps);", status)
+        self.assertNotIn("rec->name[0] ? rec->name", scheduler)
+        self.assertNotIn("target->name[0]", scheduler)
+        for module in (ROOT / "Module").glob("*/*.ino"):
+            sketch = read(module)
+            if "CMD_INFO | 0x80" in sketch:
+                self.assertIn("ofe_module_default_name(", sketch, str(module))
 
     def test_display_integration_and_offline_access(self):
         for display in DISPLAYS:
@@ -177,6 +191,8 @@ class DisplayHybridIntegration(unittest.TestCase):
         handler = transport[transport.index("bool handleConfig("):transport.index("static uint32_t configHash(")]
         self.assertLess(handler.index("if (request.dst!=*address_) return true;"),
                         handler.index("Frame response;"))
+        self.assertNotIn("!network_origin_ && request.src==ADDR_MASTER", handler)
+        self.assertIn("request.src==ADDR_MASTER && request.len==1", handler)
         scheduler = read(MASTER / "src/MasterScheduler.cpp")
         ui = read(DISPLAYS[0] / "src/OfeDisplayWifiUi.inc.h")
         self.assertIn("reply.payload[0] == STATUS_OK && reply.payload[1]", scheduler)
@@ -255,12 +271,10 @@ class DisplayHybridIntegration(unittest.TestCase):
             self.assertIn("DISPLAY_BENCHMARK_DURATION_MS = 12000UL", sketch)
             self.assertIn("display_benchmark_tick();", sketch)
 
-    def test_large_scroll_profiler_is_local_and_allocation_free(self):
+    def test_large_scroll_profiler_is_optional_and_allocation_free(self):
         large = DISPLAYS[1]
         config = read(large / "ofe_lv_conf.h")
-        self.assertRegex(config, r"#define LV_USE_PROFILER\s+1\b")
-        self.assertRegex(config, r"#define LV_USE_PROFILER_BUILTIN\s+0\b")
-        self.assertIn('LV_PROFILER_INCLUDE "ofe_lv_profiler.h"', config)
+        self.assertRegex(config, r"#define LV_USE_PROFILER\s+0\b")
         small = read(DISPLAYS[0] / (DISPLAYS[0].name + ".ino"))
         self.assertNotIn("ofe_lv_profile_take", small)
         counters = read(large / "src/OfeLvProfileCounters.h")
@@ -270,11 +284,12 @@ class DisplayHybridIntegration(unittest.TestCase):
         sketch = read(large / (large.name + ".ino"))
         handler = sketch.split("static uint32_t lvgl_timer_handler_profiled() {", 1)[1].split("\n}", 1)[0]
         self.assertLess(handler.index("lv_timer_handler()"), handler.index("perf_finish_window_if_due()"))
+        self.assertIn("#if defined(LV_USE_PROFILER) && LV_USE_PROFILER", sketch)
         self.assertIn("DRAW inclusive ms/frame", sketch)
 
     def test_large_tiles_keep_scanout_and_sram_reserve(self):
         large = read(DISPLAYS[1] / (DISPLAYS[1].name + ".ino"))
-        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 20", large)
+        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 12", large)
         self.assertIn("#define DISPLAY_RGB_PCLK_HZ 16000000", large)
         self.assertIn("#define DISPLAY_LVGL_FULL_REFRESH 0", large)
         defaults = large.split("#ifndef DISPLAY_LVGL_LARGE_TILES", 1)[1].split("#endif", 1)[0]
@@ -308,6 +323,38 @@ class DisplayHybridIntegration(unittest.TestCase):
             self.assertIn("active_config_=next_config; config_revision_=revision;", poll)
             worker = transport.split("void worker()", 1)[1]
             self.assertNotIn("view()", worker)
+
+    def test_display_hostname_and_long_uptime(self):
+        for resolution, display in zip(("320x480", "800x480"), DISPLAYS):
+            sketch = read(display / (display.name + ".ino"))
+            wifi = read(display / "src/OfeDisplayWifi.h")
+            self.assertIn(f'#define OFE_DISPLAY_HOSTNAME_PREFIX "OFE-Display-{resolution}"', sketch)
+            self.assertIn("esp_read_mac(mac, ESP_MAC_WIFI_STA)", wifi)
+            self.assertIn('"%s-%02X%02X%02X"', wifi)
+            self.assertIn("WiFi.setHostname(device_hostname_)", wifi)
+            self.assertLess(wifi.index("WiFi.setHostname(device_hostname_)"),
+                            wifi.index("WiFi.begin(c.ssid,c.password)"))
+            self.assertIn("MDNS.begin(device_hostname_)", wifi)
+            self.assertNotIn("millis() / 5000UL", sketch)
+            self.assertNotIn("(unsigned long)(millis() / 1000UL)", sketch)
+            self.assertIn("monotonic_uptime_seconds() / 5UL", sketch)
+
+    def test_module_names_and_capabilities_refresh_after_discovery(self):
+        scheduler = read(MASTER / "src/MasterScheduler.cpp")
+        module_list = scheduler.split("bool MasterScheduler::sendDisplayModuleList", 1)[1].split(
+            "bool MasterScheduler::sendDisplayModuleDetail", 1)[0]
+        module_detail = scheduler.split("bool MasterScheduler::sendDisplayModuleDetail", 1)[1].split(
+            "bool MasterScheduler::sendDisplayUniversalEntityPage", 1)[0]
+        self.assertIn("schedulerModuleTypeName(*rec)", module_list)
+        self.assertIn("schedulerModuleTypeName(*rec)", module_detail)
+        for display in DISPLAYS:
+            sketch = read(display / (display.name + ".ino"))
+            status_reply = sketch.split("static void send_display_status_response", 1)[1].split(
+                "static void parse_display_extension", 1)[0]
+            self.assertIn("!home_module_list_refresh_pending", status_reply)
+            self.assertIn("MODULE_LIST_CACHE_REQUEST_MS", status_reply)
+            self.assertIn("home_module_list_refresh_pending = true;", status_reply)
+            self.assertIn("module_list_cache_request_start = 0;", status_reply)
 
     def test_authenticated_rejoin_does_not_force_offline(self):
         master = read(MASTER / "src/MasterDisplayWifi.cpp")

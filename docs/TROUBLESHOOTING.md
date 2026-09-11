@@ -35,7 +35,8 @@ poll/match pattern. For Modbus confirm slave ID, register address and function.
 ## Display remains on Booting
 
 Inspect the serial log for PSRAM or LVGL allocation failures. Confirm the exact
-display model and firmware. The 320x480 and 800x480 images are not interchangeable.
+display model and firmware. The AXS15231B 320x480, ST7796 320x480 and 800x480
+images are not interchangeable.
 
 ## 800x480 display artifacts
 
@@ -55,4 +56,3 @@ the board unmodified.
 Retry the abort action from the update page. If communication was lost during the
 abort, power-cycle the module. If it no longer boots, restore it locally with the
 matching merged image.
-

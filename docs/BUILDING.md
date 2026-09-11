@@ -1,7 +1,7 @@
 # Building from Source
 
-The repository contains Arduino sketches for the master, modules and both
-displays. Generated build directories and the private release-signing key are
+The repository contains Arduino sketches for the master, modules and all three
+display variants. Generated build directories and the private release-signing key are
 deliberately excluded.
 
 ## Tested toolchain
@@ -31,6 +31,7 @@ Open the matching sketch folder directly in Arduino IDE:
 - `Module/ModbusRtuModule/ModbusRtuModule.ino`
 - `Module/DisplayModule_320x480/DisplayModule_320x480.ino`
 - `Module/DisplayModule_800x480/DisplayModule_800x480.ino`
+- `Module/DisplayModule_ST7796_320x480/DisplayModule_ST7796_320x480.ino`
 
 The master uses the included 16 MB partition CSV. A partition-layout change
 requires a complete merged USB flash and normally an erase.
@@ -66,4 +67,3 @@ enabled developer update path.
 Source-level and native tests are stored below `Module/*/tests` and
 `tools/tests`. Run the applicable Python, PowerShell or native test harness after
 changing protocol parsing, display transport, persistence or firmware signing.
-

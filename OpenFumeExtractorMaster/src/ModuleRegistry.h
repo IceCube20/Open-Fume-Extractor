@@ -288,6 +288,9 @@ struct ModuleRecord {
   bool online = false;
   bool came_online = false;
   bool seen_in_scan = false;
+  bool eco_mode = false;
+  bool light_sleep = false;
+  uint32_t eco_since_ms = 0;
   bool role_jbc = false;
   bool role_output = false;
   uint8_t jbc_addr = 0;
@@ -525,6 +528,36 @@ struct ModuleRecord {
   uint8_t display_theme = 0;
   uint8_t display_screensaver_min = 0;
   uint8_t display_universal_entity_start = 0;
+  // Cursors for the compact DISPLAY_STATUS live-I/O page. Native/JBC states
+  // have their own high-priority round-robin so a large Universal/Modbus
+  // profile can never delay a later Fan/IO/Weller/JBC module. Entity states
+  // use a second cursor through the remaining live-I/O budget.
+  uint8_t display_live_io_native_cursor = 0;
+  uint16_t display_live_io_cursor = 0;
+  // Display cache servicing is intentionally rate-limited by the Master.
+  // Keeping per-display state here prevents one WiFi display from causing
+  // alarm/list/detail/entity response bursts in a single loop iteration.
+  uint32_t display_alarm_signature = 0;
+  uint32_t display_alarm_last_ms = 0;
+  uint8_t display_cache_service_rr = 0;
+  uint8_t display_cache_pending_mask = 0;
+  uint8_t display_cache_list_start = 0;
+  uint8_t display_cache_detail_addr = 0;
+  uint8_t display_cache_universal_addr = 0;
+  uint8_t display_cache_universal_start = 0;
+  // Background display-cache retry pacing. WLAN cache frames are disposable;
+  // retrying them immediately after a lost UDP sample only creates a packet
+  // backlog and late/SEQ replies. Keep the next eligible cache attempt here.
+  uint32_t display_cache_next_ms = 0;
+  // WiFi display transport is asynchronous: keep at most one request in flight
+  // per display. This preserves fast live updates while accepting occasional
+  // 200-300 ms WLAN jitter without blocking the Master loopTask.
+  bool display_async_pending = false;
+  uint8_t display_async_seq = 0xFF;
+  uint8_t display_async_cmd = 0;
+  uint32_t display_async_started_ms = 0;
+  uint32_t display_async_timeout_ms = 0;
+  uint32_t display_async_alarm_signature = 0;
   bool universal_descriptor_valid = false;
   uint32_t universal_descriptor_crc = 0;
   uint8_t universal_descriptor_chunks = 0;

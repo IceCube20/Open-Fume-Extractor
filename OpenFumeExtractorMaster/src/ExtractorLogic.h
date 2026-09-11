@@ -68,9 +68,13 @@ public:
   uint32_t afterrunLeftMs() const;
   const JbcModuleState& jbcState() const { return jbc_state_; }
   const OutputModuleState& outputState() const { return output_state_; }
-  bool outputDirty() const { return output_dirty_; }
-  void markOutputDirty() { output_dirty_ = true; }
-  void clearOutputDirty() { output_dirty_ = false; }
+  bool outputDirty() const { return output_enable_dirty_ || output_power_dirty_; }
+  bool outputEnableDirty() const { return output_enable_dirty_; }
+  bool outputPowerDirty() const { return output_power_dirty_; }
+  void markOutputDirty() { output_enable_dirty_ = true; output_power_dirty_ = true; }
+  void clearOutputEnableDirty() { output_enable_dirty_ = false; }
+  void clearOutputPowerDirty() { output_power_dirty_ = false; }
+  void clearOutputDirty() { output_enable_dirty_ = false; output_power_dirty_ = false; }
 
 private:
   uint16_t targetPowerForJbc() const;
@@ -85,7 +89,11 @@ private:
 
   bool desired_output_enabled_ = false;
   uint16_t desired_power_ = 0;
-  bool output_dirty_ = true;
+  // Track enable and power independently. A RUN -> afterrun transition keeps
+  // the output enabled and only changes its power. Re-sending ENABLE=1 for
+  // every power update can make some output implementations briefly restart.
+  bool output_enable_dirty_ = true;
+  bool output_power_dirty_ = true;
   JbcModuleState jbc_state_;
   OutputModuleState output_state_;
   uint32_t afterrun_deadline_ms_ = 0;

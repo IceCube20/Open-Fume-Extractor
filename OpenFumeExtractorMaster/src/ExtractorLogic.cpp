@@ -37,10 +37,13 @@ bool ExtractorLogic::applyOutputState(bool previous_trigger_active) {
   const bool effective_enabled = next_enabled || afterrun_active_;
   if (afterrun_active_) next_power = afterrun_power_enabled_ ? afterrun_power_ : target_power;
 
-  if (effective_enabled != desired_output_enabled_ || next_power != desired_power_) {
+  const bool enable_changed = effective_enabled != desired_output_enabled_;
+  const bool power_changed = next_power != desired_power_;
+  if (enable_changed || power_changed) {
     desired_output_enabled_ = effective_enabled;
     desired_power_ = next_power;
-    output_dirty_ = true;
+    if (enable_changed) output_enable_dirty_ = true;
+    if (power_changed) output_power_dirty_ = true;
     return true;
   }
   return false;
@@ -130,7 +133,7 @@ void ExtractorLogic::updateJbcState(uint8_t module_addr, const JbcModuleState& s
     const uint16_t next_power = afterrun_active_ && afterrun_power_enabled_ ? afterrun_power_ : target_power;
     if (next_power != desired_power_) {
       desired_power_ = next_power;
-      output_dirty_ = true;
+      output_power_dirty_ = true;
     }
   }
 }
@@ -144,7 +147,7 @@ void ExtractorLogic::setAfterrunPowerProfile(bool enabled, uint16_t power) {
     const uint16_t next_power = enabled ? afterrun_power_ : targetPowerForJbc();
     if (next_power != desired_power_) {
       desired_power_ = next_power;
-      output_dirty_ = true;
+      output_power_dirty_ = true;
     }
   }
 }
@@ -163,7 +166,8 @@ void ExtractorLogic::tick() {
   if (!continuous_ && work_mask_ == 0 && !external_input_active_ && desired_output_enabled_) {
     desired_output_enabled_ = false;
     desired_power_ = 0;
-    output_dirty_ = true;
+    output_enable_dirty_ = true;
+    output_power_dirty_ = true;
   }
 }
 

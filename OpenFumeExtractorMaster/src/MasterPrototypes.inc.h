@@ -1,7 +1,7 @@
 #pragma once
 
 // Forward declarations for web, MQTT, update and logic handlers.
-static bool web_require_auth();
+static bool web_require_auth(bool cacheable_private = false);
 static void sample_cpu_load();
 static const char * module_type_name(uint8_t type);
 static String json_escape(const char* s);
@@ -26,7 +26,7 @@ static String output_fault_text_for_module(uint16_t mask, uint8_t module_type);
 static const char * station_type_name(uint8_t addr);
 static MasterAlarmJson build_master_alarm_json();
 static String html_escape(const String& in);
-static String build_state_json(bool include_universal_descriptor = false, bool include_heap_diag = false);
+static bool build_state_json(OfePsramTextBuffer& json, bool include_universal_descriptor = false, bool include_heap_diag = false);
 static String normalized_hostname(String value);
 static bool parse_ipv4(const String& text, IPAddress& value);
 static void build_master_hostname();
@@ -52,6 +52,7 @@ static void web_service_task(void* parameter);
 static void wifi_service_tick();
 static void ui_config_load();
 static void web_handle_state();
+static void web_handle_descriptors();
 static void web_handle_led_state();
 static String mqtt_topic_path(const char* leaf);
 static String mqtt_discovery_topic(const char* component, const char* object, const char* suffix);
@@ -154,7 +155,9 @@ static void web_handle_config();
 static void web_handle_config_export();
 static void web_handle_config_import();
 static void web_handle_config_leds();
+static void web_handle_config_power_save();
 static void web_handle_config_mqtt();
+static void web_handle_config_web_login();
 static void web_handle_config_save();
 static void web_handle_not_found();
 static uint16_t web_arg_u16(const char* name, uint16_t fallback, uint16_t max_value);
@@ -173,6 +176,7 @@ static void web_handle_display_set();
 static void web_handle_universal_profile();
 static void web_handle_universal_profile_read();
 static void web_handle_universal_entity();
+static void web_handle_io_config();
 static void web_handle_main_input_select();
 static void web_handle_output_select();
 static void web_handle_routing_set();

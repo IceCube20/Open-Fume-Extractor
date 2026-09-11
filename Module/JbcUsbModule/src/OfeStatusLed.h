@@ -49,6 +49,7 @@ enum OfeLedEffect : uint8_t {
   OFE_LED_GREEN_WHITE_BREATH,
   OFE_LED_BLUE_WHITE_BREATH,
   OFE_LED_WHITE_BREATH,
+  OFE_LED_PURPLE_WHITE_BREATH,
 };
 
 enum OfeLedEvent : uint8_t {
@@ -94,7 +95,7 @@ static const OfeLedStyle OFE_LED_DEFAULT_STYLES[OFE_LED_EVENT_COUNT] = {
   {{255, 0, 0, 0},     OFE_LED_BREATH,    1600, 80}, // local device offline
   {{0, 255, 0, 0},     OFE_LED_SOLID,        0, 60}, // JBC work active
   {{0, 70, 255, 0},    OFE_LED_BREATH,    OFE_STATUS_LED_SYNC_PERIOD_MS, 50}, // extractor/output active
-  {{170, 0, 255, 0},   OFE_LED_BLINK,      650, 55}, // afterrun
+  {{170, 0, 255, 0},   OFE_LED_BLINK,      500, 55}, // afterrun
   {{0, 70, 255, 0},    OFE_LED_BLINK,      500, 55}, // continuous
   {{255, 170, 0, 0},   OFE_LED_BLINK,      500, 70}, // warning
   {{255, 0, 0, 0},     OFE_LED_DOUBLE_BLINK, 900, 95}, // critical
@@ -126,6 +127,15 @@ public:
     pixels_.setBrightness(255);
 #endif
   }
+
+  // Eco mode caps brightness and is rendered purple/white on the OFE/bus LED
+  // only while the bus is healthy. Offline/pairing faults always take priority.
+  void setEcoMode(bool active, uint8_t brightness_cap = 51) {
+    eco_mode_ = active;
+    eco_brightness_cap_ = brightness_cap;
+  }
+
+  bool ecoMode() const { return eco_mode_; }
 
   uint8_t brightness() const { return brightness_; }
   OfeLedEvent busEvent() const { return active_[OFE_LED_BUS]; }
@@ -166,7 +176,22 @@ public:
     for (uint8_t led = 0; led < 2 && led < OFE_STATUS_LED_COUNT; ++led) {
       OfeLedEvent event = active_[led];
       if (fw_update_ && led == OFE_LED_EVENT) event = OFE_LED_EVENT_FW_UPDATE;
-      OfeLedColor c = applyBrightness(render(styles_[event], now));
+
+      // Power-save mode is shown as the original purple/white breathing OFE
+      // indication, but only while the bus itself is healthy. Fault states such
+      // as BUS_OFFLINE or NOT_PAIRED must always remain visible and therefore
+      // take priority over the eco indication.
+      OfeLedColor c;
+      const bool eco_bus_indication = eco_mode_ && led == OFE_LED_BUS &&
+                                      (event == OFE_LED_EVENT_BUS_ONLINE ||
+                                       event == OFE_LED_EVENT_BUS_ACTIVITY);
+      if (eco_bus_indication) {
+        const OfeLedStyle eco_style = {{150, 0, 255, 0}, OFE_LED_PURPLE_WHITE_BREATH,
+                                       OFE_STATUS_LED_SYNC_PERIOD_MS, 0};
+        c = applyBrightness(render(eco_style, now));
+      } else {
+        c = applyBrightness(render(styles_[event], now));
+      }
       uint32_t packed = pixels_.Color(c.r, c.g, c.b, c.w);
       if (last_packed_[led] != packed) {
         pixels_.setPixelColor(led, packed);
@@ -209,10 +234,12 @@ private:
     return a + ((int16_t)b - (int16_t)a) * (int16_t)mix / 255;
   }
   OfeLedColor applyBrightness(OfeLedColor c) const {
-    c.r = scale8(c.r, brightness_);
-    c.g = scale8(c.g, brightness_);
-    c.b = scale8(c.b, brightness_);
-    c.w = scale8(c.w, brightness_);
+    const uint8_t effective = eco_mode_ && brightness_ > eco_brightness_cap_
+      ? eco_brightness_cap_ : brightness_;
+    c.r = scale8(c.r, effective);
+    c.g = scale8(c.g, effective);
+    c.b = scale8(c.b, effective);
+    c.w = scale8(c.w, effective);
     return c;
   }
   OfeLedColor render(const OfeLedStyle& style, uint32_t now) const {
@@ -254,6 +281,11 @@ private:
         uint8_t level = 16 + ((uint16_t)wave * 239U / 255U);
         return OfeLedColor{0, 0, 0, level};
       }
+      case OFE_LED_PURPLE_WHITE_BREATH: {
+        const uint16_t period = style.period_ms ? style.period_ms : OFE_STATUS_LED_SYNC_PERIOD_MS;
+        const uint8_t mix = triangle(now, period);
+        return OfeLedColor{lerp8(150, 0, mix), 0, lerp8(255, 0, mix), lerp8(0, 255, mix)};
+      }
       case OFE_LED_HEARTBEAT: {
         uint16_t period = style.period_ms ? style.period_ms : 1800;
         uint16_t p = now % period;
@@ -275,6 +307,8 @@ private:
   uint32_t flash_until_ms_ = 0;
   uint32_t last_activity_pulse_ms_ = 0;
   uint8_t brightness_ = OFE_STATUS_LED_BRIGHTNESS;
+  uint8_t eco_brightness_cap_ = 51;
+  bool eco_mode_ = false;
   uint32_t phase_offset_ms_ = 0;
   bool fw_update_ = false;
 };

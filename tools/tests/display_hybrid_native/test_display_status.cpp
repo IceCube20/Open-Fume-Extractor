@@ -1,6 +1,9 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+
+static uint32_t millis();
+#define ARDUINO 1
 #include "Rs485PeripheralBus.h"
 using namespace jbc_rs485;
 
@@ -101,6 +104,11 @@ int main() {
   assert(!rec.online && rec.timeout_count==1); // millis rollover
   rec.online=true; rec.last_seen_ms=0; now_ms=9000; rec.timeout_count=UINT16_MAX;
   record_timeout(0x40,CMD_DISPLAY_STATUS); assert(rec.timeout_count==UINT16_MAX);
+  rec={}; rec.online=true; rec.last_seen_ms=now_ms;
+  record_timeout(0x40,CMD_DISPLAY_STATUS,true);
+  assert(rec.online && rec.miss_count==0 && rec.consecutive_timeouts==1);
+  record_timeout(0x40,CMD_DISPLAY_STATUS,true);
+  assert(rec.online && rec.miss_count==1 && rec.consecutive_timeouts==2);
   record_timeout(0x41,CMD_DISPLAY_STATUS); // unknown address
   puts("PASS: production JBC station lists, stable USB/FAE labels, screensaver rotation, malformed frames, startup/handover/loss accounting and rollover.");
 }

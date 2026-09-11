@@ -191,6 +191,14 @@ void Link::sendPhysical(const Frame& frame) {
   if (activity_cb_) activity_cb_();
 }
 
+void Link::sendWakePreamble(uint8_t bytes) {
+  tx_network_ = false;
+  if (bytes < 4) bytes = 4;
+  while (bytes--) stream_.write((uint8_t)0x55);
+  stream_.flush();
+  if (activity_cb_) activity_cb_();
+}
+
 bool Link::poll(Frame& out) {
   // Keep callers cooperative. A noisy/bursty bus must not monopolize the CPU
   // until the UART FIFO is empty; parser state is preserved across calls.

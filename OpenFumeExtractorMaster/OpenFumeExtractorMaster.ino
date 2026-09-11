@@ -27,6 +27,7 @@
 #include "src/MasterSettingsStore.h"
 #include "src/OfeFirmwareAuth.h"
 #include "src/WebLogo.h"
+#include "src/OfePsramTextBuffer.h"
 
 using namespace jbc_rs485;
 

@@ -11,9 +11,9 @@ extern "C" void* lv_memcpy(void* dst, const void* src, size_t len) {
 }
 
 int main() {
-  static_assert(LV_MEM_SIZE == 64U * 1024U, "Use the display's actual configuration");
+  static_assert(LV_MEM_SIZE == 32U * 1024U, "Use the display's actual configuration");
   alignas(64) static unsigned char internal[LV_MEM_SIZE];
-  alignas(64) static unsigned char external[2][LV_MEM_SIZE];
+  alignas(64) static unsigned char external[5][LV_MEM_SIZE];
   alignas(64) static unsigned char oversized[128U * 1024U];
   lv_tlsf_t tlsf = lv_tlsf_create_with_pool(internal, sizeof(internal));
   assert(tlsf);
@@ -30,5 +30,5 @@ int main() {
   assert(lv_tlsf_check(tlsf) == 0);
   for (auto& pool : external) assert(lv_tlsf_check_pool(pool) == 0);
   lv_tlsf_destroy(tlsf);
-  puts("PASS: installed LVGL rejects the old 128-KiB pool; two 64-KiB pools provide capacity without corrupting TLSF.");
+  puts("PASS: installed LVGL rejects the old 128-KiB pool; five 32-KiB pools provide capacity without corrupting TLSF.");
 }
