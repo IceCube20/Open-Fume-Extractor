@@ -146,6 +146,12 @@ enum IoConfigAction : uint8_t {
   IO_CONFIG_FAN = 0x02,
   IO_CONFIG_FILTER = 0x03,
   IO_CONFIG_RESET = 0x04,
+  // Fan/IO transactional hardware-editor extension. BEGIN snapshots the active
+  // configuration into RAM, ordinary CHANNEL/FAN/FILTER writes modify only
+  // that pending copy, and COMMIT validates/applies/persists the complete map.
+  IO_CONFIG_BEGIN = 0x05,
+  IO_CONFIG_COMMIT = 0x06,
+  IO_CONFIG_ABORT = 0x07,
 };
 
 
@@ -155,6 +161,9 @@ enum IoConfigAction : uint8_t {
 // from high-rate live polls while still requesting them during scan/config.
 enum IoQueryFlags : uint8_t {
   IO_QUERY_INCLUDE_ALIASES = 0x01,
+  // Ask modules to append a 16-bit rising-edge latch after the compact
+  // 7-byte live payload. Old modules ignore this bit and remain compatible.
+  IO_QUERY_INCLUDE_EVENTS = 0x02,
 };
 
 enum Status : uint8_t {

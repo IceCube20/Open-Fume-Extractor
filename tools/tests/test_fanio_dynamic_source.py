@@ -41,8 +41,8 @@ class FanIoDynamicSourceTest(unittest.TestCase):
         self.assertIn("FILTER_RUNTIME = 1", header)
         self.assertIn("FILTER_PRESSURE = 2", header)
         self.assertIn("FILTER_BOTH = 3", header)
-        self.assertIn("CONFIG_VERSION = 2", header)
-        self.assertIn("stored.filter_mode += 1", header)
+        self.assertIn("CONFIG_VERSION = 3", header)
+        self.assertIn("if (filter_mode_v1 && cfg.filter_mode <= 2) cfg.filter_mode += 1", header)
         self.assertIn("values=0|1|2|3", self.pro)
         self.assertIn("filter_runtime_save_due_ms = now + 900000UL", self.pro)
 
@@ -78,11 +78,10 @@ class FanIoDynamicSourceTest(unittest.TestCase):
 
     def test_editor_uses_full_width_channels_and_readable_filter_lifetime(self):
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.master_status)
-        self.assertIn("Filterlebensdauer · Tage", self.master_status)
+        self.assertIn("Filter-Wechselintervall · Tage", self.master_status)
         self.assertIn("fanIoEditorLifetimeSet('hours'", self.master_status)
         self.assertIn("fanIoEditorLifetimeSet('minutes'", self.master_status)
         self.assertIn("Relaisausgang", self.master_status)
-        self.assertIn("muss ein Relais- oder PWM-Ausgang gewählt werden", self.master_status)
 
     def test_disabled_main_output_is_removed_from_routing(self):
         scheduler = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")

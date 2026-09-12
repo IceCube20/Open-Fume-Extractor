@@ -132,6 +132,14 @@ private:
   FirmwareChunk firmware_chunk_=nullptr;
   uint32_t bulk_last_request_=0,bulk_last_offset_=0,bulk_last_accepted_=0;
   uint8_t bulk_last_status_=ofe_wifi::STATUS_BUSY;
+  bool persistAssignedAddress(uint8_t addr) {
+    Preferences p;
+    if (!p.begin("display", false)) return false;
+    const bool ok = p.putUChar("addr", addr) == sizeof(uint8_t) &&
+                    p.getUChar("addr", 0) == addr;
+    p.end();
+    return ok;
+  }
   void setActive(bool active) {
     portENTER_CRITICAL(&mux_);
     bool changed=shared_.active!=active; shared_.active=active;
@@ -252,7 +260,15 @@ private:
     }
     if (p.kind==READY && !connected_ && server_ && p.server==server_ && !p.counter &&
         p.length==1 && p.body[0]>=0x40 && p.body[0]<=0x4f) {
-      *address_=p.body[0]; connected_=true; seen_=millis(); tx_=rx_=0;
+      const uint8_t assigned_addr = p.body[0];
+      // The authenticated READY address is authoritative. Persist it before
+      // entering the session so a display cannot reboot back to an old address
+      // while the Master already remembers the new one.
+      if (*address_ != assigned_addr && !persistAssignedAddress(assigned_addr)) {
+        resetSession(false);
+        return false;
+      }
+      *address_=assigned_addr; connected_=true; seen_=millis(); tx_=rx_=0;
       last_transport_wireless_.store(true, std::memory_order_relaxed);
       setActive(true); return false;
     }

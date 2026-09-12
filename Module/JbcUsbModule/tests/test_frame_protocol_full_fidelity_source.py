@@ -2,7 +2,7 @@ from pathlib import Path
 
 src = (Path(__file__).resolve().parents[1] / "JbcUsbModule.ino").read_text(encoding="utf-8")
 
-assert "#define OFE_MODULE_FW_PATCH 81" in src
+assert "#define OFE_MODULE_FW_PATCH 82" in src
 
 # EncodeFrame.cs: Protocol 01 = 7 control bytes, Protocol 02 = 8, one-byte
 # LENGTH allows 0..255 data bytes.

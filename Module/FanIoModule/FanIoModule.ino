@@ -2,6 +2,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <Preferences.h>
+#include <driver/gpio.h>
+#include <soc/gpio_struct.h>
 #include <stdarg.h>
 
 #include <Update.h>
@@ -56,6 +58,28 @@ using namespace jbc_rs485;
 #define FAN_PWM_ENABLE 1
 #endif
 
+#ifndef FAN_PWM_DEFAULT_FREQUENCY_HZ
+#define FAN_PWM_DEFAULT_FREQUENCY_HZ 1000U
+#endif
+
+#ifndef FAN_PWM_RESOLUTION_BITS
+#define FAN_PWM_RESOLUTION_BITS 8U
+#endif
+
+#ifndef FAN_PWM_MAX_RESOLUTION_BITS
+#define FAN_PWM_MAX_RESOLUTION_BITS 16U
+#endif
+
+#ifndef ESP_ARDUINO_VERSION_MAJOR
+#define ESP_ARDUINO_VERSION_MAJOR 2
+#endif
+
+static const uint16_t FAN_PWM_MIN_FREQUENCY_HZ = 10U;
+static const uint16_t FAN_PWM_MAX_FREQUENCY_HZ = 30000U;
+#if ESP_ARDUINO_VERSION_MAJOR < 3
+static const uint8_t FAN_PWM_LEDC_CHANNEL = 0;
+#endif
+
 #ifndef FAN_TACHO_ENABLE
 #define FAN_TACHO_ENABLE 1
 #endif
@@ -108,7 +132,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 65
+#define OFE_MODULE_FW_PATCH 73
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -139,6 +163,18 @@ static uint8_t module_addr = 0x20;
 static char module_label[24] = {0};
 static char io_alias[5][19] = {{0}};
 static ofe_fanio::HardwareConfig hw_config;
+// Hardware-editor transaction buffer. While a transaction is active,
+// CHANNEL/FAN/FILTER writes modify only this RAM copy. The live GPIO map and
+// NVS stay untouched until IO_CONFIG_COMMIT succeeds.
+static ofe_fanio::HardwareConfig io_config_pending;
+static uint16_t io_config_pending_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
+static bool io_config_transaction_active = false;
+static uint32_t io_config_transaction_last_ms = 0;
+static const uint32_t IO_CONFIG_TRANSACTION_TIMEOUT_MS = 15000UL;
+static uint16_t fan_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
+static int16_t fan_pwm_attached_pin = -1;
+static bool fan_pwm_ready = false;
+static uint8_t fan_pwm_resolution_bits = FAN_PWM_RESOLUTION_BITS;
 static char dynamic_descriptor[3072] = {0};
 static bool dynamic_descriptor_dirty = true;
 static bool fw_update_active = false;
@@ -299,6 +335,10 @@ static uint32_t fan_demand_since_ms = 0;
 static bool fan_demand_active = false;
 static uint32_t last_master_ms = 0;
 static uint16_t io_input_mask = 0;
+static uint16_t io_input_raw_mask = 0;
+static uint16_t io_input_event_mask = 0;
+static uint32_t io_input_change_ms[ofe_fanio::MAX_INPUTS] = {};
+static const uint32_t GENERIC_INPUT_DEBOUNCE_MS = 10UL;
 static uint16_t io_output_mask = 0;
 static uint8_t join_announce_left = 0;
 static uint32_t next_join_announce_ms = 0;
@@ -349,7 +389,25 @@ static bool valid_module_addr(uint8_t addr) {
 static uint16_t sanitize_output_power(uint16_t power, bool allow_zero) {
   if (allow_zero && power == 0) return 0;
   if (power > 1000) power = 1000;
-  if (power < 100) power = 100;
+  if (power < 10) power = 10;
+  return power;
+}
+
+static bool fan_uses_relay() {
+  return ofe_fanio::fanUsesRelay(hw_config);
+}
+
+static bool fan_uses_pwm() {
+  return ofe_fanio::fanUsesPwm(hw_config);
+}
+
+static uint16_t clamp_output_power_to_config(uint16_t power) {
+  if (!fan_uses_pwm()) return 1000U;
+  power = sanitize_output_power(power, false);
+  const uint16_t min_power = (uint16_t)hw_config.fan_min_power_percent * 10U;
+  const uint16_t max_power = (uint16_t)hw_config.fan_max_power_percent * 10U;
+  if (power < min_power) power = min_power;
+  if (power > max_power) power = max_power;
   return power;
 }
 
@@ -368,20 +426,102 @@ static void poll_output_power_save() {
   manual_output_power_dirty = false;
 }
 
+static bool fan_pwm_frequency_valid(uint32_t hz) {
+  return hz >= FAN_PWM_MIN_FREQUENCY_HZ && hz <= FAN_PWM_MAX_FREQUENCY_HZ;
+}
+
+static void fan_pwm_set_open_drain(uint8_t pin, bool enabled) {
+  // Do not call gpio_set_direction()/pinMode() after LEDC has been attached.
+  // Those GPIO helpers switch the pin back to the plain GPIO function on some
+  // ESP32 Arduino/IDF versions and thereby disconnect the LEDC matrix output.
+  // Open-drain itself is only the PAD_DRIVER bit, so change exactly that bit
+  // while leaving the peripheral routing untouched.
+  if (pin <= 39U) GPIO.pin[pin].pad_driver = enabled ? 1U : 0U;
+}
+
+static void fan_pwm_detach() {
+  if (fan_pwm_attached_pin < 0) {
+    fan_pwm_ready = false;
+    return;
+  }
+  const uint8_t pin = (uint8_t)fan_pwm_attached_pin;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcDetach(pin);
+#else
+  ledcDetachPin(pin);
+#endif
+  // LEDC is detached now, so returning the pin to ordinary push-pull GPIO is
+  // safe and avoids leaving an old open-drain setting behind.
+  fan_pwm_set_open_drain(pin, false);
+  pinMode(pin, OUTPUT);
+  fan_pwm_attached_pin = -1;
+  fan_pwm_ready = false;
+}
+
+static bool fan_pwm_attach(uint8_t pin) {
+  fan_pwm_detach();
+  if (pin == ofe_fanio::PIN_UNUSED) return false;
+  if (!fan_pwm_frequency_valid(fan_pwm_frequency_hz)) fan_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
+  pinMode(pin, OUTPUT);
+
+  // The LEDC timer cannot cover 10 Hz .. 30 kHz with one fixed resolution on
+  // every ESP32 target. Try the highest useful resolution first and fall back
+  // until the requested frequency is representable. This keeps low frequencies
+  // such as 10 Hz valid while preserving good duty resolution at higher rates.
+  fan_pwm_ready = false;
+  fan_pwm_resolution_bits = FAN_PWM_RESOLUTION_BITS;
+  for (int bits = (int)FAN_PWM_MAX_RESOLUTION_BITS; bits >= (int)FAN_PWM_RESOLUTION_BITS; --bits) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    if (ledcAttach(pin, fan_pwm_frequency_hz, (uint8_t)bits)) {
+      fan_pwm_ready = true;
+      fan_pwm_resolution_bits = (uint8_t)bits;
+      break;
+    }
+#else
+    const double actual = ledcSetup(FAN_PWM_LEDC_CHANNEL, fan_pwm_frequency_hz, (uint8_t)bits);
+    if (actual > 0.0) {
+      ledcAttachPin(pin, FAN_PWM_LEDC_CHANNEL);
+      fan_pwm_ready = true;
+      fan_pwm_resolution_bits = (uint8_t)bits;
+      break;
+    }
+#endif
+  }
+  fan_pwm_attached_pin = fan_pwm_ready ? (int16_t)pin : -1;
+  if (fan_pwm_ready) {
+    // Set only the open-drain pad flag AFTER LEDC routing exists. Changing the
+    // whole GPIO direction here would break PWM output on affected cores.
+    fan_pwm_set_open_drain(pin, (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_OPEN_DRAIN) != 0);
+  }
+  return fan_pwm_ready;
+}
+
+static void fan_pwm_write(uint8_t duty) {
+  if (!fan_pwm_ready || fan_pwm_attached_pin < 0) return;
+  const uint32_t max_duty = (1UL << fan_pwm_resolution_bits) - 1UL;
+  const uint32_t scaled_duty = ((uint32_t)duty * max_duty + 127UL) / 255UL;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite((uint8_t)fan_pwm_attached_pin, scaled_duty);
+#else
+  ledcWrite(FAN_PWM_LEDC_CHANNEL, scaled_duty);
+#endif
+}
+
 
 static void IRAM_ATTR tacho_isr() {
   ++tacho_edges;
 }
 
 static void write_enable_pin(bool enabled) {
-  if (!(hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) || hw_config.fan_enable_pin == ofe_fanio::PIN_UNUSED) return;
-  const bool active_low = (hw_config.fan_flags & ofe_fanio::CHANNEL_ACTIVE_LOW) != 0;
+  if (!(hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) || !fan_uses_relay() || hw_config.fan_enable_pin == ofe_fanio::PIN_UNUSED) return;
+  const bool active_low = (hw_config.fan_enable_flags & ofe_fanio::FAN_ENABLE_ACTIVE_LOW) != 0;
   digitalWrite(hw_config.fan_enable_pin, (enabled != active_low) ? HIGH : LOW);
 }
 
 static void apply_output() {
   const bool configured = (hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) != 0;
-  const bool demand = configured && output_enabled && output_power >= FAN_TACHO_FAULT_MIN_POWER;
+  const uint16_t effective_power = clamp_output_power_to_config(output_power);
+  const bool demand = configured && output_enabled && (!fan_uses_pwm() || effective_power >= FAN_TACHO_FAULT_MIN_POWER);
   if (demand && !fan_demand_active) {
     fan_demand_since_ms = millis();
     fault_mask &= (uint16_t)~(FAULT_NO_TACH | FAULT_LOW_RPM);
@@ -392,10 +532,10 @@ static void apply_output() {
   fan_demand_active = demand;
 
   write_enable_pin(configured && output_enabled);
-  if (hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED) {
-    int duty = configured && output_enabled ? map(output_power, 0, 1000, 0, 255) : 0;
-    if (hw_config.fan_flags & ofe_fanio::CHANNEL_ACTIVE_LOW) duty = 255 - duty;
-    analogWrite(hw_config.fan_pwm_pin, duty);
+  if (fan_uses_pwm() && hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED) {
+    int duty = configured && output_enabled ? map(effective_power, 0, 1000, 0, 255) : 0;
+    if (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_ACTIVE_LOW) duty = 255 - duty;
+    fan_pwm_write((uint8_t)constrain(duty, 0, 255));
   }
 }
 
@@ -468,15 +608,64 @@ static void update_rpm() {
   }
 }
 
-static void update_generic_inputs() {
-  uint16_t mask = 0;
+static bool generic_input_active(const ofe_fanio::ChannelConfig& ch) {
+  bool active = digitalRead(ch.pin) == HIGH;
+  if (ch.flags & ofe_fanio::CHANNEL_ACTIVE_LOW) active = !active;
+  return active;
+}
+
+static void reset_generic_input_state() {
+  const uint32_t now = millis();
+  uint16_t initial = 0;
   for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) {
     const ofe_fanio::ChannelConfig& ch = hw_config.inputs[i];
+    io_input_change_ms[i] = now;
     if (!(ch.flags & ofe_fanio::CHANNEL_ENABLED) || ch.pin == ofe_fanio::PIN_UNUSED) continue;
-    const bool high = digitalRead(ch.pin) == HIGH;
-    if ((ch.flags & ofe_fanio::CHANNEL_ACTIVE_LOW) ? !high : high) mask |= (uint16_t)(1U << i);
+    if (generic_input_active(ch)) initial |= (uint16_t)(1U << i);
   }
-  io_input_mask = mask;
+  io_input_raw_mask = initial;
+  io_input_mask = initial;
+  io_input_event_mask = 0;
+}
+
+static void update_generic_inputs() {
+  const uint32_t now = millis();
+  uint16_t enabled_mask = 0;
+  for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) {
+    const ofe_fanio::ChannelConfig& ch = hw_config.inputs[i];
+    const uint16_t bit = (uint16_t)(1U << i);
+    if (!(ch.flags & ofe_fanio::CHANNEL_ENABLED) || ch.pin == ofe_fanio::PIN_UNUSED) {
+      io_input_raw_mask &= (uint16_t)~bit;
+      io_input_mask &= (uint16_t)~bit;
+      io_input_event_mask &= (uint16_t)~bit;
+      continue;
+    }
+    enabled_mask |= bit;
+    const bool raw_active = generic_input_active(ch);
+    const bool previous_raw = (io_input_raw_mask & bit) != 0;
+    if (raw_active != previous_raw) {
+      if (raw_active) io_input_raw_mask |= bit;
+      else io_input_raw_mask &= (uint16_t)~bit;
+      io_input_change_ms[i] = now;
+    }
+
+    const bool stable_active = (io_input_mask & bit) != 0;
+    if (raw_active != stable_active &&
+        (uint32_t)(now - io_input_change_ms[i]) >= GENERIC_INPUT_DEBOUNCE_MS) {
+      if (raw_active) {
+        io_input_mask |= bit;
+        // Rising/activation events are held until a master live poll fetches
+        // them. This makes short button presses reliable even when they start
+        // and end completely between two RS485 status polls.
+        io_input_event_mask |= bit;
+      } else {
+        io_input_mask &= (uint16_t)~bit;
+      }
+    }
+  }
+  io_input_raw_mask &= enabled_mask;
+  io_input_mask &= enabled_mask;
+  io_input_event_mask &= enabled_mask;
 }
 
 static void send_status_response(const Frame& req, Status status) {
@@ -598,8 +787,10 @@ static void handle_set_label(const Frame& req) {
 }
 
 static bool fan_output_configured() {
-  return (hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) != 0 &&
-         (hw_config.fan_enable_pin != ofe_fanio::PIN_UNUSED || hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED);
+  if (!(hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED)) return false;
+  if (fan_uses_relay() && hw_config.fan_enable_pin == ofe_fanio::PIN_UNUSED) return false;
+  if (fan_uses_pwm() && hw_config.fan_pwm_pin == ofe_fanio::PIN_UNUSED) return false;
+  return fan_uses_relay() || fan_uses_pwm();
 }
 
 static uint32_t advertised_caps() {
@@ -608,9 +799,9 @@ static uint32_t advertised_caps() {
   caps |= CAP_INPUT_KEYS | CAP_DIGITAL_OUTPUT;
 #endif
   if (fan_output_configured()) {
-    caps |= CAP_RELAY_OUTPUT;
+    if (fan_uses_relay()) caps |= CAP_RELAY_OUTPUT;
 #if FAN_PWM_ENABLE
-    if (hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED) caps |= CAP_PWM_OUTPUT;
+    if (fan_uses_pwm()) caps |= CAP_PWM_OUTPUT;
 #endif
 #if FAN_TACHO_ENABLE
     if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) caps |= CAP_TACHO_INPUT;
@@ -770,21 +961,34 @@ static void handle_set_address_uid(const Frame& req) {
     send_status_response(req, STATUS_BAD_VALUE);
     return;
   }
-  prefs.putUChar("addr", next_addr);
+  if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+    send_status_response(req, STATUS_BUSY);
+    return;
+  }
   send_status_response(req, STATUS_OK);
   delay(20);
   module_addr = next_addr;
 }
 
-static void configure_dynamic_hardware(bool detach_current) {
+static bool configure_dynamic_hardware(bool detach_current) {
   if (detach_current && hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
-  if ((hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) && hw_config.fan_enable_pin != ofe_fanio::PIN_UNUSED) {
+  if ((hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) && fan_uses_relay() && hw_config.fan_enable_pin != ofe_fanio::PIN_UNUSED) {
     pinMode(hw_config.fan_enable_pin, OUTPUT);
     write_enable_pin(false);
   }
-  if (hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED) {
-    pinMode(hw_config.fan_pwm_pin, OUTPUT);
-    analogWrite(hw_config.fan_pwm_pin, (hw_config.fan_flags & ofe_fanio::CHANNEL_ACTIVE_LOW) ? 255 : 0);
+  fan_pwm_detach();
+  bool pwm_ok = true;
+  if ((hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) && fan_uses_pwm() && hw_config.fan_pwm_pin != ofe_fanio::PIN_UNUSED) {
+    const uint8_t off_duty = (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_ACTIVE_LOW) ? 255U : 0U;
+    pwm_ok = fan_pwm_attach(hw_config.fan_pwm_pin);
+    if (pwm_ok) fan_pwm_write(off_duty);
+    else {
+      // Keep the pin in a safe inactive state, but report the LEDC failure to
+      // the caller. A hardware-editor COMMIT must never say OK when PWM could
+      // not actually be attached.
+      pinMode(hw_config.fan_pwm_pin, (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_OPEN_DRAIN) ? OUTPUT_OPEN_DRAIN : OUTPUT);
+      digitalWrite(hw_config.fan_pwm_pin, off_duty ? HIGH : LOW);
+    }
   }
   for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) {
     const ofe_fanio::ChannelConfig& ch = hw_config.inputs[i];
@@ -796,6 +1000,7 @@ static void configure_dynamic_hardware(bool detach_current) {
 #endif
     pinMode(ch.pin, mode);
   }
+  reset_generic_input_state();
   for (uint8_t i = 0; i < ofe_fanio::MAX_OUTPUTS; ++i) {
     const ofe_fanio::ChannelConfig& ch = hw_config.outputs[i];
     if (!(ch.flags & ofe_fanio::CHANNEL_ENABLED) || ch.pin == ofe_fanio::PIN_UNUSED) continue;
@@ -808,6 +1013,7 @@ static void configure_dynamic_hardware(bool detach_current) {
     attachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin), tacho_isr, FALLING);
   }
   dynamic_descriptor_dirty = true;
+  return pwm_ok;
 }
 
 static void descriptor_append(const char* fmt, ...) {
@@ -826,11 +1032,20 @@ static const char* dynamic_descriptor_text() {
   uint8_t count = 0;
   for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) if (hw_config.inputs[i].flags & ofe_fanio::CHANNEL_ENABLED) ++count;
   for (uint8_t i = 0; i < ofe_fanio::MAX_OUTPUTS; ++i) if (hw_config.outputs[i].flags & ofe_fanio::CHANNEL_ENABLED) ++count;
-  if (fan_configured) count += 3;
-  descriptor_append("schema=1\nmodule=Fan/IO\nprofile=Hardware I/O\nstation=Local GPIO\nlocal_bus=GPIO\nprofile_entities=%u\nprofile_slots=32\nsystem_entities=master_builtin\nprofile_active=yes\nfan_enabled=%u\nfan_active_low=%u\nentities:\n",
+  if (fan_configured) {
+    ++count; // main enable
+    if (fan_uses_pwm()) ++count;
+    if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) ++count;
+  }
+  descriptor_append("schema=1\nmodule=Fan/IO\nprofile=Hardware I/O\nstation=Local GPIO\nlocal_bus=GPIO\nprofile_entities=%u\nprofile_slots=32\nsystem_entities=master_builtin\nprofile_active=yes\nfan_enabled=%u\nfan_active_low=%u\nfan_output_mode=%u\nfan_enable_active_low=%u\nfan_pwm_active_low=%u\nfan_pwm_open_drain=%u\nfan_min_power=%u\nfan_max_power=%u\nfan_pwm_frequency_hz=%u\nentities:\n",
     count,
     fan_configured ? 1U : 0U,
-    (hw_config.fan_flags & ofe_fanio::CHANNEL_ACTIVE_LOW) ? 1U : 0U);
+    (hw_config.fan_enable_flags & ofe_fanio::FAN_ENABLE_ACTIVE_LOW) ? 1U : 0U,
+    hw_config.fan_output_mode,
+    (hw_config.fan_enable_flags & ofe_fanio::FAN_ENABLE_ACTIVE_LOW) ? 1U : 0U,
+    (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_ACTIVE_LOW) ? 1U : 0U,
+    (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_OPEN_DRAIN) ? 1U : 0U,
+    hw_config.fan_min_power_percent, hw_config.fan_max_power_percent, fan_pwm_frequency_hz);
   for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) {
     const ofe_fanio::ChannelConfig& ch = hw_config.inputs[i];
     if (!(ch.flags & ofe_fanio::CHANNEL_ENABLED)) continue;
@@ -846,10 +1061,18 @@ static const char* dynamic_descriptor_text() {
       40U + i, i + 1U, ch.name, ch.pin, i, (ch.flags & ofe_fanio::CHANNEL_ACTIVE_LOW) ? 1U : 0U);
   }
   if (fan_configured) {
-    descriptor_append("60 switch fan rw source=profile access=rw role=main_output_enable en=%s value_on=1 value_off=0 gpio=%u\n",
-      io_alias[4][0] ? io_alias[4] : "Luefter", hw_config.fan_enable_pin);
-    descriptor_append("61 number power rw source=profile access=rw role=main_output_power en=Leistung unit=%% min=10 max=100 step=1 gpio=%u\n", hw_config.fan_pwm_pin);
-    descriptor_append("62 sensor rpm ro source=profile access=ro en=Drehzahl unit=rpm gpio=%u ppr=%u\n", hw_config.fan_tacho_pin, hw_config.tacho_pulses_per_rev);
+    descriptor_append("60 switch fan rw source=profile access=rw role=main_output_enable en=%s value_on=1 value_off=0 gpio=%u output_mode=%u active_low=%u\n",
+      io_alias[4][0] ? io_alias[4] : "Luefter", fan_uses_relay() ? hw_config.fan_enable_pin : ofe_fanio::PIN_UNUSED,
+      hw_config.fan_output_mode, (hw_config.fan_enable_flags & ofe_fanio::FAN_ENABLE_ACTIVE_LOW) ? 1U : 0U);
+    if (fan_uses_pwm()) {
+      descriptor_append("61 number power rw source=profile access=rw role=main_output_power en=Leistung unit=%% min=%u max=%u step=1 gpio=%u pwm_hz=%u active_low=%u drive=%s\n",
+        hw_config.fan_min_power_percent, hw_config.fan_max_power_percent, hw_config.fan_pwm_pin, fan_pwm_frequency_hz,
+        (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_ACTIVE_LOW) ? 1U : 0U,
+        (hw_config.fan_pwm_flags & ofe_fanio::FAN_PWM_OPEN_DRAIN) ? "open_drain" : "push_pull");
+    }
+    if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) {
+      descriptor_append("62 sensor rpm ro source=profile access=ro en=Drehzahl unit=rpm gpio=%u ppr=%u\n", hw_config.fan_tacho_pin, hw_config.tacho_pulses_per_rev);
+    }
   }
   dynamic_descriptor_dirty = false;
   return dynamic_descriptor;
@@ -905,8 +1128,8 @@ static void handle_entity_get(const Frame& req) {
   for (uint8_t i = 0; i < ofe_fanio::MAX_OUTPUTS; ++i) if ((hw_config.outputs[i].flags & ofe_fanio::CHANNEL_ENABLED) && (!wanted || wanted == 40U + i)) count += entity_append_bool(resp.payload, o, 40U + i, ((io_output_mask >> i) & 1U) != 0);
   if (fan_output_configured()) {
     if (!wanted || wanted == 60) count += entity_append_bool(resp.payload, o, 60, output_enabled);
-    if (!wanted || wanted == 61) count += entity_append(resp.payload, o, 61, output_power / 10U);
-    if (!wanted || wanted == 62) count += entity_append(resp.payload, o, 62, fan_rpm);
+    if (fan_uses_pwm() && (!wanted || wanted == 61)) count += entity_append(resp.payload, o, 61, output_power / 10U);
+    if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED && (!wanted || wanted == 62)) count += entity_append(resp.payload, o, 62, fan_rpm);
   }
   resp.payload[cp] = count; resp.len = o; bus.send(resp);
 }
@@ -946,7 +1169,8 @@ static void handle_entity_set(const Frame& req) {
       send_status_response(req, STATUS_OK);
       return;
     }
-    output_power = sanitize_output_power((uint16_t)constrain(value, 10L, 100L) * 10U, false);
+    if (!fan_uses_pwm()) { send_status_response(req, STATUS_NOT_SUPPORTED); return; }
+    output_power = clamp_output_power_to_config((uint16_t)constrain(value, 1L, 100L) * 10U);
     remember_output_power(output_power);
     apply_output();
     send_status_response(req, STATUS_OK);
@@ -955,10 +1179,114 @@ static void handle_entity_set(const Frame& req) {
   send_status_response(req, STATUS_NOT_SUPPORTED);
 }
 
+static Status commit_io_config_candidate(const ofe_fanio::HardwareConfig& candidate, uint16_t candidate_pwm_frequency_hz) {
+  const bool pro_module = false;
+  ofe_fanio::HardwareConfig next = candidate;
+  next.checksum = ofe_fanio::checksum(next);
+  if (!fan_pwm_frequency_valid(candidate_pwm_frequency_hz) || !ofe_fanio::validate(next, pro_module)) return STATUS_BAD_VALUE;
+
+  // Preserve the complete live state so a failed LEDC attach or NVS write can
+  // roll back without leaving a half-applied hardware map behind.
+  const ofe_fanio::HardwareConfig old_config = hw_config;
+  const uint16_t old_pwm_frequency_hz = fan_pwm_frequency_hz;
+  const bool old_output_enabled = output_enabled;
+  const uint16_t old_output_power = output_power;
+  const uint16_t old_manual_output_power = manual_output_power;
+  const uint16_t old_io_output_mask = io_output_mask;
+
+  output_off();
+  if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
+  hw_config = next;
+  fan_pwm_frequency_hz = candidate_pwm_frequency_hz;
+  manual_output_power = clamp_output_power_to_config(manual_output_power);
+  output_power = clamp_output_power_to_config(output_power);
+
+  // This is a real hardware preflight. If LEDC cannot represent/attach the
+  // requested PWM configuration, do not persist it and restore the old map.
+  if (!configure_dynamic_hardware(false)) {
+    if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
+    fan_pwm_detach();
+    hw_config = old_config;
+    fan_pwm_frequency_hz = old_pwm_frequency_hz;
+    manual_output_power = old_manual_output_power;
+    output_power = old_output_power;
+    io_output_mask = old_io_output_mask;
+    output_enabled = old_output_enabled;
+    configure_dynamic_hardware(false);
+    apply_generic_outputs();
+    apply_output();
+    return STATUS_BAD_VALUE;
+  }
+
+  ofe_fanio::HardwareConfig stored = hw_config;
+  const bool config_saved = ofe_fanio::save(prefs, stored, pro_module);
+  const bool frequency_saved = config_saved && prefs.putUInt("pwm_freq", fan_pwm_frequency_hz) == sizeof(uint32_t);
+  if (!frequency_saved) {
+    // NVS is not transactional across keys. Restore both old values best-effort
+    // before returning an error, while the active RAM/hardware state is also
+    // rolled back below.
+    ofe_fanio::HardwareConfig rollback_store = old_config;
+    ofe_fanio::save(prefs, rollback_store, pro_module);
+    prefs.putUInt("pwm_freq", old_pwm_frequency_hz);
+
+    if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
+    fan_pwm_detach();
+    hw_config = old_config;
+    fan_pwm_frequency_hz = old_pwm_frequency_hz;
+    manual_output_power = old_manual_output_power;
+    output_power = old_output_power;
+    io_output_mask = old_io_output_mask;
+    output_enabled = old_output_enabled;
+    configure_dynamic_hardware(false);
+    apply_generic_outputs();
+    apply_output();
+    return STATUS_BUSY;
+  }
+
+  // Deliberately leave outputs OFF after a hardware-map change, matching the
+  // previous editor behaviour. The next master synchronization enables the
+  // selected main output again if required.
+  output_enabled = false;
+  io_output_mask = 0;
+  apply_output();
+  apply_generic_outputs();
+  dynamic_descriptor_dirty = true;
+  return STATUS_OK;
+}
+
 static void handle_io_config(const Frame& req) {
   if (!req.len) { send_status_response(req, STATUS_BAD_LEN); return; }
-  ofe_fanio::HardwareConfig next = hw_config;
+  const bool pro_module = false;
   const uint8_t action = req.payload[0];
+
+  if (action == IO_CONFIG_BEGIN) {
+    if (req.len != 1) { send_status_response(req, STATUS_BAD_LEN); return; }
+    io_config_pending = hw_config;
+    io_config_pending_pwm_frequency_hz = fan_pwm_frequency_hz;
+    io_config_transaction_active = true;
+    io_config_transaction_last_ms = millis();
+    send_status_response(req, STATUS_OK);
+    return;
+  }
+  if (action == IO_CONFIG_ABORT) {
+    if (req.len != 1) { send_status_response(req, STATUS_BAD_LEN); return; }
+    io_config_transaction_active = false;
+    send_status_response(req, STATUS_OK);
+    return;
+  }
+  if (action == IO_CONFIG_COMMIT) {
+    if (req.len != 1) { send_status_response(req, STATUS_BAD_LEN); return; }
+    if (!io_config_transaction_active) { send_status_response(req, STATUS_BAD_VALUE); return; }
+    const Status status = commit_io_config_candidate(io_config_pending, io_config_pending_pwm_frequency_hz);
+    if (status == STATUS_OK) io_config_transaction_active = false;
+    io_config_transaction_last_ms = millis();
+    send_status_response(req, status);
+    return;
+  }
+
+  ofe_fanio::HardwareConfig next = io_config_transaction_active ? io_config_pending : hw_config;
+  uint16_t next_pwm_frequency_hz = io_config_transaction_active ? io_config_pending_pwm_frequency_hz : fan_pwm_frequency_hz;
+
   if (action == IO_CONFIG_CHANNEL) {
     if (req.len < 7) { send_status_response(req, STATUS_BAD_LEN); return; }
     const bool output = req.payload[1] != 0;
@@ -977,22 +1305,48 @@ static void handle_io_config(const Frame& req) {
       ofe_fanio::copyName(ch.name, fallback);
     }
   } else if (action == IO_CONFIG_FAN) {
-    if (req.len != 7) { send_status_response(req, STATUS_BAD_LEN); return; }
+    if (req.len != 7 && req.len != 9 && req.len != 14) { send_status_response(req, STATUS_BAD_LEN); return; }
     next.fan_enable_pin = req.payload[1]; next.fan_pwm_pin = req.payload[2]; next.fan_tacho_pin = req.payload[3];
     next.fan_flags = req.payload[4] ? ofe_fanio::CHANNEL_ENABLED : 0;
-    if (req.payload[5]) next.fan_flags |= ofe_fanio::CHANNEL_ACTIVE_LOW;
     next.tacho_pulses_per_rev = req.payload[6];
+    const bool legacy_active_low = req.payload[5] != 0;
+    next.fan_output_mode = ofe_fanio::inferFanOutputMode(next.fan_enable_pin, next.fan_pwm_pin);
+    next.fan_enable_flags = legacy_active_low ? ofe_fanio::FAN_ENABLE_ACTIVE_LOW : 0;
+    next.fan_pwm_flags = (next.fan_pwm_flags & ofe_fanio::FAN_PWM_OPEN_DRAIN) |
+      (legacy_active_low ? ofe_fanio::FAN_PWM_ACTIVE_LOW : 0);
+    if (req.len >= 9) {
+      const uint16_t requested_pwm_frequency_hz = get_u16_le(req.payload + 7);
+      if (!fan_pwm_frequency_valid(requested_pwm_frequency_hz)) { send_status_response(req, STATUS_BAD_VALUE); return; }
+      next_pwm_frequency_hz = requested_pwm_frequency_hz;
+    }
+    if (req.len == 14) {
+      next.fan_output_mode = req.payload[9];
+      next.fan_enable_flags = req.payload[10] ? ofe_fanio::FAN_ENABLE_ACTIVE_LOW : 0;
+      next.fan_pwm_flags = req.payload[11] & (ofe_fanio::FAN_PWM_ACTIVE_LOW | ofe_fanio::FAN_PWM_OPEN_DRAIN);
+      next.fan_min_power_percent = req.payload[12];
+      next.fan_max_power_percent = req.payload[13];
+    }
+  } else if (action == IO_CONFIG_FILTER) {
+    send_status_response(req, STATUS_NOT_SUPPORTED); return;
   } else if (action == IO_CONFIG_RESET) {
-    ofe_fanio::defaults(next, false);
+    ofe_fanio::defaults(next, pro_module);
+    next_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
   } else { send_status_response(req, STATUS_NOT_SUPPORTED); return; }
+
   next.checksum = ofe_fanio::checksum(next);
-  if (!ofe_fanio::validate(next, false)) { send_status_response(req, STATUS_BAD_VALUE); return; }
-  output_off();
-  if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
-  hw_config = next;
-  if (!ofe_fanio::save(prefs, hw_config, false)) { send_status_response(req, STATUS_BUSY); return; }
-  configure_dynamic_hardware(false);
-  send_status_response(req, STATUS_OK);
+  if (io_config_transaction_active) {
+    // Intermediate transaction states may temporarily reuse a GPIO that will
+    // be moved by a later CHANNEL write. Full cross-channel validation belongs
+    // to COMMIT, when the final map is complete.
+    io_config_pending = next;
+    io_config_pending_pwm_frequency_hz = next_pwm_frequency_hz;
+    io_config_transaction_last_ms = millis();
+    send_status_response(req, STATUS_OK);
+    return;
+  }
+
+  const Status status = commit_io_config_candidate(next, next_pwm_frequency_hz);
+  send_status_response(req, status);
 }
 
 static const char* io_alias_key(uint8_t ch) {
@@ -1085,14 +1439,23 @@ static void handle_get_io(const Frame& req) {
 
   // Backward compatibility:
   // - old Master sends no request payload -> include aliases exactly as before
-  // - new live poll sends flags=0 -> only the 7-byte live IO payload
+  // - compact live polls may request a rising-edge latch in bytes 7..8
   // - scan/config sends IO_QUERY_INCLUDE_ALIASES -> include all aliases
   const bool include_aliases =
     req.len == 0 || (req.payload[0] & IO_QUERY_INCLUDE_ALIASES) != 0;
-  if (include_aliases) append_io_aliases(resp.payload, o);
+  const bool include_events =
+    req.len > 0 && (req.payload[0] & IO_QUERY_INCLUDE_EVENTS) != 0;
+  uint16_t delivered_events = 0;
+  if (include_aliases) {
+    append_io_aliases(resp.payload, o);
+  } else if (include_events) {
+    delivered_events = io_input_event_mask;
+    put_u16_le(resp.payload + o, delivered_events); o += 2;
+  }
 
   resp.len = o;
   bus.send(resp);
+  if (delivered_events) io_input_event_mask &= (uint16_t)~delivered_events;
 }
 
 static void handle_set_io(const Frame& req) {
@@ -1249,7 +1612,7 @@ static void handle_frame(const Frame& req) {
       output_enabled = req.payload[0] != 0;
       // Keep the last slider value visible while the relay/PWM output is off.
       // Only the enable flag decides whether the fan actually runs.
-      if (output_power < 100) output_power = manual_output_power;
+      output_power = clamp_output_power_to_config(output_power < 10 ? manual_output_power : output_power);
       apply_output();
       send_status_response(req, STATUS_OK);
       break;
@@ -1266,15 +1629,16 @@ static void handle_frame(const Frame& req) {
       {
         const uint16_t requested_power = get_u16_le(req.payload);
         if (requested_power == 0) {
-          // Zero is an off/idle sync value from older masters, never a new
-          // manual 10% setting. Do not overwrite the remembered slider value.
+          // Zero remains the legacy OFF/idle sync value.
           output_enabled = false;
-          output_power = manual_output_power;
-        } else {
-          output_power = sanitize_output_power(requested_power, false);
+          output_power = clamp_output_power_to_config(manual_output_power);
+        } else if (fan_uses_pwm()) {
+          output_power = clamp_output_power_to_config(requested_power);
           remember_output_power(output_power);
+        } else {
+          // Relay-only hardware has no variable power stage.
+          output_power = 1000U;
         }
-        if (output_power < 100) output_power = manual_output_power;
       }
       apply_output();
       send_status_response(req, STATUS_OK);
@@ -1287,7 +1651,10 @@ static void handle_frame(const Frame& req) {
       }
       {
         const uint8_t next_addr = req.payload[0];
-        prefs.putUChar("addr", next_addr);
+        if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+          send_status_response(req, STATUS_BUSY);
+          break;
+        }
         send_status_response(req, STATUS_OK);
         delay(20);
         module_addr = next_addr;
@@ -1299,8 +1666,11 @@ static void handle_frame(const Frame& req) {
       module_addr = 0x20;
       module_label[0] = 0;
       output_off();
+      io_config_transaction_active = false;
       ofe_fanio::defaults(hw_config, false);
+      fan_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
       ofe_fanio::save(prefs, hw_config, false);
+      prefs.putUInt("pwm_freq", fan_pwm_frequency_hz);
       configure_dynamic_hardware(false);
       send_status_response(req, STATUS_OK);
       break;
@@ -1381,6 +1751,13 @@ void setup() {
     if (io_alias[3][0]) ofe_fanio::copyName(hw_config.outputs[1].name, io_alias[3]);
     ofe_fanio::save(prefs, hw_config, false);
   }
+  manual_output_power = clamp_output_power_to_config(manual_output_power);
+  output_power = manual_output_power;
+  const uint32_t stored_pwm_frequency_hz = prefs.getUInt("pwm_freq", FAN_PWM_DEFAULT_FREQUENCY_HZ);
+  fan_pwm_frequency_hz = fan_pwm_frequency_valid(stored_pwm_frequency_hz)
+    ? (uint16_t)stored_pwm_frequency_hz
+    : (uint16_t)FAN_PWM_DEFAULT_FREQUENCY_HZ;
+  if (stored_pwm_frequency_hz != fan_pwm_frequency_hz) prefs.putUInt("pwm_freq", fan_pwm_frequency_hz);
   configure_dynamic_hardware(false);
 
   Serial.println("Fan Output RS485 module");
@@ -1392,6 +1769,10 @@ void setup() {
 }
 
 void loop() {
+  if (io_config_transaction_active &&
+      (uint32_t)(millis() - io_config_transaction_last_ms) > IO_CONFIG_TRANSACTION_TIMEOUT_MS) {
+    io_config_transaction_active = false;
+  }
   ofe_status_leds.setBusOnline(last_master_ms && (uint32_t)(millis() - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS);
   ofe_status_leds.setFirmwareUpdate(fw_update_active);
   ofe_status_leds.setModuleEvent(fault_mask ? OFE_LED_EVENT_CRITICAL : (output_enabled ? OFE_LED_EVENT_EXTRACTOR_ON : OFE_LED_EVENT_OFF));

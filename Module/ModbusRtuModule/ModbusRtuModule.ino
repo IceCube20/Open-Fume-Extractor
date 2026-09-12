@@ -63,7 +63,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 56
+#define OFE_MODULE_FW_PATCH 57
 #define OFE_MODULE_FW_SUFFIX "alpha"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -2367,8 +2367,11 @@ static void handle_set_address_uid(const Frame& req) {
     send_status_response(req, STATUS_BAD_VALUE);
     return;
   }
+  if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+    send_status_response(req, STATUS_BUSY);
+    return;
+  }
   module_addr = next_addr;
-  prefs.putUChar("addr", module_addr);
   send_status_response(req, STATUS_OK);
   delay(30);
 }
@@ -2421,8 +2424,12 @@ static void handle_frame(const Frame& req) {
     case CMD_SET_ADDRESS:
       if (req.len != 1 || !valid_module_addr(req.payload[0])) send_status_response(req, STATUS_BAD_VALUE);
       else {
-        module_addr = req.payload[0];
-        prefs.putUChar("addr", module_addr);
+        const uint8_t next_addr = req.payload[0];
+        if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+          send_status_response(req, STATUS_BUSY);
+          break;
+        }
+        module_addr = next_addr;
         send_status_response(req, STATUS_OK);
       }
       break;

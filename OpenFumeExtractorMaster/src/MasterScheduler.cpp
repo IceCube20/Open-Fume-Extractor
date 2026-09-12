@@ -1676,12 +1676,34 @@ bool MasterScheduler::busModuleDiag(uint8_t addr, BusModuleDiag& out) const {
 struct SchedulerBusLock {
   SemaphoreHandle_t sem = nullptr;
   bool locked = false;
+  bool reentrant_blocked = false;
+
   SchedulerBusLock(SemaphoreHandle_t s, TickType_t wait_ticks) : sem(s) {
-    locked = !sem || xSemaphoreTake(sem, wait_ticks) == pdTRUE;
+    if (!sem) {
+      locked = true;
+      return;
+    }
+
+    // bus_mutex_ is intentionally non-recursive: a nested RS485 transaction
+    // would corrupt the request/response pairing.  FreeRTOS also asserts in
+    // vTaskPriorityDisinheritAfterTimeout() if a task waits with a timeout on a
+    // mutex that it already owns.  Detect that condition before xSemaphoreTake
+    // so an accidental nested request fails cleanly instead of rebooting the
+    // ESP32-S3.
+    if (xSemaphoreGetMutexHolder(sem) == xTaskGetCurrentTaskHandle()) {
+      reentrant_blocked = true;
+      return;
+    }
+
+    locked = xSemaphoreTake(sem, wait_ticks) == pdTRUE;
   }
-  ~SchedulerBusLock() {
+
+  void release() {
     if (sem && locked) xSemaphoreGive(sem);
+    locked = false;
   }
+
+  ~SchedulerBusLock() { release(); }
 };
 void MasterScheduler::drainUnsolicitedFrames() {
   SchedulerBusLock bus_lock(bus_mutex_, 0);
@@ -1760,17 +1782,21 @@ bool MasterScheduler::powerSaveIdle() const {
       extractor_.workMask() != 0 || extractor_.externalInputActive() ||
       extractor_.afterrunLeftMs() != 0 || extractor_.continuous()) return false;
 
-  // Direct controls on a module are valid activity too. In particular, a
-  // Fan/IO must not enter Eco immediately while its fan or a local output is
-  // still active. Weller is special: io_output_mask bit0 is the extraction
-  // fan, while bit1 is only the work light. Keeping that light on must not
-  // reset the system idle timer forever.
+  // Direct extractor controls on a module are valid activity too. Auxiliary
+  // outputs are different: Fan/IO OUT1..OUT8 may intentionally remain on while
+  // the OFE system is idle, and Weller's work light must not keep Eco awake.
   for (uint8_t i = 0; i < registry_.count(); ++i) {
     const ModuleRecord& rec = registry_.at(i);
     if (!rec.online) continue;
     if (rec.output_status_valid && rec.output_enabled) return false;
 
     uint16_t active_io_outputs = rec.io_output_mask;
+    // Fan/IO OUT1..OUT8 are auxiliary/local outputs. They must not keep the
+    // whole OFE system awake or cancel Eco mode. The Fan/IO main extractor
+    // output is represented separately by output_enabled above and therefore
+    // still counts as real extractor activity.
+    if (rec.type == MODULE_FAN_IO || rec.type == MODULE_FAN_IO_PRO) active_io_outputs = 0;
+    // On Weller bit0 is the extractor fan while bit1 is only the work light.
     if (rec.type == MODULE_WELLER_ZERO_SMOG) active_io_outputs &= 0x0001U;
     if (active_io_outputs) return false;
   }
@@ -1977,7 +2003,8 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
   if (!bus_lock.locked) {
     if (traceMatches(dst)) {
       trace_stats_.timeouts++;
-      traceLog(dst, TRACE_TIMEOUT, cmd, 0xFF, nullptr, 0, 0, "bus lock timeout");
+      traceLog(dst, TRACE_TIMEOUT, cmd, 0xFF, nullptr, 0, 0,
+               bus_lock.reentrant_blocked ? "nested bus request blocked" : "bus lock timeout");
     }
     return false;
   }
@@ -2136,6 +2163,16 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
       rec->timeout_count++;
     }
     if (was_online && !rec->online) {
+      // The request still owns the RS485 mutex here.  Offline handling can
+      // re-select roles, synchronize the JBC bridge and apply input-routing
+      // edges; all of those paths may issue their own bus requests.  Never run
+      // them while holding the current request lock or a lost Fan/IO (main
+      // output + GPIO source) can enter a second timed wait on the same mutex.
+      // ESP-IDF then asserts in vTaskPriorityDisinheritAfterTimeout().  No more
+      // link access is needed on this timeout path, so
+      // release the bus before executing the offline transition callbacks.
+      bus_lock.release();
+
       if (rec->caps & CAP_DISPLAY) {
         // Drop stale background-cache requests from the old display session.
         // The first successful STATUS after reconnect will repopulate them and
@@ -2630,9 +2667,13 @@ void MasterScheduler::probeModule(uint8_t addr) {
   selectRoles();
 }
 
-void MasterScheduler::setPreferredOutputAddr(uint8_t addr) {
+void MasterScheduler::setPreferredOutputAddr(uint8_t addr, bool persist) {
   if (addr != 0 && (addr < 0x10 || addr > 0x6F)) addr = 0;
   preferred_output_addr_ = addr;
+  // Preferred-output selection is now authoritative for both the manual UI
+  // and automation actions. Clear the legacy runtime-only override so there is
+  // never a second hidden selection source competing with the persisted one.
+  runtime_output_override_addr_ = 0xFF;
   selectRoles();
   if (have_jbc_settings_ && desired_jbc_settings_.select_flow < minSelectFlowForActiveOutput()) {
     setControlSettings(desired_jbc_settings_.suction_level, desired_jbc_settings_.select_flow,
@@ -2640,8 +2681,18 @@ void MasterScheduler::setPreferredOutputAddr(uint8_t addr) {
       desired_jbc_settings_.stand_intakes != 0, desired_jbc_settings_.continuous != 0);
   }
   extractor_.markOutputDirty();
-  Preferences prefs;
-  MasterSettingsStore::savePreferredOutput(prefs, addr);
+  if (persist) {
+    Preferences prefs;
+    MasterSettingsStore::savePreferredOutput(prefs, addr);
+  }
+}
+
+void MasterScheduler::setRuntimeOutputOverrideAddr(uint8_t addr) {
+  // Legacy API kept for compatibility with the existing web/runtime code.
+  // Output selection from automation is now a real configuration action: it
+  // uses the same preferred-output path as a manual selection and is persisted
+  // in NVS.  This also clears any stale runtime-only override from Fix 19/20.
+  setPreferredOutputAddr(addr, true);
 }
 
 void MasterScheduler::setJbcInputEnabled(bool enabled) {
@@ -2683,12 +2734,19 @@ bool MasterScheduler::setIoInputRoute(uint8_t addr, uint8_t bit, bool enabled) {
 bool MasterScheduler::setInputRule(uint8_t index, const InputActionRule& rule) {
   if (index >= MAX_INPUT_RULES) return false;
   InputActionRule next = rule;
-  if (next.source_type > INPUT_SRC_UNIVERSAL_ENTITY) next.source_type = INPUT_SRC_NONE;
-  if (next.target_type > INPUT_TGT_EXTRACTOR_ACTION) next.target_type = INPUT_TGT_NONE;
+  if (next.source_type > INPUT_SRC_SYSTEM_STATE) next.source_type = INPUT_SRC_NONE;
+  if (next.target_type > INPUT_TGT_SELECT_OUTPUT) next.target_type = INPUT_TGT_NONE;
   if ((next.source_type == INPUT_SRC_IO_INPUT && next.source_bit > 15) ||
+      (next.source_type == INPUT_SRC_SYSTEM_STATE &&
+       (next.source_bit == INPUT_STATE_NONE || next.source_bit > INPUT_STATE_LAST ||
+        ((next.source_bit <= INPUT_STATE_OUTPUT_SELECTED_AUTO) && next.source_addr != 0) ||
+        ((next.source_bit == INPUT_STATE_OUTPUT_SELECTED || next.source_bit == INPUT_STATE_OUTPUT_ACTIVE) &&
+         (next.source_addr < 0x10 || next.source_addr > 0x6F)))) ||
       (next.target_type == INPUT_TGT_IO_OUTPUT && next.target_bit > 15) ||
       (next.target_type == INPUT_TGT_EXTRACTOR_ACTION &&
        (next.target_bit == EXTRACTOR_ACTION_NONE || next.target_bit > EXTRACTOR_ACTION_LAST)) ||
+      (next.target_type == INPUT_TGT_SELECT_OUTPUT &&
+       next.target_addr != 0 && (next.target_addr < 0x10 || next.target_addr > 0x6F)) ||
       next.source_bit == 0xFF || next.target_bit == 0xFF) return false;
   InputActionRule old = input_rules_[index];
   if (old.enabled && old.last_active) {
@@ -2782,8 +2840,10 @@ void MasterScheduler::selectRoles() {
   }
 
   ModuleRecord* output = nullptr;
-  if (preferred_output_addr_) {
-    ModuleRecord* preferred = registry_.find(preferred_output_addr_);
+  const bool runtime_override = runtime_output_override_addr_ != 0xFF;
+  const uint8_t selected_output_addr = runtime_override ? runtime_output_override_addr_ : preferred_output_addr_;
+  if (selected_output_addr) {
+    ModuleRecord* preferred = registry_.find(selected_output_addr);
     if (preferred && preferred->online && moduleProvidesExtractorOutput(*preferred)) output = preferred;
   } else {
     for (uint8_t i = 0; i < registry_.count(); ++i) {
@@ -2793,7 +2853,10 @@ void MasterScheduler::selectRoles() {
     if (!output) {
       for (uint8_t i = 0; i < registry_.count(); ++i) {
         ModuleRecord& candidate = registry_.at(i);
-        if (moduleProvidesExtractorOutput(candidate)) { output = &candidate; break; }
+        // Never promote a remembered/offline output back to active.  Fan/IO
+        // keeps its capabilities while offline so the hardware configuration
+        // remains known; capability alone therefore cannot imply availability.
+        if (candidate.online && moduleProvidesExtractorOutput(candidate)) { output = &candidate; break; }
       }
     }
   }
@@ -2821,11 +2884,14 @@ void MasterScheduler::selectRoles() {
     extractor_.markOutputDirty();
   }
 
-  const uint16_t min_output_power = minSelectFlowForActiveOutput();
-  if (extractor_.afterrunPower() < min_output_power) {
+  uint16_t min_output_power = 100, max_output_power = 1000, step_output_power = 10;
+  selectFlowBoundsForActiveOutput(min_output_power, max_output_power, step_output_power);
+  extractor_.setOutputPowerBounds(min_output_power, max_output_power);
+  if (extractor_.afterrunPower() < min_output_power || extractor_.afterrunPower() > max_output_power) {
     setAfterrunPowerProfile(extractor_.afterrunPowerProfileEnabled(), extractor_.afterrunPower(), false);
   }
-  if (have_jbc_settings_ && desired_jbc_settings_.select_flow < min_output_power) {
+  if (have_jbc_settings_ &&
+      (desired_jbc_settings_.select_flow < min_output_power || desired_jbc_settings_.select_flow > max_output_power)) {
     setControlSettings(desired_jbc_settings_.suction_level, desired_jbc_settings_.select_flow,
       desired_jbc_settings_.delay_work_sec, desired_jbc_settings_.delay_stand_sec,
       desired_jbc_settings_.stand_intakes != 0, desired_jbc_settings_.continuous != 0);
@@ -3298,18 +3364,22 @@ uint16_t MasterScheduler::minSelectFlowForActiveOutput() const {
   return min_flow;
 }
 
-void MasterScheduler::selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const {
+void MasterScheduler::outputPowerBoundsForModule(const ModuleRecord& out, uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const {
   min_flow = 100;
   max_flow = 1000;
   step_flow = 10;
-  const ModuleRecord* out = registry_.find(active_output_addr_);
-  if (!out || !out->online) return;
-  if (out->caps & CAP_WELLER_INTERFACE) {
+  if (out.caps & CAP_WELLER_INTERFACE) {
     min_flow = 300;
     return;
   }
-  if ((out->caps & CAP_DESCRIPTOR) && out->universal_descriptor_valid) {
-    const char* p = out->universal_descriptor;
+  if ((out.type == MODULE_FAN_IO || out.type == MODULE_FAN_IO_PRO) &&
+      (out.caps & CAP_RELAY_OUTPUT) && !(out.caps & CAP_PWM_OUTPUT)) {
+    min_flow = 1000;
+    max_flow = 1000;
+    return;
+  }
+  if ((out.caps & CAP_DESCRIPTOR) && out.universal_descriptor_valid) {
+    const char* p = out.universal_descriptor;
     while (p && *p) {
       const char* line = p;
       const char* next = strchr(p, '\n');
@@ -3326,7 +3396,7 @@ void MasterScheduler::selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16
           contains_ci_ascii(buf, "role=main_output_power")) {
         const char* m = strstr(buf, "min=");
         const char* x = strstr(buf, "max=");
-        const char* s = strstr(buf, "step=");
+        const char* st = strstr(buf, "step=");
         if (m) {
           const long pct = strtol(m + 4, nullptr, 10);
           if (pct > 0 && pct <= 100) min_flow = (uint16_t)pct * 10U;
@@ -3335,17 +3405,26 @@ void MasterScheduler::selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16
           const long pct = strtol(x + 4, nullptr, 10);
           if (pct > 0 && pct <= 100) max_flow = (uint16_t)pct * 10U;
         }
-        if (s) {
-          const long pct = strtol(s + 5, nullptr, 10);
+        if (st) {
+          const long pct = strtol(st + 5, nullptr, 10);
           if (pct > 0 && pct <= 100) step_flow = (uint16_t)pct * 10U;
         }
-        if (max_flow < min_flow) max_flow = min_flow;
-        if (!step_flow) step_flow = 10;
-        return;
+        break;
       }
       p = next ? next + 1 : nullptr;
     }
   }
+  if (max_flow < min_flow) max_flow = min_flow;
+  if (!step_flow) step_flow = 10;
+}
+
+void MasterScheduler::selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const {
+  min_flow = 100;
+  max_flow = 1000;
+  step_flow = 10;
+  const ModuleRecord* out = registry_.find(active_output_addr_);
+  if (!out || !out->online) return;
+  outputPowerBoundsForModule(*out, min_flow, max_flow, step_flow);
 }
 
 bool MasterScheduler::moduleProvidesExtractorOutput(const ModuleRecord& rec) const {
@@ -3411,6 +3490,15 @@ bool MasterScheduler::universalSetMainOutput(ModuleRecord& rec, bool enabled, ui
     if (!universalFindMainOutputEntities(rec, enable_id, power_id)) return false;
   }
 
+  auto clamp_power = [&](uint16_t requested_power) -> uint16_t {
+    if (!requested_power) return 0;
+    uint16_t local_min_power = 100, local_max_power = 1000, local_step_power = 10;
+    outputPowerBoundsForModule(rec, local_min_power, local_max_power, local_step_power);
+    if (requested_power < local_min_power) requested_power = local_min_power;
+    if (requested_power > local_max_power) requested_power = local_max_power;
+    return requested_power;
+  };
+
   auto send_enable = [&](bool on) -> bool {
     if (!enable_id) return true;
     const uint8_t v = on ? '1' : '0';
@@ -3419,11 +3507,8 @@ bool MasterScheduler::universalSetMainOutput(ModuleRecord& rec, bool enabled, ui
 
   auto send_power = [&](uint16_t requested_power) -> bool {
     if (!power_id) return true;
-    uint16_t pct = requested_power / 10U;
-    if (requested_power) {
-      const uint16_t min_pct = minSelectFlowForActiveOutput() / 10U;
-      if (pct < min_pct) pct = min_pct;
-    }
+    const uint16_t bounded_power = clamp_power(requested_power);
+    uint16_t pct = bounded_power / 10U;
     if (pct > 100U) pct = 100U;
     char text[5];
     snprintf(text, sizeof(text), "%u", pct);
@@ -3453,7 +3538,7 @@ bool MasterScheduler::universalSetMainOutput(ModuleRecord& rec, bool enabled, ui
   if (ok) {
     rec.output_status_valid = true;
     rec.output_enabled = enabled;
-    rec.output_power = enabled ? power : 0;
+    rec.output_power = enabled ? clamp_power(power) : 0;
   }
   return ok;
 }
@@ -3742,6 +3827,21 @@ bool MasterScheduler::inputRuleSourceActive(const InputActionRule& rule) const {
     const ModuleRecord* rec = registry_.find(rule.source_addr);
     return rec && universalEntityBoolActive(*rec, rule.source_bit);
   }
+  if (rule.source_type == INPUT_SRC_SYSTEM_STATE) {
+    switch (rule.source_bit) {
+      case INPUT_STATE_EXTRACTOR_ACTIVE: return extractor_.outputEnabled();
+      case INPUT_STATE_CONTINUOUS_ACTIVE: return extractor_.continuous();
+      case INPUT_STATE_AFTERRUN_ACTIVE: return extractor_.afterrunLeftMs() != 0;
+      case INPUT_STATE_LEVEL_HIGH: return desired_jbc_settings_.suction_level == 0;
+      case INPUT_STATE_LEVEL_MEDIUM: return desired_jbc_settings_.suction_level == 1;
+      case INPUT_STATE_LEVEL_LOW: return desired_jbc_settings_.suction_level == 2;
+      case INPUT_STATE_LEVEL_CUSTOM: return desired_jbc_settings_.suction_level == 3;
+      case INPUT_STATE_OUTPUT_SELECTED_AUTO: return preferred_output_addr_ == 0;
+      case INPUT_STATE_OUTPUT_SELECTED: return preferred_output_addr_ == rule.source_addr;
+      case INPUT_STATE_OUTPUT_ACTIVE: return active_output_addr_ == rule.source_addr;
+      default: return false;
+    }
+  }
   return false;
 }
 
@@ -3785,7 +3885,7 @@ bool MasterScheduler::mainInputSourceAvailable() const {
   }
   if (main_input_source_type_ == INPUT_SRC_IO_INPUT) {
     const ModuleRecord* rec = registry_.find(main_input_source_addr_);
-    return rec && rec->online && (rec->caps & CAP_INPUT_KEYS) && main_input_source_bit_ < 2;
+    return rec && rec->online && (rec->caps & CAP_INPUT_KEYS) && main_input_source_bit_ < 16;
   }
   if (main_input_source_type_ == INPUT_SRC_UNIVERSAL_ENTITY) {
     const ModuleRecord* rec = registry_.find(main_input_source_addr_);
@@ -3816,6 +3916,17 @@ void MasterScheduler::setLogicExternalInput(bool active) {
   logic_external_input_ = active;
   updateInputRouting();
 }
+void MasterScheduler::setLogicContinuous(bool active) {
+  if (logic_continuous_ == active) return;
+  logic_continuous_ = active;
+  updateInputRouting();
+}
+
+void MasterScheduler::setLogicContinuousPresent(bool present) {
+  if (logic_continuous_present_ == present) return;
+  logic_continuous_present_ = present;
+  updateInputRouting();
+}
 void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
   if (!rule.enabled) return;
   if (rule.target_type == INPUT_TGT_EXTRACTOR_ACTION) {
@@ -3825,6 +3936,18 @@ void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
     } else if (rule.edge_armed && !rule.last_active) {
       rule.last_active = true;
       queueExtractorAction(rule.target_bit);
+    }
+    return;
+  }
+  if (rule.target_type == INPUT_TGT_SELECT_OUTPUT) {
+    if (!active) {
+      rule.last_active = false;
+      rule.edge_armed = true;
+    } else if (rule.edge_armed && !rule.last_active) {
+      rule.last_active = true;
+      // Selecting a main output is a real configuration action. Persist it in
+      // exactly the same way as a manual main-output selection.
+      setPreferredOutputAddr(rule.target_addr, true);
     }
     return;
   }
@@ -3938,13 +4061,66 @@ void MasterScheduler::updateInputRouting() {
   if (applying_input_rules_) return;
   applying_input_rules_ = true;
   bool active = mainInputSourceActive() || logic_external_input_;
+  bool continuous_signal = logic_continuous_;
+  bool continuous_source_present = logic_continuous_present_;
 
   for (uint8_t i = 0; i < MAX_INPUT_RULES; ++i) {
     InputActionRule& rule = input_rules_[i];
     const bool rule_active = inputRuleSourceActive(rule);
     if (rule.enabled && rule.target_type == INPUT_TGT_EXTRACTOR && rule_active) active = true;
+    if (rule.enabled && rule.target_type == INPUT_TGT_CONTINUOUS) {
+      continuous_source_present = true;
+      if (rule_active) continuous_signal = true;
+    }
     applyInputRuleTarget(rule, rule_active);
   }
+
+  // Boolean/additional-rule Continuous targets operate the *real* Continuous
+  // switch on edges. HIGH sets the same switch used by Web/JBC/MQTT to ON;
+  // the falling edge of the last active source sets it to OFF. Between those
+  // edges the switch remains manually operable. No separate hidden automation
+  // Continuous state is used and nothing is persisted to NVS.
+  const bool continuous_source_changed = continuous_source_present != automation_continuous_source_present_;
+  const bool continuous_signal_changed = !automation_continuous_signal_valid_ ||
+    continuous_signal != automation_continuous_signal_;
+  if (continuous_source_present && (continuous_source_changed || continuous_signal_changed)) {
+    automation_continuous_signal_ = continuous_signal;
+    automation_continuous_signal_valid_ = true;
+    automation_continuous_source_present_ = true;
+
+    if (!have_jbc_settings_ || desired_jbc_settings_.continuous != (continuous_signal ? 1U : 0U)) {
+      JbcModuleState state;
+      if (have_jbc_settings_) copyDesiredJbcSettings(state);
+      else state = extractor_.jbcState();
+      state.continuous = continuous_signal ? 1U : 0U;
+      setControlSettings(state.suction_level, state.select_flow, state.delay_work_sec,
+                         state.delay_stand_sec, state.stand_intakes != 0,
+                         continuous_signal, false);
+      syncOtherJbcSettings(0);
+      Serial.print("Continuous switch from automation=");
+      Serial.println(continuous_signal ? "on" : "off");
+    }
+  } else if (!continuous_source_present && automation_continuous_source_present_) {
+    // Removing the last Continuous automation is equivalent to its output
+    // falling LOW: return the real switch to OFF once, then release it back to
+    // normal manual/JBC/MQTT control.
+    automation_continuous_source_present_ = false;
+    automation_continuous_signal_ = false;
+    automation_continuous_signal_valid_ = false;
+    if (!have_jbc_settings_ || desired_jbc_settings_.continuous != 0) {
+      JbcModuleState state;
+      if (have_jbc_settings_) copyDesiredJbcSettings(state);
+      else state = extractor_.jbcState();
+      state.continuous = 0;
+      setControlSettings(state.suction_level, state.select_flow, state.delay_work_sec,
+                         state.delay_stand_sec, state.stand_intakes != 0, false, false);
+      syncOtherJbcSettings(0);
+      Serial.println("Continuous switch from automation=off");
+    }
+  } else if (continuous_source_present) {
+    automation_continuous_source_present_ = true;
+  }
+
   applying_input_rules_ = false;
   if (extractor_.updateExternalInput(active)) {
     Serial.print("Input routing trigger=");
@@ -4386,7 +4562,12 @@ bool MasterScheduler::readOutputStatus(uint8_t addr) {
 }
 
 bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
-  const uint8_t query_flags = include_aliases ? IO_QUERY_INCLUDE_ALIASES : 0;
+  ModuleRecord* rec = registry_.find(addr);
+  if (!rec) return false;
+  const bool fan_edge_events = rec->type == MODULE_FAN_IO || rec->type == MODULE_FAN_IO_PRO;
+  const uint8_t query_flags = include_aliases
+    ? IO_QUERY_INCLUDE_ALIASES
+    : (fan_edge_events ? IO_QUERY_INCLUDE_EVENTS : 0);
   Frame resp;
   if (!request(addr, CMD_GET_IO, &query_flags, 1, resp, 50)) return false;
   if (resp.cmd != (CMD_GET_IO | 0x80) || resp.len < 7 || resp.payload[0] != STATUS_OK) return false;
@@ -4394,17 +4575,31 @@ bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
   if (include_aliases) ++full_io_poll_total_;
   else ++compact_io_poll_total_;
 
-  ModuleRecord* rec = registry_.find(addr);
-  if (!rec) return false;
-
   const uint16_t old_input_mask = rec->io_input_mask;
-  rec->io_input_mask = get_u16_le(resp.payload + 1);
+  const uint16_t physical_input_mask = get_u16_le(resp.payload + 1);
+  // Fan IO/Fan IO Pro >= the edge-latch firmware append bits 7..8 when the
+  // master requests IO_QUERY_INCLUDE_EVENTS. OR the latched rising edges into
+  // one observed poll cycle so even a press that began and ended entirely
+  // between two RS485 polls is seen by routing and the logic designer.
+  // Older modules return the legacy 7-byte payload and simply contribute 0.
+  const uint16_t input_event_mask = (!include_aliases && fan_edge_events && resp.len >= 9)
+    ? get_u16_le(resp.payload + 7) : 0;
+  const uint32_t io_now = millis();
+  if (input_event_mask) {
+    rec->io_input_pulse_mask |= input_event_mask;
+    rec->io_input_pulse_until_ms = io_now + 180UL;
+  } else if (rec->io_input_pulse_mask &&
+             (int32_t)(io_now - rec->io_input_pulse_until_ms) >= 0) {
+    rec->io_input_pulse_mask = 0;
+  }
+  rec->io_input_mask = physical_input_mask | rec->io_input_pulse_mask;
   rec->io_output_mask = get_u16_le(resp.payload + 3);
   rec->io_fault_mask = get_u16_le(resp.payload + 5);
 
-  // Alias strings are static configuration. A compact live reply deliberately
-  // stops at byte 7; in that case preserve the already cached aliases.
-  if (resp.len > 7) {
+  // Alias strings are static configuration. Only a request that explicitly
+  // asked for aliases may interpret bytes after the 7-byte base payload as
+  // alias lengths. Compact event replies use bytes 7..8 for the edge mask.
+  if (include_aliases && resp.len > 7) {
     char* aliases[5] = {
       rec->io_in1_alias,
       rec->io_in2_alias,
@@ -4427,7 +4622,7 @@ bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
   }
 
   // Input routing only depends on input state, not on output/fault bits or
-  // aliases. Avoid walking/applying every routing rule on unchanged 250 ms IO
+  // aliases. Avoid walking/applying every routing rule on unchanged live IO
   // polls. Scan/online/config paths still call updateInputRouting explicitly.
   if (rec->io_input_mask != old_input_mask) updateInputRouting();
   return true;
@@ -5204,6 +5399,17 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
         rec->fanio_filter_flags = 0;
         rec->fanio_filter_cal_quality = 0;
       }
+      // Fan I/O Pro v1.1.58+ appends filter mode/runtime/lifetime after the
+      // two LED bytes (positions 31/32). This is deliberately independent of
+      // descriptor and entity polling so the web card cannot flicker hidden.
+      if (resp.payload[1] == MODULE_FAN_IO_PRO && resp.len >= 42) {
+        rec->fanio_filter_runtime_valid = true;
+        rec->fanio_filter_mode = resp.payload[33];
+        rec->fanio_filter_runtime_minutes = get_u32_le(resp.payload + 34);
+        rec->fanio_filter_lifetime_minutes = get_u32_le(resp.payload + 38);
+      } else if (resp.payload[1] == MODULE_FAN_IO_PRO) {
+        rec->fanio_filter_runtime_valid = false;
+      }
     }
   }
 
@@ -5240,11 +5446,16 @@ bool MasterScheduler::sendOutputEnable(uint8_t addr, bool enabled) {
       ok = setUniversalEntity(rec->addr, enable_id, &v, 1);
     } else if (power_id) {
       // Power-only profiles use 0% as OFF and the current requested power as ON.
+      uint16_t min_power = 100, max_power = 1000, step_power = 10;
+      outputPowerBoundsForModule(*rec, min_power, max_power, step_power);
       uint16_t target = enabled ? extractor_.outputPower() : 0;
       if (enabled && !target) target = rec->output_power;
-      if (enabled && !target) target = minSelectFlowForActiveOutput();
+      if (enabled && !target) target = min_power;
+      if (target) {
+        if (target < min_power) target = min_power;
+        if (target > max_power) target = max_power;
+      }
       uint16_t pct = target / 10U;
-      if (target && pct < minSelectFlowForActiveOutput() / 10U) pct = minSelectFlowForActiveOutput() / 10U;
       if (pct > 100U) pct = 100U;
       char text[5];
       snprintf(text, sizeof(text), "%u", pct);
@@ -5260,13 +5471,19 @@ bool MasterScheduler::sendOutputEnable(uint8_t addr, bool enabled) {
   }
   Frame resp;
   uint8_t payload[] = { enabled ? 1U : 0U };
-  if (!request(addr, CMD_SET_ENABLE, payload, sizeof(payload), resp, 35)) return false;
+  if (!request(addr, CMD_SET_ENABLE, payload, sizeof(payload), resp, 120)) return false;
   return resp.cmd == (CMD_SET_ENABLE | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
 }
 
 bool MasterScheduler::sendOutputPower(uint8_t addr, uint16_t power) {
   ModuleRecord* rec = registry_.find(addr);
   if (!rec || !rec->online) return false;
+  uint16_t min_power = 100, max_power = 1000, step_power = 10;
+  outputPowerBoundsForModule(*rec, min_power, max_power, step_power);
+  if (power) {
+    if (power < min_power) power = min_power;
+    if (power > max_power) power = max_power;
+  }
   if ((rec->type == MODULE_UNIVERSAL_RS232 || rec->type == MODULE_MODBUS_RTU)) {
     if (!rec->universal_descriptor_valid) refreshUniversalDescriptor(rec->addr, true);
     uint8_t enable_id = 0, power_id = 0;
@@ -5275,8 +5492,10 @@ bool MasterScheduler::sendOutputPower(uint8_t addr, uint16_t power) {
 
     uint16_t pct = power / 10U;
     if (power) {
-      const uint16_t min_pct = minSelectFlowForActiveOutput() / 10U;
+      const uint16_t min_pct = min_power / 10U;
       if (pct < min_pct) pct = min_pct;
+      const uint16_t max_pct = max_power / 10U;
+      if (pct > max_pct) pct = max_pct;
     }
     if (pct > 100U) pct = 100U;
     char text[5];
@@ -5288,7 +5507,7 @@ bool MasterScheduler::sendOutputPower(uint8_t addr, uint16_t power) {
   Frame resp;
   uint8_t payload[2];
   put_u16_le(payload, power);
-  if (!request(addr, CMD_SET_POWER, payload, sizeof(payload), resp, 35)) return false;
+  if (!request(addr, CMD_SET_POWER, payload, sizeof(payload), resp, 120)) return false;
   return resp.cmd == (CMD_SET_POWER | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
 }
 
@@ -7293,9 +7512,10 @@ bool MasterScheduler::pushDisplayCache() {
 }
 
 void MasterScheduler::setAfterrunPowerProfile(bool enabled, uint16_t power, bool persist) {
-  if (power > 1000) power = 1000;
-  const uint16_t min_power = minSelectFlowForActiveOutput();
+  uint16_t min_power = 100, max_power = 1000, step_power = 10;
+  selectFlowBoundsForActiveOutput(min_power, max_power, step_power);
   if (power < min_power) power = min_power;
+  if (power > max_power) power = max_power;
   extractor_.setAfterrunPowerProfile(enabled, power);
   extractor_.markOutputDirty();
   if (persist) {
@@ -7306,9 +7526,11 @@ void MasterScheduler::setAfterrunPowerProfile(bool enabled, uint16_t power, bool
 void MasterScheduler::setControlSettings(uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous, bool persist) {
   JbcModuleState state;
   state.suction_level = suction > 3 ? 3 : suction;
-  state.select_flow = select_flow > 1000 ? 1000 : select_flow;
-  const uint16_t min_select_flow = minSelectFlowForActiveOutput();
+  uint16_t min_select_flow = 100, max_select_flow = 1000, step_select_flow = 10;
+  selectFlowBoundsForActiveOutput(min_select_flow, max_select_flow, step_select_flow);
+  state.select_flow = select_flow;
   if (state.select_flow < min_select_flow) state.select_flow = min_select_flow;
+  if (state.select_flow > max_select_flow) state.select_flow = max_select_flow;
   state.delay_work_sec = delay_work;
   state.delay_stand_sec = delay_stand;
   state.stand_intakes = stand_intakes ? 1 : 0;
@@ -7470,25 +7692,33 @@ bool MasterScheduler::setIoConfig(uint8_t addr, const uint8_t* data, uint8_t len
       !(rec->caps & CAP_DESCRIPTOR) ||
       (rec->type != MODULE_FAN_IO && rec->type != MODULE_FAN_IO_PRO)) return false;
   Frame resp;
-  if (!request(addr, CMD_IO_CONFIG, data, len, resp, 250)) return false;
+  if (!request(addr, CMD_IO_CONFIG, data, len, resp, 800)) return false;
   const bool ok = resp.cmd == (CMD_IO_CONFIG | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
   if (!ok) return false;
-  rec->universal_descriptor_valid = false;
-  rec->universal_entities_valid = false;
-  rec->universal_descriptor_last_ms = 0;
-  rec->universal_entities_last_ms = 0;
+  const uint8_t action = data[0];
 
-  // The Fan/IO editor intentionally performs a tear-down/rebuild sequence. Do
-  // not expose every intermediate pin map as a real module configuration and do
-  // not let the background poller rebuild roles in the middle of that sequence.
+  // BEGIN and deferred CHANNEL/FAN/FILTER writes only modify the module's RAM
+  // transaction copy. Keep the live descriptor/entities valid and pause normal
+  // background polling until COMMIT/ABORT finishes the editor transaction.
   if (!finalize) {
     io_config_batch_addr_ = addr;
-    io_config_batch_until_ms_ = millis() + 5000UL;
+    io_config_batch_until_ms_ = millis() + 20000UL;
     return true;
   }
 
   io_config_batch_addr_ = 0;
   io_config_batch_until_ms_ = 0;
+  if (action == IO_CONFIG_ABORT) {
+    // ABORT never changes active hardware, so no capability/descriptor refresh
+    // is necessary.
+    return true;
+  }
+
+  rec->universal_descriptor_valid = false;
+  rec->universal_entities_valid = false;
+  rec->universal_descriptor_last_ms = 0;
+  rec->universal_entities_last_ms = 0;
+
   // Fan/IO capabilities depend on the configured main-output hardware. Refresh
   // them at the end of the editor transaction so routing/extractor selection is
   // correct immediately, without requiring a rescan or module reboot.
@@ -7513,8 +7743,10 @@ bool MasterScheduler::setModulePower(uint8_t addr, uint16_t power) {
   if (!rec || !rec->online || !moduleProvidesExtractorOutput(*rec)) return false;
   if ((rec->type == MODULE_UNIVERSAL_RS232 || rec->type == MODULE_MODBUS_RTU)) return sendOutputPower(addr, power);
   if (rec->caps & CAP_WELLER_INTERFACE) return false;
-  if (power > 1000) power = 1000;
-  if (power < 100) power = 100;
+  uint16_t min_power = 100, max_power = 1000, step_power = 10;
+  outputPowerBoundsForModule(*rec, min_power, max_power, step_power);
+  if (power < min_power) power = min_power;
+  if (power > max_power) power = max_power;
   const bool ok = sendOutputPower(addr, power);
   if (ok) readOutputStatus(addr);
   return ok;
@@ -7524,15 +7756,24 @@ bool MasterScheduler::setModuleOutput(uint8_t addr, bool enabled, uint16_t power
   if (module_fw_active_ && addr == module_fw_target_) return false;
   ModuleRecord* rec = registry_.find(addr);
   if (!rec || !rec->online || !moduleProvidesExtractorOutput(*rec)) return false;
-  if (power > 1000) power = 1000;
+  uint16_t min_power = 100, max_power = 1000, step_power = 10;
+  outputPowerBoundsForModule(*rec, min_power, max_power, step_power);
+  if (enabled) {
+    if (power < min_power) power = min_power;
+    if (power > max_power) power = max_power;
+  }
   if ((rec->type == MODULE_UNIVERSAL_RS232 || rec->type == MODULE_MODBUS_RTU)) {
     return universalSetMainOutput(*rec, enabled, power);
   }
-  if (!(rec->caps & CAP_WELLER_INTERFACE)) {
-    if (enabled && power < 100) power = 100;
+  // Switching OFF never needs a preceding power write. When switching ON,
+  // only update power if it is unknown or actually changed. This halves the
+  // RS485 round-trips for the normal Fan/IO toggle and avoids a false failure
+  // when one of two redundant commands arrives late.
+  bool power_ok = true;
+  if (enabled && (!rec->output_status_valid || rec->output_power != power)) {
+    power_ok = sendOutputPower(addr, power);
   }
-  const bool power_ok = sendOutputPower(addr, power);
-  const bool enable_ok = sendOutputEnable(addr, enabled);
+  const bool enable_ok = power_ok && sendOutputEnable(addr, enabled);
   const bool ok = power_ok && enable_ok;
   if (ok) {
     readOutputStatus(addr);
@@ -7594,7 +7835,7 @@ bool MasterScheduler::calibrateFanIoProFilter(uint8_t addr, uint8_t action, uint
     put_u16_le(payload + 1, warn_raw);
     put_u16_le(payload + 3, full_raw);
     len = 5;
-  } else if (action == 5 || action == 6) {
+  } else if (action == 6) {
     payload[1] = warn_raw ? 1U : 0U;
     len = 2;
   }
@@ -8146,9 +8387,33 @@ bool MasterScheduler::setModuleLabel(uint8_t addr, const char* label) {
 }
 
 bool MasterScheduler::setModuleAddress(uint8_t old_addr, uint8_t new_addr) {
-  if (master_display_wifi.active(old_addr) || master_display_wifi.active(new_addr)) return false;
   if (module_fw_active_) return false;
   if (new_addr == ADDR_BROADCAST || new_addr == ADDR_MASTER || new_addr == ADDR_INVALID) return false;
+
+  const bool wifi_display = master_display_wifi.active(old_addr);
+  if (master_display_wifi.active(new_addr) && new_addr != old_addr) return false;
+
+  // Authenticated WiFi displays use the same OFE frame command as RS485. The
+  // transport hook routes this request over WiFi; blocking them here left a
+  // live display impossible to re-address until its session disappeared.
+  if (wifi_display) {
+    ModuleRecord* old_rec = registry_.find(old_addr);
+    const uint64_t moved_uid = old_rec ? old_rec->uid : 0;
+    if (!moved_uid) return false;
+
+    ModuleRecord* occupied = registry_.find(new_addr);
+    if (occupied && occupied->uid && occupied->uid != moved_uid) return false;
+
+    Frame resp;
+    const uint8_t payload = new_addr;
+    if (!request(old_addr, CMD_SET_ADDRESS, &payload, 1, resp, 500) ||
+        resp.cmd != (CMD_SET_ADDRESS | 0x80) || resp.len < 1 || resp.payload[0] != STATUS_OK) return false;
+
+    if (!registry_.bindUidToAddress(moved_uid, new_addr)) return false;
+    if (!master_display_wifi.rebindAddress(moved_uid, new_addr)) return false;
+    selectRoles();
+    return true;
+  }
 
   bool ok = false;
   {
@@ -8570,7 +8835,11 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
       Serial.print(" addr=0x");
       if (temporary_addr < 0x10) Serial.print('0');
       Serial.println(temporary_addr, HEX);
-      registry_.bindUidToAddress(found[i].uid, temporary_addr);
+      ModuleRecord* rebound = registry_.bindUidToAddress(found[i].uid, temporary_addr);
+      if (!rebound) {
+        Serial.println("DISC temporary registry bind failed");
+        break;
+      }
       if (found[i].type == MODULE_DISPLAY) {
         master_display_wifi.rebindAddress(found[i].uid, temporary_addr);
       }
@@ -8595,7 +8864,25 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
       if (next_addr < 0x10) Serial.print('0');
       Serial.println(next_addr, HEX);
 
-      registry_.bindUidToAddress(found[i].uid, next_addr);
+      // A manual prune/compact scan is explicitly allowed to reclaim addresses
+      // from modules that are no longer present. Remove that stale remembered
+      // record before binding the live UID; bindUidToAddress intentionally
+      // refuses to overwrite a different physical UID.
+      if (!preserve_remembered) {
+        ModuleRecord* occupied = registry_.find(next_addr);
+        if (occupied && occupied->uid && occupied->uid != found[i].uid &&
+            !contains_uid(found, found_count, occupied->uid)) {
+          registry_.removeAddress(next_addr);
+        }
+      }
+
+      ModuleRecord* rebound = registry_.bindUidToAddress(found[i].uid, next_addr);
+      if (!rebound) {
+        Serial.println("DISC registry bind failed after successful readdress");
+        move_done[i] = true;
+        ++move_done_count;
+        continue;
+      }
       if (found[i].type == MODULE_DISPLAY) {
         master_display_wifi.rebindAddress(found[i].uid, next_addr);
       }
@@ -8832,6 +9119,22 @@ void MasterScheduler::tick() {
   const uint32_t now = millis();
   processPendingExtractorActions();
   extractor_.tick();
+
+  // Additional rules may use master/system states as sources. Re-evaluate only
+  // when one of those states changes so afterrun/output transitions are seen
+  // immediately without polling the routing engine every scheduler tick.
+  const uint32_t input_rule_state_sig =
+    (extractor_.outputEnabled() ? 1UL : 0UL) |
+    (extractor_.continuous() ? 2UL : 0UL) |
+    ((extractor_.afterrunLeftMs() != 0) ? 4UL : 0UL) |
+    ((uint32_t)(desired_jbc_settings_.suction_level & 0x03U) << 3) |
+    ((uint32_t)preferred_output_addr_ << 8) |
+    ((uint32_t)active_output_addr_ << 16);
+  if (input_rule_state_sig != input_rule_system_state_signature_) {
+    input_rule_system_state_signature_ = input_rule_state_sig;
+    updateInputRouting();
+  }
+
   drainUnsolicitedFrames();
   serviceAsyncDisplayRequests();
 

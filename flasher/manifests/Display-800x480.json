@@ -1,18 +1,18 @@
 {
-    "name":  "Open Fume Extractor - Display 800x480",
-    "version":  "1.4.4beta",
-    "new_install_prompt_erase":  true,
-    "new_install_improv_wait_time":  0,
-    "builds":  [
-                   {
-                       "chipFamily":  "ESP32-S3",
-                       "improv":  false,
-                       "parts":  [
-                                     {
-                                         "path":  "../../firmware/Display-800x480/Display-800x480-1.4.4beta-merged.bin",
-                                         "offset":  0
-                                     }
-                                 ]
-                   }
-               ]
+  "name": "Open Fume Extractor - Display 800x480",
+  "version": "1.4.5beta",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/Display-800x480/Display-800x480-1.4.5beta-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
 }

@@ -31,4 +31,4 @@ assert "enum UsbSerialOpenResult : uint8_t {" in text
 # The send/single-flight helpers still use the same typed API.
 assert "static bool jbc_single_flight_ready(JbcProtocol frame_protocol" in text
 assert "static bool jbc_send_frame(JbcProtocol frame_protocol" in text
-assert "#define OFE_MODULE_FW_PATCH 81" in text
+assert "#define OFE_MODULE_FW_PATCH 82" in text

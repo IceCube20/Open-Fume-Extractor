@@ -45,10 +45,12 @@ public:
   bool updateFromFastPoll(uint8_t module_addr, const jbc_rs485::FastPollState& fast);
   bool updateAggregateJbcState(uint8_t work_mask, uint8_t stand_mask, bool continuous);
   bool updateExternalInput(bool active);
+  bool updateAutomationContinuous(bool active);
   void updateJbcState(uint8_t module_addr, const JbcModuleState& state);
   void clearJbcConnectionState();
   void updateControlSettings(const JbcModuleState& state);
   void setAfterrunPowerProfile(bool enabled, uint16_t power);
+  void setOutputPowerBounds(uint16_t min_power, uint16_t max_power);
   bool afterrunPowerProfileEnabled() const { return afterrun_power_enabled_; }
   uint16_t afterrunPower() const { return afterrun_power_; }
   void updateSystemError(uint16_t error_mask) { jbc_state_.stat_error = error_mask; jbc_state_.valid = true; }
@@ -63,7 +65,9 @@ public:
   bool outputEnabled() const { return desired_output_enabled_; }
   uint16_t outputPower() const { return desired_power_; }
   uint8_t workMask() const { return work_mask_; }
-  bool continuous() const { return continuous_; }
+  bool continuous() const { return continuous_ || automation_continuous_; }
+  bool configuredContinuous() const { return continuous_; }
+  bool automationContinuous() const { return automation_continuous_; }
   bool externalInputActive() const { return external_input_active_; }
   uint32_t afterrunLeftMs() const;
   const JbcModuleState& jbcState() const { return jbc_state_; }
@@ -83,6 +87,7 @@ private:
   uint8_t work_mask_ = 0;
   uint8_t stand_mask_ = 0;
   bool continuous_ = false;
+  bool automation_continuous_ = false;
   bool external_input_active_ = false;
   uint16_t last_event_seq_ = 0;
   uint8_t last_jbc_addr_ = 0;
@@ -100,4 +105,6 @@ private:
   bool afterrun_active_ = false;
   bool afterrun_power_enabled_ = false;
   uint16_t afterrun_power_ = 300;
+  uint16_t output_min_power_ = 100;
+  uint16_t output_max_power_ = 1000;
 };

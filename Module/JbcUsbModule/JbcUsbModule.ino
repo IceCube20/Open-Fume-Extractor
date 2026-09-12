@@ -63,7 +63,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 81
+#define OFE_MODULE_FW_PATCH 82
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -9185,7 +9185,7 @@ static void rs485_set_address_uid(const Frame& req) {
   if (get_u64_le(req.payload) != module_uid()) return;
   const uint8_t next = req.payload[8];
   if (!valid_module_addr(next)) { rs485_status_response(req, STATUS_BAD_VALUE); return; }
-  prefs.putUChar("addr", next); rs485_status_response(req, STATUS_OK); delay(20); module_addr=next;
+  if (prefs.putUChar("addr", next) != sizeof(uint8_t)) { rs485_status_response(req, STATUS_BUSY); return; } rs485_status_response(req, STATUS_OK); delay(20); module_addr=next;
 }
 
 static void rs485_jbc_usb_config(const Frame& req) {
@@ -9276,7 +9276,7 @@ static void handle_rs485(const Frame& req) {
     case CMD_FW_REBOOT: rs485_status_response(req, STATUS_OK); delay(100); ESP.restart(); break;
     case CMD_SET_ADDRESS:
       if (req.len != 1 || !valid_module_addr(req.payload[0])) rs485_status_response(req, STATUS_BAD_VALUE);
-      else { const uint8_t next=req.payload[0]; prefs.putUChar("addr",next); rs485_status_response(req,STATUS_OK); delay(20); module_addr=next; }
+      else { const uint8_t next=req.payload[0]; if (prefs.putUChar("addr",next) != sizeof(uint8_t)) { rs485_status_response(req,STATUS_BUSY); break; } rs485_status_response(req,STATUS_OK); delay(20); module_addr=next; }
       break;
     default: rs485_status_response(req, STATUS_UNKNOWN_CMD); break;
   }

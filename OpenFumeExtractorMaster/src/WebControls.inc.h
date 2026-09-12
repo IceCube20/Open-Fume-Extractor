@@ -354,8 +354,10 @@ static void web_handle_jbc_settings() {
   const JbcModuleState& cs = scheduler.controlSettings();
   const uint8_t suction = (uint8_t)web_arg_u16("suction", cs.suction_level, 3);
   uint16_t custom_percent = web_arg_u16("select", customPowerFromSelectFlow(cs.select_flow), 100);
-  if (custom_percent < 10) custom_percent = 10;
-  if (custom_percent > 100) custom_percent = 100;
+  const uint16_t output_min_pct = scheduler.activeOutputMinSelectFlow() / 10U;
+  const uint16_t output_max_pct = scheduler.activeOutputMaxSelectFlow() / 10U;
+  if (custom_percent < output_min_pct) custom_percent = output_min_pct;
+  if (custom_percent > output_max_pct) custom_percent = output_max_pct;
   const uint16_t select_flow = custom_percent * 10U;
   const uint16_t delay_work = web_arg_u16("delay_work", cs.delay_work_sec, 3600);
   const uint16_t delay_stand = web_arg_u16("delay_stand", cs.delay_stand_sec, 3600);
@@ -364,8 +366,9 @@ static void web_handle_jbc_settings() {
   const bool afterrun_power_enabled = web.hasArg("afterrun_power_enabled") ? web.arg("afterrun_power_enabled") != "0" : scheduler.afterrunPowerProfileEnabled();
   uint16_t afterrun_power_pct = web_arg_u16("afterrun_power", (scheduler.afterrunPower() + 5U) / 10U, 100);
   const uint16_t afterrun_min_pct = scheduler.activeOutputMinSelectFlow() / 10U;
+  const uint16_t afterrun_max_pct = scheduler.activeOutputMaxSelectFlow() / 10U;
   if (afterrun_power_pct < afterrun_min_pct) afterrun_power_pct = afterrun_min_pct;
-  if (afterrun_power_pct > 100) afterrun_power_pct = 100;
+  if (afterrun_power_pct > afterrun_max_pct) afterrun_power_pct = afterrun_max_pct;
 
   apply_control_settings(suction, select_flow, delay_work, delay_stand, stand_intakes, continuous, false);
   master_cmd_set_afterrun_power_profile(afterrun_power_enabled, afterrun_power_pct * 10U, false);
@@ -415,7 +418,12 @@ static void web_handle_module_output_set() {
   if (has_power) {
     uint32_t pct = (uint32_t)strtoul(web.arg("power").c_str(), nullptr, 10);
     if (pct > 100UL) pct = 100UL;
-    if (pct < 10UL) pct = 10UL;
+    if (rec && (rec->type == MODULE_FAN_IO || rec->type == MODULE_FAN_IO_PRO)) {
+      if ((rec->caps & CAP_RELAY_OUTPUT) && !(rec->caps & CAP_PWM_OUTPUT)) pct = 100UL;
+      else if (pct < 1UL) pct = 1UL;
+    } else if (pct < 10UL) {
+      pct = 10UL;
+    }
     power = (uint16_t)(pct * 10UL);
   }
   bool ok = false;
@@ -448,14 +456,10 @@ static void web_handle_fanio_calibration() {
       web.send(400, "text/plain; charset=utf-8", "full must be greater than warn");
       return;
     }
-  } else if (action == 5) {
-    if (!web.hasArg("enabled")) {
-      web.send(400, "text/plain; charset=utf-8", "missing enabled");
-      return;
-    }
-    warn_raw = web.arg("enabled").toInt() ? 1 : 0;
   }
-  if ((action < 1 || action > 5) && action != 7) {
+  // Filter mode / pressure-sensor enable is hardware configuration and may only
+  // be changed in the Hardware Designer. Calibration only learns/calibrates it.
+  if ((action < 1 || action > 4) && action != 7) {
     web.send(400, "text/plain; charset=utf-8", "bad action");
     return;
   }
@@ -746,7 +750,16 @@ static void web_handle_io_config() {
   uint8_t payload[MAX_PAYLOAD] = {0};
   uint8_t len = 0;
   const String kind = web.arg("kind");
-  if (kind == "channel") {
+  if (kind == "begin") {
+    payload[0] = IO_CONFIG_BEGIN;
+    len = 1;
+  } else if (kind == "commit") {
+    payload[0] = IO_CONFIG_COMMIT;
+    len = 1;
+  } else if (kind == "abort") {
+    payload[0] = IO_CONFIG_ABORT;
+    len = 1;
+  } else if (kind == "channel") {
     if (!web.hasArg("output") || !web.hasArg("index") || !web.hasArg("pin")) {
       web.send(400, "text/plain; charset=utf-8", "missing channel fields"); return;
     }
@@ -771,9 +784,33 @@ static void web_handle_io_config() {
     payload[2] = (uint8_t)(web.arg("pwm_pin").toInt() < 0 ? 0xFF : web.arg("pwm_pin").toInt());
     payload[3] = (uint8_t)(web.arg("tacho_pin").toInt() < 0 ? 0xFF : web.arg("tacho_pin").toInt());
     payload[4] = web.hasArg("enabled") && web.arg("enabled").toInt() ? 1 : 0;
-    payload[5] = web.hasArg("active_low") && web.arg("active_low").toInt() ? 1 : 0;
+    const bool relay_active_low = web.hasArg("relay_active_low") ? web.arg("relay_active_low").toInt() != 0 :
+      (web.hasArg("active_low") && web.arg("active_low").toInt() != 0);
+    const bool pwm_active_low = web.hasArg("pwm_active_low") ? web.arg("pwm_active_low").toInt() != 0 : relay_active_low;
+    const bool pwm_open_drain = web.hasArg("pwm_open_drain") && web.arg("pwm_open_drain").toInt() != 0;
+    payload[5] = relay_active_low ? 1 : 0; // legacy polarity byte
     payload[6] = (uint8_t)constrain(web.arg("ppr").toInt(), 1, 16);
-    len = 7;
+
+    const long pwm_freq_hz = web.hasArg("pwm_freq_hz") ? web.arg("pwm_freq_hz").toInt() : 1000;
+    if (pwm_freq_hz < 10 || pwm_freq_hz > 30000) {
+      web.send(400, "text/plain; charset=utf-8", "PWM frequency must be 10..30000 Hz"); return;
+    }
+    put_u16_le(payload + 7, (uint16_t)pwm_freq_hz);
+
+    const int output_mode = web.hasArg("output_mode") ? web.arg("output_mode").toInt() :
+      ((payload[1] != 0xFF && payload[2] != 0xFF) ? 2 : (payload[2] != 0xFF ? 1 : 0));
+    const int min_power = web.hasArg("min_power") ? web.arg("min_power").toInt() : 10;
+    const int max_power = web.hasArg("max_power") ? web.arg("max_power").toInt() : 100;
+    if (output_mode < 0 || output_mode > 2 || min_power < 1 || min_power > 100 ||
+        max_power < 1 || max_power > 100 || min_power > max_power) {
+      web.send(400, "text/plain; charset=utf-8", "invalid main output mode/power limits"); return;
+    }
+    payload[9] = (uint8_t)output_mode;
+    payload[10] = relay_active_low ? 1 : 0;
+    payload[11] = (pwm_active_low ? 0x01 : 0x00) | (pwm_open_drain ? 0x02 : 0x00);
+    payload[12] = (uint8_t)min_power;
+    payload[13] = (uint8_t)max_power;
+    len = 14;
   } else if (kind == "filter" && rec->type == MODULE_FAN_IO_PRO) {
     payload[0] = IO_CONFIG_FILTER;
     payload[1] = (uint8_t)constrain(web.arg("mode").toInt(), 0, 3);

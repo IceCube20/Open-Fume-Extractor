@@ -434,7 +434,9 @@ static uint8_t mqtt_manifest_static_key(const char* suffix) {
     "jbc_p2_future_mode", "jbc_p2_transition_countdown_s", "jbc_p2_time_to_stop_ds",
     "jbc_p3_future_mode", "jbc_p3_transition_countdown_s", "jbc_p3_time_to_stop_ds",
     "jbc_p4_future_mode", "jbc_p4_transition_countdown_s", "jbc_p4_time_to_stop_ds",
-    "jbc_time_to_stop"
+    "jbc_time_to_stop",
+    // Fan/IO Pro filter telemetry. Append only.
+    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining"
   };
   for (uint8_t i = 1; i < sizeof(keys) / sizeof(keys[0]); ++i) {
     if (!strcmp(keys[i], suffix)) return i;
@@ -469,7 +471,9 @@ static const char* mqtt_manifest_static_suffix(uint8_t key) {
     "jbc_p2_future_mode", "jbc_p2_transition_countdown_s", "jbc_p2_time_to_stop_ds",
     "jbc_p3_future_mode", "jbc_p3_transition_countdown_s", "jbc_p3_time_to_stop_ds",
     "jbc_p4_future_mode", "jbc_p4_transition_countdown_s", "jbc_p4_time_to_stop_ds",
-    "jbc_time_to_stop"
+    "jbc_time_to_stop",
+    // Fan/IO Pro filter telemetry. Append only.
+    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining"
   };
   return key < sizeof(keys) / sizeof(keys[0]) ? keys[key] : nullptr;
 }
@@ -948,6 +952,15 @@ static const char* mqtt_weller_filter_text(uint8_t status) {
   return mqtt_txt("unbekannt", "unknown");
 }
 
+static const char* mqtt_fanio_filter_mode_text(uint8_t mode) {
+  switch (mode) {
+    case 1: return mqtt_txt("Nur Laufzeit", "Runtime only");
+    case 2: return mqtt_txt("Nur Drucksensor", "Pressure only");
+    case 3: return mqtt_txt("Laufzeit + Drucksensor", "Runtime + pressure");
+    default: return mqtt_txt("Aus", "Off");
+  }
+}
+
 static String mqtt_io_input_label(const ModuleRecord& m, uint8_t bit) {
   const char* alias = bit ? m.io_in2_alias : m.io_in1_alias;
   if (alias && alias[0]) return String(alias);
@@ -1236,6 +1249,8 @@ static String mqtt_route_options_signature_now() {
   sig += web_lang;
   sig += '|';
   sig += scheduler.activeOutputMinSelectFlow();
+  sig += ':';
+  sig += scheduler.activeOutputMaxSelectFlow();
   sig += '|';
   sig += mqtt_main_input_options_extra();
   sig += '|';
@@ -1579,6 +1594,13 @@ static void mqtt_publish_universal_descriptor_entities(const ModuleRecord& m, co
     if (mqtt_parse_universal_descriptor_line(line, def)) {
       if (seen_entity_id[def.id]) { p = next ? next + 1 : nullptr; continue; }
       seen_entity_id[def.id] = true;
+      // Fan/IO Pro filter values have dedicated MQTT entities with stable names
+      // and direct telemetry. Avoid duplicate generic entity_63/64/66/67 entries.
+      if ((m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) &&
+          (def.id == 63 || def.id == 64 || def.id == 66 || def.id == 67)) {
+        p = next ? next + 1 : nullptr;
+        continue;
+      }
       const bool readable = mqtt_universal_entity_readable(def);
       const bool writable = mqtt_universal_entity_writable(def);
       const bool is_switch = mqtt_ascii_ci_eq(def.type, "switch");
@@ -1692,6 +1714,8 @@ static String mqtt_module_discovery_signature_now() {
   sig += web_lang;
   sig += F("|flowmin:");
   sig += scheduler.activeOutputMinSelectFlow();
+  sig += F("|flowmax:");
+  sig += scheduler.activeOutputMaxSelectFlow();
   sig += '|';
   uint8_t order[ModuleRegistry::MAX_MODULES];
   const uint8_t count = mqtt_sorted_module_indices(order, sizeof(order));
@@ -2224,6 +2248,15 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_module_entity(m, "sensor", "fault", base + String(mqtt_txt(" Fehler", " Fault")), "{{ value_json.fault }}");
   }
 
+  if (m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) {
+    mqtt_publish_module_entity(m, "sensor", "filter_saturation", base + String(mqtt_txt(" Filter", " Filter")), "{{ value_json.fanio_filter_saturation_pct }}", ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:air-filter\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_pressure", base + String(mqtt_txt(" Druck", " Pressure")), "{{ value_json.fanio_filter_pressure_raw }}", ",\"icon\":\"mdi:gauge\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_mode", base + String(mqtt_txt(" Filtermodus", " Filter mode")), "{{ value_json.fanio_filter_mode_text }}", ",\"icon\":\"mdi:tune-variant\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_lifetime", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.fanio_filter_lifetime_text }}", ",\"icon\":\"mdi:calendar-sync\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterbetriebszeit", " Filter operating time")), "{{ value_json.fanio_filter_runtime_text }}", ",\"icon\":\"mdi:timer-outline\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_remaining", base + String(mqtt_txt(" Filter-Restlaufzeit", " Filter remaining time")), "{{ value_json.fanio_filter_remaining_text }}", ",\"icon\":\"mdi:timer-sand\"");
+  }
+
   if (m.type == MODULE_WELLER_ZERO_SMOG) {
     mqtt_publish_module_entity(m, "binary_sensor", "weller_link", base + String(mqtt_txt(" Weller Verbindung", " Weller Link")), "{{ 'ON' if value_json.weller_link else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
     mqtt_publish_module_entity(m, "number", "speed", base + String(mqtt_txt(" Drehzahl", " Speed")), "{{ value_json.speed }}", ",\"min\":30,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "weller_speed"));
@@ -2278,11 +2311,15 @@ static void mqtt_publish_discovery() {
   mqtt_publish_discovery_control("number", "afterrun_work", mqtt_txt("Nachlauf Work", "Afterrun work"), "{{ value_json.delay_work }}", "cmd/delay_work", ",\"min\":0,\"max\":3600,\"step\":1,\"mode\":\"box\",\"unit_of_meas\":\"s\",\"icon\":\"mdi:timer-cog-outline\"");
   String selected_flow_extra = F(",\"min\":");
   selected_flow_extra += scheduler.activeOutputMinSelectFlow() / 10U;
-  selected_flow_extra += F(",\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"");
+  selected_flow_extra += F(",\"max\":");
+  selected_flow_extra += scheduler.activeOutputMaxSelectFlow() / 10U;
+  selected_flow_extra += F(",\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"");
   mqtt_publish_discovery_control("number", "selected_flow", mqtt_txt("Benutzerleistung", "Selected flow"), "{{ value_json.custom_power }}", "cmd/custom_power", selected_flow_extra.c_str());
   String afterrun_power_extra = F(",\"min\":");
   afterrun_power_extra += scheduler.activeOutputMinSelectFlow() / 10U;
-  afterrun_power_extra += F(",\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan-clock\"");
+  afterrun_power_extra += F(",\"max\":");
+  afterrun_power_extra += scheduler.activeOutputMaxSelectFlow() / 10U;
+  afterrun_power_extra += F(",\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan-clock\"");
   mqtt_publish_discovery_control("number", "afterrun_power", mqtt_txt("Nachlaufleistung", "Afterrun power"), "{{ value_json.afterrun_power }}", "cmd/afterrun_power", afterrun_power_extra.c_str());
   mqtt_publish_discovery_control("switch", "afterrun_power_enabled", mqtt_txt("Nachlaufleistung aktiv", "Afterrun power enabled"), "{{ 'ON' if value_json.afterrun_power_enabled else 'OFF' }}", "cmd/afterrun_power_enabled", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\",\"icon\":\"mdi:fan-clock\"");
   mqtt_publish_discovery_control("switch", "continuous_suction", mqtt_txt("Dauerlauf", "Continuous suction"), "{{ 'ON' if value_json.continuous_set else 'OFF' }}", "cmd/continuous", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\",\"icon\":\"mdi:fan-auto\"");
@@ -2343,14 +2380,17 @@ static void mqtt_apply_command(const String& leaf, const String& value) {
     else suction = 3;
   } else if (leaf == "custom_power") {
     uint16_t percent = (uint16_t)strtoul(value.c_str(), nullptr, 10);
-    if (percent < 10) percent = 10;
-    if (percent > 100) percent = 100;
+    const uint16_t min_percent = scheduler.activeOutputMinSelectFlow() / 10U;
+    const uint16_t max_percent = scheduler.activeOutputMaxSelectFlow() / 10U;
+    if (percent < min_percent) percent = min_percent;
+    if (percent > max_percent) percent = max_percent;
     select_flow = percent * 10U;
   } else if (leaf == "afterrun_power") {
     uint16_t percent = (uint16_t)strtoul(value.c_str(), nullptr, 10);
     const uint16_t min_percent = scheduler.activeOutputMinSelectFlow() / 10U;
+    const uint16_t max_percent = scheduler.activeOutputMaxSelectFlow() / 10U;
     if (percent < min_percent) percent = min_percent;
-    if (percent > 100) percent = 100;
+    if (percent > max_percent) percent = max_percent;
     master_cmd_set_afterrun_power_profile(scheduler.afterrunPowerProfileEnabled(), percent * 10U, true);
     mqtt_last_publish_ms = 0;
     return;
@@ -2659,6 +2699,23 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"in2\":"; json += mqtt_mask_bit(m.io_input_mask, 1) ? "true" : "false";
     json += ",\"out1\":"; json += mqtt_mask_bit(m.io_output_mask, 0) ? "true" : "false";
     json += ",\"out2\":"; json += mqtt_mask_bit(m.io_output_mask, 1) ? "true" : "false";
+  }
+
+  if (m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) {
+    const uint8_t filter_mode = m.fanio_filter_runtime_valid ? m.fanio_filter_mode : 0;
+    const uint32_t filter_runtime_min = m.fanio_filter_runtime_valid ? m.fanio_filter_runtime_minutes : 0;
+    const uint32_t filter_lifetime_min = m.fanio_filter_runtime_valid ? m.fanio_filter_lifetime_minutes : 0;
+    const uint32_t filter_remaining_min = filter_lifetime_min > filter_runtime_min ? (filter_lifetime_min - filter_runtime_min) : 0;
+    json += ",\"fanio_filter_saturation_pct\":"; json += (uint16_t)((m.fanio_filter_saturation_permille + 5U) / 10U);
+    json += ",\"fanio_filter_pressure_raw\":"; json += m.fanio_filter_pressure_raw;
+    json += ",\"fanio_filter_mode\":"; json += filter_mode;
+    json += ",\"fanio_filter_mode_text\":\""; json += json_escape(mqtt_fanio_filter_mode_text(filter_mode)); json += "\"";
+    json += ",\"fanio_filter_lifetime_min\":"; json += filter_lifetime_min;
+    json += ",\"fanio_filter_lifetime_text\":\""; json += json_escape(duration_text_minutes(filter_lifetime_min).c_str()); json += "\"";
+    json += ",\"fanio_filter_runtime_min\":"; json += filter_runtime_min;
+    json += ",\"fanio_filter_runtime_text\":\""; json += json_escape(duration_text_minutes(filter_runtime_min).c_str()); json += "\"";
+    json += ",\"fanio_filter_remaining_min\":"; json += filter_remaining_min;
+    json += ",\"fanio_filter_remaining_text\":\""; json += json_escape(duration_text_minutes(filter_remaining_min).c_str()); json += "\"";
   }
 
   if (m.type == MODULE_WELLER_ZERO_SMOG) {

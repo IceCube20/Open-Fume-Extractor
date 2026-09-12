@@ -13,4 +13,4 @@ assert "CP210X_CONTROL_DTR | CP210X_CONTROL_RTS" in src
 # The close half of every reopen must explicitly force both lines low first.
 needle = "CP210X_CONTROL_WRITE_DTR | CP210X_CONTROL_WRITE_RTS),\n                        nullptr, 0);\n  delay(8);"
 assert needle in src
-assert "#define OFE_MODULE_FW_PATCH 81" in src
+assert "#define OFE_MODULE_FW_PATCH 82" in src

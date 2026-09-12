@@ -53,7 +53,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 65
+#define OFE_MODULE_FW_PATCH 66
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -1399,7 +1399,10 @@ static void rs485_set_address_uid(const Frame& req) {
     rs485_status_response(req, STATUS_BAD_VALUE);
     return;
   }
-  prefs.putUChar("addr", next_addr);
+  if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+    rs485_status_response(req, STATUS_BUSY);
+    return;
+  }
   rs485_status_response(req, STATUS_OK);
   delay(20);
   module_addr = next_addr;
@@ -1569,7 +1572,10 @@ static void handle_rs485(const Frame& req) {
       }
       {
         const uint8_t next_addr = req.payload[0];
-        prefs.putUChar("addr", next_addr);
+        if (prefs.putUChar("addr", next_addr) != sizeof(uint8_t)) {
+          rs485_status_response(req, STATUS_BUSY);
+          break;
+        }
         rs485_status_response(req, STATUS_OK);
         delay(20);
         module_addr = next_addr;

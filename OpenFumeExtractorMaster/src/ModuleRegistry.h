@@ -457,6 +457,10 @@ struct ModuleRecord {
   uint8_t jbc_device_id_len = 0;
   uint8_t jbc_device_id[64] = {0};
   uint16_t io_input_mask = 0;
+  // Rising edges reported by Fan IO/Fan IO Pro are stretched in the master
+  // long enough for the 50 ms logic runtime to observe at least one high tick.
+  uint16_t io_input_pulse_mask = 0;
+  uint32_t io_input_pulse_until_ms = 0;
   uint16_t io_output_mask = 0;
   uint16_t io_fault_mask = 0;
   char io_main_alias[19] = {0};
@@ -487,6 +491,13 @@ struct ModuleRecord {
   int16_t fanio_filter_full_raw = 0;
   uint8_t fanio_filter_flags = 0;
   uint8_t fanio_filter_cal_quality = 0;
+  // Fan I/O Pro runtime data is mirrored in telemetry so the status UI does
+  // not depend on descriptor/entity refresh timing. Older module firmware
+  // leaves fanio_filter_runtime_valid false and the UI falls back gracefully.
+  bool fanio_filter_runtime_valid = false;
+  uint8_t fanio_filter_mode = 0;
+  uint32_t fanio_filter_runtime_minutes = 0;
+  uint32_t fanio_filter_lifetime_minutes = 0;
   bool telemetry_valid = false;
   uint32_t module_heap_free = 0;
   uint32_t module_heap_min = 0;
@@ -1001,6 +1012,7 @@ public:
   void clearRoles();
   void markAllScanUnseen();
   uint8_t removeScanUnseen();
+  bool removeAddress(uint8_t addr);
   void sortByAddress();
 private:
   void removeAt(uint8_t index);

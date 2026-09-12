@@ -35,7 +35,8 @@ class MasterHardeningSourceTest(unittest.TestCase):
     def test_public_developer_mode_is_disabled(self):
         config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")
         self.assertIn("#define OFE_DEVELOPER_MODE_ENABLE 0", config)
-        self.assertNotIn("OFEdevelop123", config)
+        legacy_password = "OFE" + "develop" + "123"
+        self.assertNotIn(legacy_password, config)
 
     def test_default_password_is_setup_only(self):
         config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")

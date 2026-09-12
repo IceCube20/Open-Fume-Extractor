@@ -12,4 +12,4 @@ assert "return f.command == JBC_CMD_QST_ACTIVATE_P01 || f.command == JBC_CMD_QST
 assert "case JBC_CMD_COUNTER_PLUG_PARTIAL_SOLD:" in text
 assert "case JBC_CMD_COUNTER_WORK_PARTIAL_SOLD:" in text
 assert "if (f.len != 5)" in text
-assert "#define OFE_MODULE_FW_PATCH 81" in text
+assert "#define OFE_MODULE_FW_PATCH 82" in text

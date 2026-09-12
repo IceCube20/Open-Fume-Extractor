@@ -151,6 +151,23 @@ public:
     INPUT_SRC_JBC_WORK = 1,
     INPUT_SRC_IO_INPUT = 2,
     INPUT_SRC_UNIVERSAL_ENTITY = 3,
+    INPUT_SRC_SYSTEM_STATE = 4,
+  };
+
+
+  enum InputSystemState : uint8_t {
+    INPUT_STATE_NONE = 0,
+    INPUT_STATE_EXTRACTOR_ACTIVE = 1,
+    INPUT_STATE_CONTINUOUS_ACTIVE = 2,
+    INPUT_STATE_AFTERRUN_ACTIVE = 3,
+    INPUT_STATE_LEVEL_HIGH = 4,
+    INPUT_STATE_LEVEL_MEDIUM = 5,
+    INPUT_STATE_LEVEL_LOW = 6,
+    INPUT_STATE_LEVEL_CUSTOM = 7,
+    INPUT_STATE_OUTPUT_SELECTED_AUTO = 8,
+    INPUT_STATE_OUTPUT_SELECTED = 9,
+    INPUT_STATE_OUTPUT_ACTIVE = 10,
+    INPUT_STATE_LAST = INPUT_STATE_OUTPUT_ACTIVE,
   };
 
   enum InputTargetType : uint8_t {
@@ -159,6 +176,8 @@ public:
     INPUT_TGT_IO_OUTPUT = 2,
     INPUT_TGT_UNIVERSAL_ENTITY = 3,
     INPUT_TGT_EXTRACTOR_ACTION = 4,
+    INPUT_TGT_CONTINUOUS = 5,
+    INPUT_TGT_SELECT_OUTPUT = 6,
   };
 
   enum ExtractorAction : uint8_t {
@@ -231,6 +250,8 @@ public:
   uint8_t outputAddr() const { return active_output_addr_; }
   uint8_t autoOutputCandidateAddr() const;
   uint8_t preferredOutputAddr() const { return preferred_output_addr_; }
+  bool runtimeOutputOverrideActive() const { return runtime_output_override_addr_ != 0xFF; }
+  uint8_t runtimeOutputOverrideAddr() const { return runtime_output_override_addr_ == 0xFF ? 0 : runtime_output_override_addr_; }
   bool jbcInputEnabled() const { return main_input_source_type_ == INPUT_SRC_JBC_WORK; }
   uint8_t mainInputSourceType() const { return main_input_source_type_; }
   uint8_t mainInputSourceAddr() const { return main_input_source_addr_; }
@@ -238,8 +259,15 @@ public:
   bool mainInputSourceAvailable() const;
   void setLogicExternalInput(bool active);
   bool logicExternalInput() const { return logic_external_input_; }
+  void setLogicContinuous(bool active);
+  void setLogicContinuousPresent(bool present);
+  bool logicContinuous() const { return logic_continuous_; }
+  bool extractorOutputEnabled() const { return extractor_.outputEnabled(); }
+  bool extractorContinuousActive() const { return extractor_.continuous(); }
+  bool extractorAfterrunActive() const { return extractor_.afterrunLeftMs() != 0; }
   const InputActionRule& inputRule(uint8_t index) const { return input_rules_[index]; }
-  void setPreferredOutputAddr(uint8_t addr);
+  void setPreferredOutputAddr(uint8_t addr, bool persist = true);
+  void setRuntimeOutputOverrideAddr(uint8_t addr);
   void setJbcInputEnabled(bool enabled);
   bool setMainInputSource(uint8_t source_type, uint8_t source_addr, uint8_t source_bit, bool persist = true);
   bool setInputRule(uint8_t index, const InputActionRule& rule);
@@ -282,6 +310,7 @@ public:
   uint16_t systemJbcFilterLife() const;
   uint16_t systemJbcFilterSaturation() const;
   uint16_t activeOutputMinSelectFlow() const { return minSelectFlowForActiveOutput(); }
+  uint16_t activeOutputMaxSelectFlow() const { uint16_t min_flow = 100, max_flow = 1000, step_flow = 10; selectFlowBoundsForActiveOutput(min_flow, max_flow, step_flow); return max_flow; }
   bool setJbcSettings(uint8_t addr, uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous);
   bool setIoOutput(uint8_t addr, uint16_t mask, uint16_t value);
   bool setIoAlias(uint8_t addr, uint8_t channel, const char* alias);
@@ -400,6 +429,7 @@ private:
   void pollScanJob();
   void updateJbcAggregate();
   uint16_t minSelectFlowForActiveOutput() const;
+  void outputPowerBoundsForModule(const ModuleRecord& out, uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
   void selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
   bool moduleProvidesExtractorOutput(const ModuleRecord& rec) const;
   bool ioConfigBatchActive(uint8_t addr) const;
@@ -522,11 +552,19 @@ private:
   uint8_t active_jbc_addr_ = JBC_MODULE_ADDR;
   uint8_t active_output_addr_ = OUTPUT_MODULE_ADDR;
   uint8_t preferred_output_addr_ = 0;
+  // Runtime-only output selection from boolean logic/additional rules. 0xFF
+  // means no override; 0 means force automatic output selection.
+  uint8_t runtime_output_override_addr_ = 0xFF;
   uint8_t main_input_source_type_ = INPUT_SRC_JBC_WORK;
   uint8_t main_input_source_addr_ = 0;
   uint8_t main_input_source_bit_ = 0;
   bool applying_input_rules_ = false;
   bool logic_external_input_ = false;
+  bool logic_continuous_ = false;
+  bool logic_continuous_present_ = false;
+  bool automation_continuous_source_present_ = false;
+  bool automation_continuous_signal_ = false;
+  bool automation_continuous_signal_valid_ = false;
   bool pending_hotplug_scan_ = false;
   bool pending_hotplug_full_scan_ = false;
   uint8_t pending_hotplug_addr_ = jbc_rs485::ADDR_INVALID;
@@ -556,6 +594,7 @@ private:
   bool have_jbc_settings_ = false;
   JbcModuleState desired_jbc_settings_;
   InputActionRule input_rules_[MAX_INPUT_RULES];
+  uint32_t input_rule_system_state_signature_ = 0xFFFFFFFFUL;
   TraceStats trace_stats_;
   TraceEvent* trace_events_ = nullptr;
   bool trace_events_psram_ = false;

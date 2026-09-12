@@ -1,6 +1,7 @@
 param(
   [string]$ProjectRoot = (Join-Path $PSScriptRoot '..'),
-  [string]$Python = "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+  [string]$Python = "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
+  [string]$MasterBuildPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,12 +16,17 @@ $privateKey = Join-Path $root 'Open Fume Extractor Signing Key\ofe_ed25519_priva
 $publicKey = Join-Path $root 'Open Fume Extractor Signing Key\ofe_ed25519_public.pem'
 $logo = Join-Path $root 'assets\IceCube20_96.png'
 
+if ([string]::IsNullOrWhiteSpace($MasterBuildPath)) {
+  $MasterBuildPath = Join-Path $release 'build\community-master'
+}
+$MasterBuildPath = [IO.Path]::GetFullPath($MasterBuildPath)
+
 foreach ($required in @($Python, $signer, $privateKey, $publicKey, $docsRoot, $logo)) {
   if (!(Test-Path -LiteralPath $required)) { throw "Required release input missing: $required" }
 }
 
 $targets = @(
-  @{ Name='OpenFumeExtractor-Master'; Label='Open Fume Extractor Master'; Target='MASTER'; Chip='ESP32-S3'; Flash='16 MB'; App='OpenFumeExtractorMaster\build\esp32.esp32.esp32s3\OpenFumeExtractorMaster.ino.bin'; Merged='OpenFumeExtractorMaster\build\esp32.esp32.esp32s3\OpenFumeExtractorMaster.ino.merged.bin' },
+  @{ Name='OpenFumeExtractor-Master'; Label='Open Fume Extractor Master'; Target='MASTER'; Chip='ESP32-S3'; Flash='16 MB'; App=(Join-Path $MasterBuildPath 'OpenFumeExtractorMaster.ino.bin'); Merged=(Join-Path $MasterBuildPath 'OpenFumeExtractorMaster.ino.merged.bin') },
   @{ Name='JBC-FAE-Bus'; Label='JBC FAE Bus'; Target='JBC_BUS'; Chip='ESP32'; Flash='4 MB'; App='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.bin'; Merged='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.merged.bin' },
   @{ Name='JBC-USB'; Label='JBC USB'; Target='JBC_USB'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.bin'; Merged='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.merged.bin' },
   @{ Name='Fan-IO'; Label='Fan/IO'; Target='FAN_IO'; Chip='ESP32'; Flash='4 MB'; App='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.bin'; Merged='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.merged.bin' },
@@ -39,6 +45,13 @@ function Get-FirmwareInfo([string]$Path) {
   $match = [regex]::Match($text, 'OFE_FW_SIG:v1;target=([A-Z0-9_]+);version=([^;\x00-\x1F]+);')
   if (!$match.Success) { throw "OFE target/version marker missing: $Path" }
   return [pscustomobject]@{ Target=$match.Groups[1].Value; Version=$match.Groups[2].Value }
+}
+
+function Assert-CommunityMaster([string]$Path) {
+  $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path))
+  if ($text.Contains('Wrong developer password') -or $text.Contains('Falsches Entwicklerpasswort')) {
+    throw "Refusing to publish a master binary with developer mode enabled: $Path"
+  }
 }
 
 function Assert-MergedContainsApp([string]$AppPath, [string]$MergedPath) {
@@ -89,8 +102,8 @@ Copy-Item -LiteralPath $logo -Destination (Join-Path $flasherRoot 'assets\IceCub
 
 $rows = @()
 foreach ($target in $targets) {
-  $app = Join-Path $root $target.App
-  $merged = Join-Path $root $target.Merged
+  $app = if ([IO.Path]::IsPathRooted($target.App)) { $target.App } else { Join-Path $root $target.App }
+  $merged = if ([IO.Path]::IsPathRooted($target.Merged)) { $target.Merged } else { Join-Path $root $target.Merged }
   foreach ($source in @($app, $merged)) {
     if (!(Test-Path -LiteralPath $source)) { throw "Firmware build missing: $source" }
   }
@@ -102,6 +115,7 @@ foreach ($target in $targets) {
   if ($appInfo.Version -ne $mergedInfo.Version) {
     throw "Version mismatch for $($target.Name): app=$($appInfo.Version), merged=$($mergedInfo.Version)"
   }
+  if ($target.Target -eq 'MASTER') { Assert-CommunityMaster $app }
   Assert-MergedContainsApp $app $merged
 
   $folder = Join-Path $firmwareRoot $target.Name

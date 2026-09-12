@@ -233,6 +233,16 @@ uint8_t ModuleRegistry::removeScanUnseen() {
   return removed;
 }
 
+bool ModuleRegistry::removeAddress(uint8_t addr) {
+  if (!records_) return false;
+  for (uint8_t i = 0; i < count_; ++i) {
+    if (records_[i].addr != addr) continue;
+    removeAt(i);
+    return true;
+  }
+  return false;
+}
+
 void ModuleRegistry::sortByAddress() {
   if (!records_) return;
   // Bubble sort is perfectly adequate for <=16 records and, unlike the old

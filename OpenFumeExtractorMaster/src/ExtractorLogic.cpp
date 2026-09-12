@@ -1,24 +1,48 @@
 #include "ExtractorLogic.h"
 
 uint16_t ExtractorLogic::targetPowerForJbc() const {
-  if (!jbc_state_.valid) return 1000;
-  switch (jbc_state_.suction_level) {
-    case 0: return 1000; // High
-    case 1: return 600;  // Medium
-    case 2: return 300;  // Low
-    default: {
-      uint16_t percent = jbc_state_.select_flow;
-      // select_flow is stored as tenths of percent: 100 = 10%, 1000 = 100%.
-      if (percent >= 100) percent = (percent + 5U) / 10U;
-      if (percent < 10) percent = 10;
-      if (percent > 100) percent = 100;
-      return percent * 10U;
+  uint16_t target = 1000;
+  if (jbc_state_.valid) {
+    switch (jbc_state_.suction_level) {
+      case 0: target = 1000; break; // High
+      case 1: target = 600; break;  // Medium
+      case 2: target = 300; break;  // Low
+      default: {
+        uint16_t percent = jbc_state_.select_flow;
+        // select_flow is stored as tenths of percent: 100 = 10%, 1000 = 100%.
+        if (percent >= 100) percent = (percent + 5U) / 10U;
+        if (percent < 10) percent = 10;
+        if (percent > 100) percent = 100;
+        target = percent * 10U;
+        break;
+      }
     }
+  }
+  if (target < output_min_power_) target = output_min_power_;
+  if (target > output_max_power_) target = output_max_power_;
+  return target;
+}
+
+void ExtractorLogic::setOutputPowerBounds(uint16_t min_power, uint16_t max_power) {
+  if (min_power < 1) min_power = 1;
+  if (max_power > 1000) max_power = 1000;
+  if (max_power < min_power) max_power = min_power;
+  const bool changed = output_min_power_ != min_power || output_max_power_ != max_power;
+  output_min_power_ = min_power;
+  output_max_power_ = max_power;
+  if (!changed || !desired_output_enabled_) return;
+
+  uint16_t next_power = afterrun_active_ && afterrun_power_enabled_ ? afterrun_power_ : targetPowerForJbc();
+  if (next_power < output_min_power_) next_power = output_min_power_;
+  if (next_power > output_max_power_) next_power = output_max_power_;
+  if (next_power != desired_power_) {
+    desired_power_ = next_power;
+    output_power_dirty_ = true;
   }
 }
 
 bool ExtractorLogic::applyOutputState(bool previous_trigger_active) {
-  const bool next_enabled = continuous_ || work_mask_ != 0 || external_input_active_;
+  const bool next_enabled = continuous_ || automation_continuous_ || work_mask_ != 0 || external_input_active_;
   const uint16_t target_power = targetPowerForJbc();
   uint16_t next_power = next_enabled ? target_power : 0;
 
@@ -100,6 +124,14 @@ bool ExtractorLogic::updateExternalInput(bool active) {
   return true;
 }
 
+bool ExtractorLogic::updateAutomationContinuous(bool active) {
+  if (active == automation_continuous_) return false;
+  const bool had_trigger = work_mask_ != 0 || external_input_active_;
+  automation_continuous_ = active;
+  applyOutputState(had_trigger);
+  return true;
+}
+
 void ExtractorLogic::updateControlSettings(const JbcModuleState& state) {
   const bool had_trigger = work_mask_ != 0 || external_input_active_;
   jbc_state_.valid = true;
@@ -163,7 +195,7 @@ void ExtractorLogic::tick() {
 
   afterrun_active_ = false;
   afterrun_deadline_ms_ = 0;
-  if (!continuous_ && work_mask_ == 0 && !external_input_active_ && desired_output_enabled_) {
+  if (!continuous_ && !automation_continuous_ && work_mask_ == 0 && !external_input_active_ && desired_output_enabled_) {
     desired_output_enabled_ = false;
     desired_power_ = 0;
     output_enable_dirty_ = true;

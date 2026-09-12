@@ -3,7 +3,7 @@ from pathlib import Path
 src = Path(__file__).resolve().parents[1] / "JbcUsbModule.ino"
 text = src.read_text(encoding="utf-8")
 
-assert "#define OFE_MODULE_FW_PATCH 81" in text
+assert "#define OFE_MODULE_FW_PATCH 82" in text
 
 # v1.1.59's SOLD-only startup counter tracker is intentionally gone. The DLL
 # retries the individual in-progress message for every station family instead.
