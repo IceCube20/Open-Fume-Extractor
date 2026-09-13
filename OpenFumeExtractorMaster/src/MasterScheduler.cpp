@@ -2768,6 +2768,7 @@ bool MasterScheduler::setInputRule(uint8_t index, const InputActionRule& rule) {
   input_rules_[index] = next;
   input_rules_[index].last_active = false;
   input_rules_[index].edge_armed = false;
+  input_rules_[index].target_sync_valid = false;
   updateInputRouting();
   return true;
 }
@@ -3951,10 +3952,19 @@ void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
     }
     return;
   }
-  if (rule.last_active == active) return;
+
+  // Stateful external rule targets must be synchronized per module connection,
+  // not only per logical edge. If a module disappears after accepting HIGH or
+  // LOW, the physical state of the next connection is unknown. Mark that
+  // connection unsynchronized while it is offline; when it comes back the
+  // current rule state is written again even if the source never changed.
   if (rule.target_type == INPUT_TGT_IO_OUTPUT) {
     ModuleRecord* rec = registry_.find(rule.target_addr);
-    if (!rec || !rec->online || !(rec->caps & CAP_DIGITAL_OUTPUT)) return;
+    if (!rec || !rec->online || !(rec->caps & CAP_DIGITAL_OUTPUT)) {
+      rule.target_sync_valid = false;
+      return;
+    }
+    if (rule.target_sync_valid && rule.last_active == active) return;
 
     // The selected extractor output is owned by ExtractorLogic while it is
     // running or in afterrun. A parallel direct-routing rule may request ON,
@@ -3963,20 +3973,40 @@ void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
     // perform the eventual OFF when afterrun really ends.
     if (!active && extractor_.outputEnabled() && inputRuleTargetsActiveMainOutput(rule)) {
       rule.last_active = false;
+      rule.target_sync_valid = true;
       return;
     }
 
     const uint16_t mask = (uint16_t)(1U << rule.target_bit);
-    if (setIoOutput(rule.target_addr, mask, active ? mask : 0)) rule.last_active = active;
+    if (setIoOutput(rule.target_addr, mask, active ? mask : 0)) {
+      rule.last_active = active;
+      rule.target_sync_valid = true;
+    } else {
+      rule.target_sync_valid = false;
+    }
     return;
   }
   if (rule.target_type == INPUT_TGT_UNIVERSAL_ENTITY) {
+    ModuleRecord* rec = registry_.find(rule.target_addr);
+    if (!rec || !rec->online || !(rec->caps & CAP_ENTITY_CONTROL)) {
+      rule.target_sync_valid = false;
+      return;
+    }
+    if (rule.target_sync_valid && rule.last_active == active) return;
+
     if (!active && extractor_.outputEnabled() && inputRuleTargetsActiveMainOutput(rule)) {
       rule.last_active = false;
+      rule.target_sync_valid = true;
       return;
     }
     const uint8_t v = active ? '1' : '0';
-    if (setUniversalEntity(rule.target_addr, rule.target_bit, &v, 1)) rule.last_active = active;
+    if (setUniversalEntity(rule.target_addr, rule.target_bit, &v, 1)) {
+      rule.last_active = active;
+      rule.target_sync_valid = true;
+    } else {
+      rule.target_sync_valid = false;
+    }
+    return;
   }
 }
 
@@ -7734,6 +7764,26 @@ bool MasterScheduler::setIoConfig(uint8_t addr, const uint8_t* data, uint8_t len
     MasterSettingsStore::savePreferredOutput(prefs, 0);
   }
   selectRoles();
+
+  // A finalized Fan/IO hardware configuration may reset physical outputs while
+  // the module itself stays online. The automation runtime must therefore not
+  // keep treating the pre-COMMIT state as synchronized. Re-arm every stateful
+  // additional-rule target on this module so updateInputRouting() immediately
+  // writes its current HIGH/LOW again without waiting for a source edge.
+  for (uint8_t i = 0; i < MAX_INPUT_RULES; ++i) {
+    InputActionRule& rule = input_rules_[i];
+    if (!rule.enabled || rule.target_addr != addr) continue;
+    if (rule.target_type == INPUT_TGT_IO_OUTPUT ||
+        rule.target_type == INPUT_TGT_UNIVERSAL_ENTITY) {
+      rule.target_sync_valid = false;
+    }
+  }
+
+  // The selected main extractor output is stateful as well. If its Fan/IO GPIO
+  // map was committed/reset while RUN/afterrun is active, force the normal
+  // output path to restore enable + power on the freshly configured hardware.
+  if (active_output_addr_ == addr) extractor_.markOutputDirty();
+
   updateInputRouting();
   return true;
 }

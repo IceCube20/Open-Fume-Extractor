@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "2.0.2beta",
+    "version": "2.0.8beta",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.2beta-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.2beta.bin",
-    "mergedSha256": "b2c7f1dbbdd1df41e416cbd6c29ec7e7fa3383ae758b7257eea8de82e3762e8c"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.8beta-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.8beta.bin",
+    "mergedSha256": "49238a0f6bd2eb57cee973fd177effd342d5459850d7d4948249deb8ab74d996"
   },
   {
     "id": "JBC-FAE-Bus",
@@ -50,14 +50,14 @@
   {
     "id": "Fan-IO-Pro",
     "label": "Fan/IO Pro",
-    "version": "1.1.67beta",
+    "version": "1.1.68beta",
     "signatureTarget": "FAN_IO_PRO",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Fan-IO-Pro.json",
-    "merged": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.67beta-merged.bin",
-    "ota": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.67beta.bin",
-    "mergedSha256": "e54f390f1466896c642575e96e302a2af432f29a12904c50ffaa71641c0bbe57"
+    "merged": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68beta-merged.bin",
+    "ota": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68beta.bin",
+    "mergedSha256": "d6f230d607c6ffdad4396473ed246813863d834f7bf9cd17ed06415f7a6304c7"
   },
   {
     "id": "Weller-Zero-Smog",

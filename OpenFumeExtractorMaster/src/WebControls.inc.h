@@ -830,6 +830,12 @@ static void web_handle_io_config() {
   if (!master_cmd_set_io_config(addr, payload, len, finalize)) {
     web.send(503, "text/plain; charset=utf-8", "module rejected I/O configuration"); return;
   }
+  if (finalize && kind != "abort") {
+    // COMMIT/RESET (and the legacy one-shot editor writes) can reset outputs
+    // without taking the module offline. Forget Boolean-logic synchronization
+    // for this module so its current state is written again on the next tick.
+    logic_runtime_invalidate_module_outputs(addr);
+  }
   web.send(200, "text/plain; charset=utf-8", "OK");
 }
 

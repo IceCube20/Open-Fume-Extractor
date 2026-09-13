@@ -205,6 +205,10 @@ public:
     uint8_t target_bit = 0;
     bool last_active = false;
     bool edge_armed = false;
+    // Runtime-only: true only after a stateful external target has accepted
+    // the current HIGH/LOW on its present module connection. It is cleared
+    // while the target is offline so reconnects re-apply the desired state.
+    bool target_sync_valid = false;
   };
 
   MasterScheduler(jbc_rs485::Link& link, ModuleRegistry& registry, ExtractorLogic& extractor)

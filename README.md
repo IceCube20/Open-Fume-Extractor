@@ -19,6 +19,8 @@ images, a browser-based USB flasher and English end-user documentation.
 ## Documentation
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
+- [Master setup and configuration](docs/MASTER.md)
+- [Module setup and configuration](docs/MODULES.md)
 - [Operation and diagnostics](docs/OPERATION.md)
 - [Hardware and pinout](docs/PINOUT.md)
 - [Firmware files, versions and checksums](docs/FIRMWARE.md)

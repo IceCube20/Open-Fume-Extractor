@@ -104,6 +104,7 @@ static void web_handle_diagnostics_events();
 static void web_handle_diagnostics_control();
 static void web_handle_logic();
 static void web_handle_logic_json();
+static void web_handle_logic_runtime();
 static void web_handle_logic_list();
 static void web_handle_logic_select();
 static void web_handle_logic_new();

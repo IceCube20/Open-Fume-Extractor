@@ -133,7 +133,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 67
+#define OFE_MODULE_FW_PATCH 68
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -301,6 +301,11 @@ static bool manual_output_power_dirty = false;
 static uint32_t manual_output_power_save_due_ms = 0;
 static uint16_t fan_rpm = 0;
 static uint16_t fault_mask = 0;
+// Keep pressure-sensor and runtime filter faults separate. Both sources use
+// the same public FAULT_FILTER_WARN/FULL bits, so writing those bits directly
+// from two independent update paths can temporarily erase the other source.
+static uint16_t filter_pressure_fault_mask = 0;
+static uint16_t filter_runtime_fault_mask = 0;
 static volatile uint32_t tacho_edges = 0;
 static uint32_t last_rpm_ms = 0;
 static uint32_t last_tacho_edges = 0;
@@ -589,8 +594,19 @@ static uint8_t filter_status_flags() {
   return flags;
 }
 
+static const uint16_t FILTER_FAULT_BITS =
+  FAULT_FILTER_WARN | FAULT_FILTER_FULL | FAULT_FILTER_MISSING | FAULT_SENSOR;
+
+static void apply_filter_fault_sources() {
+  fault_mask = (uint16_t)((fault_mask & (uint16_t)~FILTER_FAULT_BITS) |
+                          filter_pressure_fault_mask |
+                          filter_runtime_fault_mask);
+}
+
 static void clear_filter_faults() {
-  fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL | FAULT_FILTER_MISSING | FAULT_SENSOR);
+  filter_pressure_fault_mask = 0;
+  filter_runtime_fault_mask = 0;
+  apply_filter_fault_sources();
 }
 
 static void update_filter_sensor() {
@@ -601,24 +617,30 @@ static void update_filter_sensor() {
     pressure_sensor_fault_since_ms = 0;
     filter_pressure_raw = 0;
     filter_saturation_permille = 0;
-    fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL | FAULT_FILTER_MISSING | FAULT_SENSOR);
+    // Only clear the pressure source. A runtime warning/full condition may be
+    // active at the same time and must remain visible to the master/EVT LED.
+    filter_pressure_fault_mask = 0;
+    apply_filter_fault_sources();
     return;
   }
 
   filter_pressure_raw = read_filter_pressure_raw();
-  if (!filter_present) fault_mask |= FAULT_FILTER_MISSING;
-  else fault_mask &= (uint16_t)~FAULT_FILTER_MISSING;
+  if (!filter_present) filter_pressure_fault_mask |= FAULT_FILTER_MISSING;
+  else filter_pressure_fault_mask &= (uint16_t)~FAULT_FILTER_MISSING;
 
   if (!pressure_sensor_ok) {
     if (!pressure_sensor_fault_since_ms) pressure_sensor_fault_since_ms = millis();
-    if ((uint32_t)(millis() - pressure_sensor_fault_since_ms) >= FILTER_SENSOR_FAULT_DEBOUNCE_MS) fault_mask |= FAULT_SENSOR;
-    fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
+    if ((uint32_t)(millis() - pressure_sensor_fault_since_ms) >= FILTER_SENSOR_FAULT_DEBOUNCE_MS) {
+      filter_pressure_fault_mask |= FAULT_SENSOR;
+    }
+    filter_pressure_fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
     filter_saturation_permille = 0;
+    apply_filter_fault_sources();
     return;
   }
 
   pressure_sensor_fault_since_ms = 0;
-  fault_mask &= (uint16_t)~FAULT_SENSOR;
+  filter_pressure_fault_mask &= (uint16_t)~FAULT_SENSOR;
   int32_t delta = (int32_t)filter_pressure_raw - filter_zero_raw;
   if (delta < 0) delta = 0;
   int32_t span = (int32_t)filter_full_raw - filter_clean_raw;
@@ -628,13 +650,15 @@ static void update_filter_sensor() {
   if (sat > 1000) sat = 1000;
   filter_saturation_permille = (uint16_t)sat;
   if (filter_calibration_quality() < 2) {
-    fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
+    filter_pressure_fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
+    apply_filter_fault_sources();
     return;
   }
-  if (delta >= filter_full_raw) fault_mask |= FAULT_FILTER_FULL;
-  else fault_mask &= (uint16_t)~FAULT_FILTER_FULL;
-  if (delta >= filter_warn_raw) fault_mask |= FAULT_FILTER_WARN;
-  else fault_mask &= (uint16_t)~FAULT_FILTER_WARN;
+  if (delta >= filter_full_raw) filter_pressure_fault_mask |= FAULT_FILTER_FULL;
+  else filter_pressure_fault_mask &= (uint16_t)~FAULT_FILTER_FULL;
+  if (delta >= filter_warn_raw) filter_pressure_fault_mask |= FAULT_FILTER_WARN;
+  else filter_pressure_fault_mask &= (uint16_t)~FAULT_FILTER_WARN;
+  apply_filter_fault_sources();
 }
 
 static void update_filter_runtime() {
@@ -662,7 +686,12 @@ static void update_filter_runtime() {
       filter_runtime_save_due_ms = now + 60000UL;
     }
   }
-  if (!use_runtime) return;
+  if (!use_runtime) {
+    filter_runtime_fault_mask = 0;
+    apply_filter_fault_sources();
+    return;
+  }
+
   const uint32_t lifetime = hw_config.filter_lifetime_minutes;
   // Evaluate the lifetime with the already tracked sub-minute remainder. This
   // keeps short test lifetimes useful: at 1 minute the 10% warning starts at
@@ -671,20 +700,15 @@ static void update_filter_runtime() {
   const uint64_t runtime_ms = (uint64_t)filter_runtime_minutes * 60000ULL +
                               (uint64_t)filter_runtime_ms_remainder;
   if (runtime_ms >= lifetime_ms) {
-    fault_mask |= FAULT_FILTER_FULL | FAULT_FILTER_WARN;
+    filter_runtime_fault_mask = FAULT_FILTER_FULL | FAULT_FILTER_WARN;
   } else {
     const uint64_t remaining_ms = lifetime_ms - runtime_ms;
     uint64_t warn_window_ms = lifetime_ms / 10ULL;
     const uint64_t max_warn_window_ms = 1440ULL * 60000ULL;  // 24 hours
     if (warn_window_ms > max_warn_window_ms) warn_window_ms = max_warn_window_ms;
-    if (remaining_ms <= warn_window_ms) {
-      fault_mask |= FAULT_FILTER_WARN;
-    } else if (hw_config.filter_mode == ofe_fanio::FILTER_RUNTIME) {
-      // In runtime-only mode these bits can only originate here, so clear a
-      // stale warning after reset or after increasing the configured lifetime.
-      fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
-    }
+    filter_runtime_fault_mask = remaining_ms <= warn_window_ms ? FAULT_FILTER_WARN : 0;
   }
+  apply_filter_fault_sources();
 }
 
 static bool flush_filter_runtime() {
@@ -1736,7 +1760,8 @@ static void handle_pro_calibration(const Frame& req) {
     filter_runtime_ms_remainder = 0;
     filter_runtime_dirty = false;
     filter_runtime_save_due_ms = 0;
-    fault_mask &= (uint16_t)~(FAULT_FILTER_WARN | FAULT_FILTER_FULL);
+    filter_runtime_fault_mask = 0;
+    apply_filter_fault_sources();
     // Re-apply a real pressure-based filter warning immediately in BOTH mode.
     update_filter_sensor();
     send_status_response(req, STATUS_OK);
@@ -1788,6 +1813,7 @@ static void handle_pro_calibration(const Frame& req) {
       filter_present = true;
       clear_filter_faults();
       update_filter_sensor();
+      update_filter_runtime();
       save_filter_calibration();
       send_status_response(req, STATUS_OK);
       break;

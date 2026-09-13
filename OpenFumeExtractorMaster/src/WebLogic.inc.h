@@ -38,6 +38,7 @@ struct LogicRtNode {
   uint32_t delay2_ms = 0;
   LogicRtState state;
   uint8_t type = LOGIC_NODE_UNKNOWN;
+  bool reset_dominant = false;
   bool value = false;
 };
 
@@ -309,6 +310,7 @@ static bool logic_compile_json(const String& json, uint8_t slot, LogicCompiledDe
       n.delay_ms = json_get_u32_field(obj, "delay", 0);
       n.delay2_ms = json_get_u32_field(obj, "delay2", 0);
       n.type = logic_node_type_from_string(type);
+      n.reset_dominant = json_get_string_field(obj, "latchMode", String("sr")) == "rs";
       n.value = false;
       if (n.id[0] && type.length()) ++out.node_count;
       else memset(&n, 0, sizeof(n));
@@ -603,6 +605,44 @@ static void web_handle_logic_json() {
   web.send(200, "text/plain; charset=utf-8", String("logic saved slot ") + String(slot));
 }
 
+static void web_handle_logic_runtime() {
+  const uint8_t slot = web.hasArg("slot") ? (uint8_t)strtoul(web.arg("slot").c_str(), nullptr, 0) : active_logic_slot();
+  if (slot >= LOGIC_DEF_MAX) { web.send(400, "text/plain; charset=utf-8", "bad slot"); return; }
+
+  String json;
+  json.reserve(3200);
+  json += F("{\"slot\":"); json += slot;
+  json += F(",\"ready\":"); json += logic_rt_cache_ready ? "true" : "false";
+  json += F(",\"last_run_ms\":"); json += logic_rt_last_run_ms;
+
+  const bool locked = logic_rt_cache_ready && logic_rt_lock(pdMS_TO_TICKS(100));
+  if (!locked) {
+    json += F(",\"used\":false,\"enabled\":false,\"nodes\":[]}");
+    web.send(200, "application/json; charset=utf-8", json);
+    return;
+  }
+
+  const LogicCompiledDefinition& def = logic_rt_defs[slot];
+  json += F(",\"used\":"); json += def.used ? "true" : "false";
+  json += F(",\"enabled\":"); json += def.enabled ? "true" : "false";
+  json += F(",\"nodes\":[");
+  if (def.used && def.nodes) {
+    for (uint8_t i = 0; i < def.node_count; ++i) {
+      const LogicRtNode& n = def.nodes[i];
+      if (i) json += ',';
+      json += F("{\"id\":\""); json += json_escape(n.id); json += '"';
+      json += F(",\"value\":"); json += n.value ? "true" : "false";
+      json += F(",\"timer_ms\":"); json += n.state.timer_ms;
+      json += F(",\"mem\":"); json += n.state.mem ? "true" : "false";
+      json += F(",\"last\":"); json += n.state.last ? "true" : "false";
+      json += '}';
+    }
+  }
+  json += F("]}");
+  logic_rt_unlock();
+  web.send(200, "application/json; charset=utf-8", json);
+}
+
 static bool logic_signal_active(const char* signal) {
   if (!signal || !signal[0] || strcmp(signal, "manual") == 0) return false;
   unsigned addr = 0, bit = 0;
@@ -711,16 +751,6 @@ static void logic_collect_output(LogicRtOutput* outputs, uint8_t& output_count, 
   ++output_count;
 }
 
-static bool logic_last_output_value(const char* signal, bool& value) {
-  for (uint8_t i = 0; i < logic_rt_last_output_count; ++i) {
-    if (strcmp(logic_rt_last_outputs[i].signal, signal) == 0) {
-      value = logic_rt_last_outputs[i].active;
-      return true;
-    }
-  }
-  return false;
-}
-
 static uint8_t logic_extractor_action_from_signal(const char* signal) {
   if (!signal) return MasterScheduler::EXTRACTOR_ACTION_NONE;
   if (strcmp(signal, "extractor:action:level_next") == 0) return MasterScheduler::EXTRACTOR_ACTION_LEVEL_NEXT;
@@ -736,77 +766,162 @@ static uint8_t logic_extractor_action_from_signal(const char* signal) {
   return MasterScheduler::EXTRACTOR_ACTION_NONE;
 }
 
-static void logic_apply_output_signal(const char* signal, bool active) {
-  if (!signal || !signal[0]) return;
+static bool logic_output_is_event_signal(const char* signal) {
+  if (!signal || !signal[0]) return false;
+  if (logic_extractor_action_from_signal(signal) != MasterScheduler::EXTRACTOR_ACTION_NONE) return true;
+  if (strncmp(signal, "extractor:select_output:", 24) == 0) return true;
+  unsigned addr = 0, bit = 0;
+  int consumed = 0;
+  return sscanf(signal, "uni:%u:button:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0;
+}
+
+// Return the RS485 target address for stateful outputs that live on a module.
+// Local master outputs (main_output/extractor:continuous) intentionally have no
+// target here. If an external target disappears, its cached logic state must be
+// invalidated so the desired state is written again after a hot-plug/reboot.
+static bool logic_output_target_module(const char* signal, uint8_t& target_addr) {
+  if (!signal || !signal[0]) return false;
+  unsigned addr = 0, bit = 0;
+  int consumed = 0;
+
+  if (sscanf(signal, "io:%u:main%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "io:%u:out:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "io:%u:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "weller:%u:fan%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "weller:%u:light%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "uni:%u:switch:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  consumed = 0;
+  if (sscanf(signal, "uni:%u:output%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
+    target_addr = (uint8_t)addr;
+    return true;
+  }
+  return false;
+}
+
+static void logic_runtime_invalidate_module_outputs(uint8_t target_addr) {
+  if (!target_addr || !logic_rt_last_output_count) return;
+  uint8_t keep = 0;
+  for (uint8_t i = 0; i < logic_rt_last_output_count; ++i) {
+    uint8_t cached_addr = 0;
+    const bool targets_module = logic_output_target_module(logic_rt_last_outputs[i].signal, cached_addr);
+    if (targets_module && cached_addr == target_addr) {
+      // The GPIO editor can deliberately reset physical outputs while the
+      // module remains online. Drop only the stateful cache for that module so
+      // the next logic tick re-applies the current HIGH/LOW without requiring
+      // a logical edge. Event/button outputs are not matched here and therefore
+      // are never replayed by a configuration save.
+      continue;
+    }
+    if (keep != i) logic_rt_last_outputs[keep] = logic_rt_last_outputs[i];
+    ++keep;
+  }
+  logic_rt_last_output_count = keep;
+}
+
+static int logic_last_output_index(const char* signal) {
+  if (!signal) return -1;
+  for (uint8_t i = 0; i < logic_rt_last_output_count; ++i) {
+    if (strcmp(logic_rt_last_outputs[i].signal, signal) == 0) return (int)i;
+  }
+  return -1;
+}
+
+static void logic_track_output(LogicRtOutput* tracked, uint8_t& tracked_count, const LogicRtOutput& value) {
+  for (uint8_t i = 0; i < tracked_count; ++i) {
+    if (strcmp(tracked[i].signal, value.signal) == 0) {
+      tracked[i] = value;
+      return;
+    }
+  }
+  if (tracked_count >= LOGIC_RT_MAX_OUTPUTS) return;
+  tracked[tracked_count++] = value;
+}
+
+static bool logic_apply_output_signal(const char* signal, bool active) {
+  if (!signal || !signal[0]) return true;
   const uint8_t extractor_action = logic_extractor_action_from_signal(signal);
   if (extractor_action != MasterScheduler::EXTRACTOR_ACTION_NONE) {
     if (active) scheduler.queueExtractorAction(extractor_action);
-    return;
+    return true;
   }
   unsigned addr = 0, bit = 0;
   int consumed = 0;
   if (strcmp(signal, "main_output") == 0) {
     scheduler.setLogicExternalInput(active);
     logic_rt_last_main_output = active;
-    return;
+    return true;
   }
   if (strcmp(signal, "extractor:continuous") == 0) {
     scheduler.setLogicContinuous(active);
-    return;
+    return true;
   }
   if (sscanf(signal, "extractor:select_output:%u%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
     if (active && (addr == 0 || (addr >= 0x10 && addr <= 0x6F))) scheduler.setPreferredOutputAddr((uint8_t)addr, true);
-    return;
+    return true;
   }
   consumed = 0;
   if (sscanf(signal, "io:%u:main%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
-    scheduler.setModuleOutput((uint8_t)addr, active, scheduler.controlSettings().select_flow);
-    return;
+    return scheduler.setModuleOutput((uint8_t)addr, active, scheduler.controlSettings().select_flow);
   }
   consumed = 0;
   if (sscanf(signal, "io:%u:out:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0 && bit < 16) {
     const uint16_t mask = (uint16_t)(1U << bit);
-    scheduler.setIoOutput((uint8_t)addr, mask, active ? mask : 0);
-    return;
+    return scheduler.setIoOutput((uint8_t)addr, mask, active ? mask : 0);
   }
   consumed = 0;
   if (sscanf(signal, "io:%u:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0 && bit >= 2 && bit < 16) {
     const uint16_t mask = (uint16_t)(1U << (bit - 2));
-    scheduler.setIoOutput((uint8_t)addr, mask, active ? mask : 0);
-    return;
+    return scheduler.setIoOutput((uint8_t)addr, mask, active ? mask : 0);
   }
   consumed = 0;
   if (sscanf(signal, "weller:%u:fan%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
-    scheduler.setIoOutput((uint8_t)addr, 0x0001, active ? 0x0001 : 0);
-    return;
+    return scheduler.setIoOutput((uint8_t)addr, 0x0001, active ? 0x0001 : 0);
   }
   consumed = 0;
   if (sscanf(signal, "weller:%u:light%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
-    scheduler.setIoOutput((uint8_t)addr, 0x0002, active ? 0x0002 : 0);
-    return;
+    return scheduler.setIoOutput((uint8_t)addr, 0x0002, active ? 0x0002 : 0);
   }
   consumed = 0;
   if (sscanf(signal, "uni:%u:switch:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0 && bit <= 255) {
     const uint8_t value = active ? (uint8_t)'1' : (uint8_t)'0';
-    scheduler.setUniversalEntity((uint8_t)addr, (uint8_t)bit, &value, 1);
-    return;
+    return scheduler.setUniversalEntity((uint8_t)addr, (uint8_t)bit, &value, 1);
   }
   consumed = 0;
   if (sscanf(signal, "uni:%u:button:%u%n", &addr, &bit, &consumed) == 2 && signal[consumed] == 0 && bit <= 255) {
-    // A button has no OFF command. Trigger it only on the rising logic edge;
-    // logic_runtime_tick() already calls this function only when a signal
-    // changes, so the held-high state is not repeatedly transmitted.
-    if (active) {
-      const uint8_t value = (uint8_t)'1';
-      scheduler.setUniversalEntity((uint8_t)addr, (uint8_t)bit, &value, 1);
-    }
-    return;
+    // Buttons are edge/event outputs. A failed or missed edge must not be
+    // replayed later just because the target module comes online afterwards.
+    if (!active) return true;
+    const uint8_t value = (uint8_t)'1';
+    return scheduler.setUniversalEntity((uint8_t)addr, (uint8_t)bit, &value, 1);
   }
   consumed = 0;
   if (sscanf(signal, "uni:%u:output%n", &addr, &consumed) == 1 && signal[consumed] == 0) {
-    scheduler.setModuleOutput((uint8_t)addr, active, scheduler.controlSettings().select_flow);
-    return;
+    return scheduler.setModuleOutput((uint8_t)addr, active, scheduler.controlSettings().select_flow);
   }
+  return true;
 }
 
 static void logic_eval_definition(LogicCompiledDefinition& def, uint32_t dt_ms, LogicRtOutput* outputs, uint8_t& output_count) {
@@ -834,8 +949,15 @@ static void logic_eval_definition(LogicCompiledDefinition& def, uint32_t dt_ms, 
           v = st.mem;
           break;
         case LOGIC_NODE_SR:
-          if (p1) st.mem = false;
-          if (p0) st.mem = true;
+          if (n.reset_dominant) {
+            // IEC RS: RESET is dominant when S and R are active together.
+            if (p0) st.mem = true;
+            if (p1) st.mem = false;
+          } else {
+            // IEC SR: SET is dominant when S and R are active together.
+            if (p1) st.mem = false;
+            if (p0) st.mem = true;
+          }
           v = st.mem;
           break;
         case LOGIC_NODE_TON:
@@ -916,8 +1038,11 @@ static void logic_runtime_tick() {
   logic_rt_last_run_ms = now;
 
   static LogicRtOutput outputs[LOGIC_RT_MAX_OUTPUTS];
+  static LogicRtOutput tracked[LOGIC_RT_MAX_OUTPUTS];
   memset(outputs, 0, sizeof(outputs));
+  memset(tracked, 0, sizeof(tracked));
   uint8_t output_count = 0;
+  uint8_t tracked_count = 0;
 
   if (!logic_rt_lock(pdMS_TO_TICKS(20))) return;
   const uint32_t mask = logic_rt_used_mask;
@@ -931,28 +1056,72 @@ static void logic_runtime_tick() {
   for (uint8_t i = 0; i < output_count; ++i) {
     if (strcmp(outputs[i].signal, "main_output") == 0) main_present = true;
     if (strcmp(outputs[i].signal, "extractor:continuous") == 0) continuous_present = true;
-    bool last = false;
-    const bool known = logic_last_output_value(outputs[i].signal, last);
-    const bool is_action =
-      logic_extractor_action_from_signal(outputs[i].signal) != MasterScheduler::EXTRACTOR_ACTION_NONE ||
-      strncmp(outputs[i].signal, "extractor:select_output:", 24) == 0;
-    // A definition loaded while already high must first return low. This keeps
-    // event outputs from changing settings unexpectedly after boot or reload.
-    if ((!is_action || known) && (!known || last != outputs[i].active)) {
-      logic_apply_output_signal(outputs[i].signal, outputs[i].active);
+
+    const int last_index = logic_last_output_index(outputs[i].signal);
+    const bool known = last_index >= 0;
+    const bool last = known ? logic_rt_last_outputs[last_index].active : false;
+    const bool is_event = logic_output_is_event_signal(outputs[i].signal);
+
+    if (is_event) {
+      // A definition loaded while an event output is already high must first
+      // return low. Events are intentionally not replayed after a failed edge.
+      if (known && last != outputs[i].active) {
+        logic_apply_output_signal(outputs[i].signal, outputs[i].active);
+      }
+      logic_track_output(tracked, tracked_count, outputs[i]);
+      continue;
+    }
+
+    // A successful command is only synchronized for the current connection of
+    // the target module. Once that module is observed offline, forget the cached
+    // state. On reconnect the output is therefore unknown and the current logic
+    // level (HIGH as well as LOW) is written again without requiring an edge.
+    uint8_t target_addr = 0;
+    if (logic_output_target_module(outputs[i].signal, target_addr)) {
+      const ModuleRecord* target = registry.find(target_addr);
+      if (!target || !target->online) continue;
+    }
+
+    // Stateful outputs are only marked as synchronized after the command was
+    // actually accepted. This is important during boot: logic evaluation can
+    // happen before a module is online. A failed HIGH/LOW is therefore retried
+    // on following ticks instead of waiting for another logical edge.
+    bool synchronized = true;
+    if (!known || last != outputs[i].active) {
+      synchronized = logic_apply_output_signal(outputs[i].signal, outputs[i].active);
+    }
+    if (synchronized) {
+      logic_track_output(tracked, tracked_count, outputs[i]);
+    } else if (known) {
+      // Keep the last successfully applied state so the desired change remains
+      // visible as a change and is retried on the next runtime pass.
+      logic_track_output(tracked, tracked_count, logic_rt_last_outputs[last_index]);
     }
   }
+
   for (uint8_t i = 0; i < logic_rt_last_output_count; ++i) {
     bool still_present = false;
     for (uint8_t j = 0; j < output_count; ++j) {
       if (strcmp(logic_rt_last_outputs[i].signal, outputs[j].signal) == 0) { still_present = true; break; }
     }
-    if (!still_present) logic_apply_output_signal(logic_rt_last_outputs[i].signal, false);
+    if (still_present) continue;
+
+    if (logic_output_is_event_signal(logic_rt_last_outputs[i].signal)) {
+      logic_apply_output_signal(logic_rt_last_outputs[i].signal, false);
+      continue;
+    }
+    if (!logic_rt_last_outputs[i].active) continue;
+    if (!logic_apply_output_signal(logic_rt_last_outputs[i].signal, false)) {
+      // Keep an active state until OFF was really accepted. Otherwise a module
+      // that disappears during a graph change could stay physically ON.
+      logic_track_output(tracked, tracked_count, logic_rt_last_outputs[i]);
+    }
   }
+
   if (!main_present && logic_rt_last_main_output) scheduler.setLogicExternalInput(false);
   scheduler.setLogicContinuousPresent(continuous_present);
-  logic_rt_last_output_count = output_count;
-  for (uint8_t i = 0; i < output_count; ++i) logic_rt_last_outputs[i] = outputs[i];
+  logic_rt_last_output_count = tracked_count;
+  for (uint8_t i = 0; i < tracked_count; ++i) logic_rt_last_outputs[i] = tracked[i];
 
   logic_rt_last_exec_us = (uint32_t)(micros() - start_us);
   if (logic_rt_last_exec_us > logic_rt_max_exec_us) logic_rt_max_exec_us = logic_rt_last_exec_us;
@@ -960,34 +1129,37 @@ static void logic_runtime_tick() {
 
 static void web_handle_logic() {
   String html;
-  html.reserve(34000);
+  html.reserve(44000);
   web_shell_begin(html, web_text("Logik Designer", "Logic Designer"), web_text("Automation", "Automation"), "logic");
   html += F(R"HTML(
 <style>
-main{max-width:calc(100vw - 48px)!important;width:calc(100vw - 48px)!important}.logic-top{display:grid;grid-template-columns:280px minmax(980px,1fr) 300px;gap:14px;align-items:start}.logic-panel{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:14px}.logic-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.logic-enable{display:inline-flex;align-items:center;gap:8px;min-height:42px;padding:0 12px;border:1px solid #303640;border-radius:8px;background:#10151b;color:#dce5ef;font-weight:800}.logic-enable input{width:18px;height:18px;accent-color:#31c85a}.logic-palette{display:grid;grid-template-columns:1fr 1fr;gap:8px}.logic-palette button{min-height:46px;padding:7px 8px;gap:8px;justify-content:flex-start;align-items:center}.logic-chip{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;border-radius:8px;background:#0d141b;border:1px solid #355069;color:#64e29a;font-weight:900;font-size:11px;letter-spacing:0}.logic-workspace{position:relative;height:calc(100vh - 286px);min-height:790px;border:1px solid #303640;background:#11151a;border-radius:8px;overflow:auto}.logic-canvas{position:relative;width:2800px;height:1700px;background:radial-gradient(circle,#303844 1px,transparent 1px);background-size:22px 22px}.logic-svg{position:absolute;left:0;top:0;width:2800px;height:1700px;pointer-events:auto}.logic-node{position:absolute;width:138px;min-height:118px;border:1px solid #3a4552;background:#20262e;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.24);user-select:none;touch-action:none;z-index:2}.logic-node.is-on{border-color:#59c77a;box-shadow:0 0 0 2px rgba(89,199,122,.18),0 8px 22px rgba(0,0,0,.24)}.logic-node.live-on{box-shadow:0 0 0 2px rgba(49,200,90,.24),0 8px 22px rgba(0,0,0,.24)}.logic-node.live-offline{opacity:.72}.logic-node h3{margin:0;padding:7px 34px;border-bottom:1px solid #303844;font-size:13px;min-height:38px;text-align:center}.logic-symbol{position:absolute;left:7px;top:7px;width:24px;height:24px;border-radius:8px;background:#10161d;border:1px solid #3a4552;color:#77dd96;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:10px;letter-spacing:.02em}.logic-node small{display:block;color:#92a0af;font-size:10px;margin-top:1px}.logic-node .body{padding:8px 9px;color:#dce5ef;font-size:12px;line-height:1.2}.logic-live{display:inline-flex;align-items:center;gap:6px;margin-top:7px;padding:4px 7px;border:1px solid #313b46;border-radius:999px;background:#10161d;color:#98a8b8;font-size:11px;font-weight:850}.logic-live-dot{width:8px;height:8px;border-radius:50%;background:#596473}.logic-live.on{border-color:#2f7d4a;color:#dff9e8}.logic-live.on .logic-live-dot{background:#31c85a;box-shadow:0 0 10px rgba(49,200,90,.7)}.logic-live.off .logic-live-dot{background:#6a7280}.logic-live.offline{border-color:#65413f;color:#f1b5ae}.logic-live.offline .logic-live-dot{background:#d54a45}.logic-inline-sim{margin-top:7px;display:flex;align-items:center;justify-content:space-between;gap:8px}.logic-port{position:absolute;width:12px;height:12px;border-radius:50%;background:#4a90d9;border:2px solid #cfe6ff;transform:translateY(-50%);cursor:crosshair;z-index:4}.logic-port:hover,.logic-port.hot{background:#59c77a}.logic-port-name{position:absolute;left:-38px;width:30px;text-align:right;transform:translateY(-50%);color:#9aabbc;font-size:10px;font-weight:850;pointer-events:none}.logic-in{left:-7px}.logic-out{right:-7px;top:66px}.logic-node[data-type=input] .logic-in,.logic-node[data-type=input] .logic-port-name{display:none}.logic-node[data-type=output] .logic-out{display:none}.logic-selected{outline:2px solid #f4c25b}.logic-line{stroke:#526072;stroke-width:4;fill:none;pointer-events:stroke;cursor:pointer}.logic-line:hover{stroke:#7fa1c7}.logic-line.is-on{stroke:#59c77a}.logic-line.selected{stroke:#f4c25b;stroke-width:6}.logic-line.pending{stroke:#f4c25b;stroke-dasharray:8 8;pointer-events:none}.logic-inspector input,.logic-inspector select{min-height:38px}.sim-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;border-bottom:1px solid #29313a;padding:8px 0}.sim-row:last-child{border-bottom:0}.switch.mini{width:46px;height:25px;min-height:25px;padding:0;border-radius:999px;background:#343b45;border:0;position:relative;color:transparent}.switch.mini:after{content:"";position:absolute;width:21px;height:21px;left:2px;top:2px;border-radius:50%;background:#fff}.switch.mini.on{background:#31c85a}.switch.mini.on:after{left:23px}.logic-status{min-height:22px;color:#9ba5b1;font-size:12px;margin-top:8px}.logic-note{font-size:12px;color:#9ba5b1;line-height:1.4}@media(max-width:1200px){main{max-width:calc(100vw - 24px)!important;width:calc(100vw - 24px)!important}.logic-top{grid-template-columns:1fr}.logic-workspace{height:720px;min-height:620px}}</style>
+main{max-width:calc(100vw - 48px)!important;width:calc(100vw - 48px)!important}.logic-top{display:grid;grid-template-columns:280px minmax(980px,1fr) 300px;gap:14px;align-items:start}.logic-panel{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:14px}.logic-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.logic-enable{display:inline-flex;align-items:center;gap:8px;min-height:42px;padding:0 12px;border:1px solid #303640;border-radius:8px;background:#10151b;color:#dce5ef;font-weight:800}.logic-enable input{width:18px;height:18px;accent-color:#31c85a}.logic-palette{display:grid;grid-template-columns:1fr 1fr;gap:8px}.logic-palette button{min-height:46px;padding:7px 8px;gap:8px;justify-content:flex-start;align-items:center}.logic-chip{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;background:#0d141b;border:1px solid #355069;color:#64e29a;flex:0 0 32px}.logic-symbol-svg{width:27px;height:27px;display:block;overflow:visible}.logic-workspace{position:relative;height:calc(100vh - 286px);min-height:790px;border:1px solid #303640;background:#11151a;border-radius:8px;overflow:auto}.logic-canvas{position:relative;width:2800px;height:1700px;background:radial-gradient(circle,#303844 1px,transparent 1px);background-size:22px 22px}.logic-svg{position:absolute;left:0;top:0;width:2800px;height:1700px;pointer-events:auto}.logic-node{position:absolute;width:138px;min-height:118px;border:1px solid #3a4552;background:#20262e;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.24);user-select:none;touch-action:none;z-index:2}.logic-node.is-on{border-color:#59c77a;box-shadow:0 0 0 2px rgba(89,199,122,.18),0 8px 22px rgba(0,0,0,.24)}.logic-node.live-on{box-shadow:0 0 0 2px rgba(74,144,217,.28),0 8px 22px rgba(0,0,0,.24)}.logic-node.live-flow-on{border-color:#4a90d9;box-shadow:0 0 0 2px rgba(74,144,217,.28),0 8px 22px rgba(0,0,0,.24)}.logic-node.live-offline{opacity:.72}.logic-node h3{margin:0;padding:7px 34px;border-bottom:1px solid #303844;font-size:13px;min-height:38px;text-align:center}.logic-symbol{position:absolute;left:6px;top:5px;width:28px;height:28px;border-radius:8px;background:#10161d;border:1px solid #3a4552;color:#77dd96;display:flex;align-items:center;justify-content:center}.logic-symbol .logic-symbol-svg{width:25px;height:25px}.logic-node small{display:block;color:#92a0af;font-size:10px;margin-top:1px}.logic-node .body{padding:8px 9px;color:#dce5ef;font-size:12px;line-height:1.2}.logic-live{display:inline-flex;align-items:center;gap:6px;margin-top:7px;padding:4px 7px;border:1px solid #313b46;border-radius:999px;background:#10161d;color:#98a8b8;font-size:11px;font-weight:850}.logic-live-dot{width:8px;height:8px;border-radius:50%;background:#596473}.logic-live.on{border-color:#3d73aa;color:#dcecff}.logic-live.on .logic-live-dot{background:#4a90d9;box-shadow:0 0 10px rgba(74,144,217,.72)}.logic-live.off .logic-live-dot{background:#6a7280}.logic-live.offline{border-color:#65413f;color:#f1b5ae}.logic-live.offline .logic-live-dot{background:#d54a45}.logic-inline-sim{margin-top:7px;display:flex;align-items:center;justify-content:space-between;gap:8px}.logic-port{position:absolute;width:12px;height:12px;border-radius:50%;background:#4a90d9;border:2px solid #cfe6ff;transform:translateY(-50%);cursor:crosshair;z-index:4}.logic-port:hover,.logic-port.hot{background:#59c77a}.logic-port-name{position:absolute;left:-38px;width:30px;text-align:right;transform:translateY(-50%);color:#9aabbc;font-size:10px;font-weight:850;pointer-events:none}.logic-in{left:-7px}.logic-out{right:-7px;top:66px}.logic-node[data-type=input] .logic-in,.logic-node[data-type=input] .logic-port-name{display:none}.logic-node[data-type=output] .logic-out{display:none}.logic-selected{outline:2px solid #f4c25b}.logic-line{stroke:#526072;stroke-width:4;fill:none;pointer-events:stroke;cursor:pointer;stroke-linecap:round;stroke-linejoin:round}.logic-line:hover{stroke:#7fa1c7}.logic-line.is-on{stroke:#59c77a}.logic-line.live-flow-on{stroke:#4a90d9}.logic-line.selected{stroke:#f4c25b;stroke-width:6}.logic-line.pending{stroke:#f4c25b;stroke-dasharray:8 8;pointer-events:none}.logic-inspector input,.logic-inspector select{min-height:38px}.sim-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;border-bottom:1px solid #29313a;padding:8px 0}.sim-row:last-child{border-bottom:0}.switch.mini{width:46px;height:25px;min-height:25px;padding:0;border-radius:999px;background:#343b45;border:0;position:relative;color:transparent}.switch.mini:after{content:"";position:absolute;width:21px;height:21px;left:2px;top:2px;border-radius:50%;background:#fff}.switch.mini.on{background:#31c85a}.switch.mini.on:after{left:23px}.logic-mode-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:18px 0 10px}.logic-mode-label{font-size:12px;font-weight:850;color:#7f8b98}.logic-mode-label.sim.active{color:#59c77a}.logic-mode-label.live.active{color:#69aef2}.switch.mini.logic-mode-switch.on{background:#4a90d9}.logic-mode-status{width:100%;font-size:11px;color:#8996a4}.logic-mode-status.live{color:#9bc9f5}.logic-mode-status.warn{color:#e8bf6b}.logic-status{min-height:22px;color:#9ba5b1;font-size:12px;margin-top:8px}.logic-note{font-size:12px;color:#9ba5b1;line-height:1.4}@media(max-width:1200px){main{max-width:calc(100vw - 24px)!important;width:calc(100vw - 24px)!important}.logic-top{grid-template-columns:1fr}.logic-workspace{height:720px;min-height:620px}}</style>
 <section class="logic-top">
-  <div class="logic-panel"><h2 data-l="blocks">Bausteine</h2><p class="logic-note" data-l="note">Baustein anlegen, Ausgangspunkt halten und auf den Eingang des Zielbausteins ziehen.</p><div class="logic-palette"><button onclick="addNode('input')"><span class="logic-chip">I</span><span data-l="input">Input</span></button><button onclick="addNode('output')"><span class="logic-chip">O</span><span data-l="output">Output</span></button><button class="secondary" onclick="addNode('and')"><span class="logic-chip">&amp;</span><span data-l="and">UND</span></button><button class="secondary" onclick="addNode('or')"><span class="logic-chip">&gt;=1</span><span data-l="or">ODER</span></button><button class="secondary" onclick="addNode('not')"><span class="logic-chip">!</span><span data-l="not">NICHT</span></button><button class="secondary" onclick="addNode('toggle')"><span class="logic-chip">T</span><span data-l="toggle">Toggle</span></button><button class="secondary" onclick="addNode('sr')"><span class="logic-chip">SR</span><span data-l="sr">SR-Latch</span></button><button class="secondary" onclick="addNode('ton')"><span class="logic-chip">TON</span><span>TON</span></button><button class="secondary" onclick="addNode('tof')"><span class="logic-chip">TOFF</span><span>TOFF</span></button><button class="secondary" onclick="addNode('pulse')"><span class="logic-chip">P</span><span data-l="pulse">Pulse</span></button><button class="secondary" onclick="addNode('clock')"><span class="logic-chip">CLK</span><span data-l="clock">Takt</span></button></div><div class="logic-toolbar" style="margin-top:12px"><button onclick="saveGraph()" data-l="save">Speichern</button><button class="secondary" onclick="loadGraph()" data-l="load">Laden</button><button class="secondary" onclick="newLogicDef()" data-l="new">Neu</button><button class="secondary" onclick="resetGraph()" data-l="clear">Leeren</button></div><div id="logic_msg" class="logic-status"></div></div>
+  <div class="logic-panel"><h2 data-l="blocks">Bausteine</h2><p class="logic-note" data-l="note">Baustein anlegen, Ausgangspunkt halten und auf den Eingang des Zielbausteins ziehen.</p><div class="logic-palette"><button onclick="addNode('input')"><span class="logic-chip" data-logic-icon="input"></span><span data-l="input">Input</span></button><button onclick="addNode('output')"><span class="logic-chip" data-logic-icon="output"></span><span data-l="output">Output</span></button><button class="secondary" onclick="addNode('and')"><span class="logic-chip" data-logic-icon="and"></span><span data-l="and">UND</span></button><button class="secondary" onclick="addNode('or')"><span class="logic-chip" data-logic-icon="or"></span><span data-l="or">ODER</span></button><button class="secondary" onclick="addNode('not')"><span class="logic-chip" data-logic-icon="not"></span><span data-l="not">NICHT</span></button><button class="secondary" onclick="addNode('toggle')"><span class="logic-chip" data-logic-icon="toggle"></span><span data-l="toggle">Toggle</span></button><button class="secondary" onclick="addNode('sr')"><span class="logic-chip" data-logic-icon="sr"></span><span data-l="sr">SR / RS</span></button><button class="secondary" onclick="addNode('ton')"><span class="logic-chip" data-logic-icon="ton"></span><span>TON</span></button><button class="secondary" onclick="addNode('tof')"><span class="logic-chip" data-logic-icon="tof"></span><span>TOF</span></button><button class="secondary" onclick="addNode('pulse')"><span class="logic-chip" data-logic-icon="pulse"></span><span data-l="pulse">R_TRIG</span></button><button class="secondary" onclick="addNode('clock')"><span class="logic-chip" data-logic-icon="clock"></span><span data-l="clock">Takt</span></button></div><div class="logic-toolbar" style="margin-top:12px"><button onclick="saveGraph()" data-l="save">Speichern</button><button class="secondary" onclick="loadGraph()" data-l="load">Laden</button><button class="secondary" onclick="newLogicDef()" data-l="new">Neu</button><button class="secondary" onclick="resetGraph()" data-l="clear">Leeren</button></div><div id="logic_msg" class="logic-status"></div></div>
   <div class="logic-panel"><div class="logic-toolbar"><select id="logic_slot" style="max-width:190px" onchange="selectLogicDef(this.value)"></select><input id="logic_name" style="max-width:260px" value="Absaugung Logik"><label class="logic-enable"><input id="logic_enabled" type="checkbox" onchange="editGraphEnabled()"><span data-l="enabledDef">Aktiv</span></label><button class="secondary" onclick="newLogicDef()" data-l="newDef">Neue Definition</button><button class="secondary" onclick="deleteLogicDef()" data-l="deleteDef">Definition Löschen</button><button class="secondary" onclick="autoLayout()" data-l="auto">Auto Layout</button><button class="secondary" onclick="deleteSelected()" data-l="delete">Löschen</button></div><div id="logic_workspace" class="logic-workspace"><div id="logic_canvas" class="logic-canvas"><svg id="logic_svg" class="logic-svg"></svg></div></div></div>
-  <div class="logic-panel logic-inspector"><h2 data-l="props">Eigenschaften</h2><label><span data-l="name">Name</span><input id="node_name" oninput="editSelected()"></label><label><span data-l="signal">Signal / Ziel</span><select id="node_signal" onchange="editSelected()"></select></label><label id="node_delay_label"><span id="node_delay_title" data-l="timer">Timer</span><div style="display:grid;grid-template-columns:minmax(0,1fr) 86px;gap:8px"><input id="node_delay" type="number" min="0" max="9999" step="1" oninput="editSelected()"><select id="node_delay_unit" onchange="editSelected()"><option value="1">ms</option><option value="1000">s</option><option value="60000">min</option><option value="3600000">h</option></select></div><div id="node_delay2_row" style="display:none;grid-template-columns:minmax(0,1fr) 86px;gap:8px;margin-top:8px"><input id="node_delay2" type="number" min="0" max="9999" step="1" oninput="editSelected()"><select id="node_delay2_unit" onchange="editSelected()"><option value="1">ms</option><option value="1000">s</option><option value="60000">min</option><option value="3600000">h</option></select></div></label><div class="logic-toolbar"><button class="secondary" onclick="duplicateSelected()" data-l="duplicate">Duplizieren</button><button class="secondary" onclick="clearLinks()" data-l="clearLinks">Verbindungen Löschen</button></div><h2 style="margin-top:18px" data-l="simulation">Simulation</h2><div id="sim_inputs"></div><div id="sim_outputs" style="margin-top:8px"></div></div>
+  <div class="logic-panel logic-inspector"><h2 data-l="props">Eigenschaften</h2><label><span data-l="name">Name</span><input id="node_name" oninput="editSelected()"></label><label><span data-l="signal">Signal / Ziel</span><select id="node_signal" onchange="editSelected()"></select></label><label id="node_latch_row" style="display:none"><span data-l="latchPriority">Priorität</span><select id="node_latch_mode" onchange="editSelected()"><option value="sr" data-l="latchSr">SR – Setzen dominant</option><option value="rs" data-l="latchRs">RS – Rücksetzen dominant</option></select></label><label id="node_delay_label"><span id="node_delay_title" data-l="timer">Timer</span><div style="display:grid;grid-template-columns:minmax(0,1fr) 86px;gap:8px"><input id="node_delay" type="number" min="0" max="9999" step="1" oninput="editSelected()"><select id="node_delay_unit" onchange="editSelected()"><option value="1">ms</option><option value="1000">s</option><option value="60000">min</option><option value="3600000">h</option></select></div><div id="node_delay2_row" style="display:none;grid-template-columns:minmax(0,1fr) 86px;gap:8px;margin-top:8px"><input id="node_delay2" type="number" min="0" max="9999" step="1" oninput="editSelected()"><select id="node_delay2_unit" onchange="editSelected()"><option value="1">ms</option><option value="1000">s</option><option value="60000">min</option><option value="3600000">h</option></select></div></label><div class="logic-toolbar"><button class="secondary" onclick="duplicateSelected()" data-l="duplicate">Duplizieren</button><button class="secondary" onclick="clearLinks()" data-l="clearLinks">Verbindungen Löschen</button></div><div class="logic-mode-row"><span id="logic_mode_sim_label" class="logic-mode-label sim active" data-l="simulation">Simulation</span><button id="logic_mode_switch" class="switch mini logic-mode-switch" type="button" role="switch" aria-checked="false" onclick="toggleLogicViewMode()">.</button><span id="logic_mode_live_label" class="logic-mode-label live" data-l="liveMode">Live</span><div id="logic_mode_status" class="logic-mode-status"></div></div><div id="sim_inputs"></div><div id="sim_outputs" style="margin-top:8px"></div></div>
 </section><script>
 let graph={schema:1,name:'Absaugung Logik',enabled:false,nodes:[],links:[]},sel=null,selLink=null,linkFrom=null,lineDrag=null,drag=null,linkDrag=null,lastTick=performance.now(),currentLogicSlot=-1;try{let qs=new URLSearchParams(location.search);if(qs.has('slot'))currentLogicSlot=Number(qs.get('slot'))}catch(e){}
-let liveState=null;const signals={inputs:[],outputs:[]}, NODE_W=138, NODE_OUT_Y=66;
+let liveState=null,logicRuntimeState=null,logicViewMode='simulation';const signals={inputs:[],outputs:[]}, NODE_W=138, NODE_OUT_Y=66;
 function msg(t){document.getElementById('logic_msg').textContent=t||''}
 function nid(){return 'n'+Math.random().toString(36).slice(2,8)}
 function logicLang(){let s=document.getElementById('lang_sel');return s&&s.value?s.value:(document.documentElement.lang||'de')}
 function logicDe(){return logicLang()!=='en'}
 function t(de,en){return logicDe()?de:en}
-const L={blocks:['Bausteine','Blocks'],note:['Baustein anlegen, Ausgangspunkt halten und auf den Eingang des Zielbausteins ziehen.','Add a block, hold an output point, then drag it to the target input.'],newDef:['Neue Definition','New definition'],deleteDef:['Definition Löschen','Delete definition'],input:['Input','Input'],output:['Output','Output'],and:['UND','AND'],or:['ODER','OR'],not:['NICHT','NOT'],toggle:['Toggle','Toggle'],sr:['RS-Latch','RS latch'],pulse:['Pulse','Pulse'],clock:['Takt','Clock'],onTime:['Ein-Zeit','On time'],offTime:['Aus-Zeit','Off time'],auto:['Auto Layout','Auto layout'],delete:['L\u00f6schen','Delete'],props:['Eigenschaften','Properties'],name:['Name','Name'],signal:['Signal / Ziel','Signal / target'],timer:['Timer','Timer'],duplicate:['Duplizieren','Duplicate'],clearLinks:['Verbindungen l\u00f6schen','Delete links'],simulation:['Simulation','Simulation'],save:['Speichern','Save'],load:['Laden','Load'],new:['Neu','New'],clear:['Leeren','Clear'],enabledDef:['Aktiv','Enabled']};
-function applyLogicLang(){document.querySelectorAll('[data-l]').forEach(e=>{let v=L[e.dataset.l];if(v)e.textContent=logicDe()?v[0]:v[1]})}
-function defaultNames(type){return {input:['Input','Input'],output:['Output','Output'],and:['UND','AND'],or:['ODER','OR'],not:['NICHT','NOT'],toggle:['Toggle','Toggle'],sr:['RS-Latch','RS latch'],ton:['TON','TON'],tof:['TOFF','TOFF'],pulse:['Pulse','Pulse'],clock:['Takt','Clock']}[type]||[]}
-function retitleDefaultNodes(){graph.nodes.forEach(n=>{let d=defaultNames(n.type);if(d.includes(n.name))n.name=labelType(n.type)});let name=document.getElementById('logic_name');if(name&&['Absaugung Logik','Extractor logic'].includes(name.value)){name.value=defaultGraphName();graph.name=name.value}}
+const L={blocks:['Bausteine','Blocks'],note:['Baustein anlegen, Ausgangspunkt halten und auf den Eingang des Zielbausteins ziehen.','Add a block, hold an output point, then drag it to the target input.'],newDef:['Neue Definition','New definition'],deleteDef:['Definition Löschen','Delete definition'],input:['Input','Input'],output:['Output','Output'],and:['UND','AND'],or:['ODER','OR'],not:['NICHT','NOT'],toggle:['Toggle','Toggle'],sr:['SR / RS','SR / RS'],latchPriority:['Priorität','Priority'],latchSr:['SR – Setzen dominant','SR – Set dominant'],latchRs:['RS – Rücksetzen dominant','RS – Reset dominant'],pulse:['R_TRIG','R_TRIG'],clock:['Takt','Clock'],onTime:['Ein-Zeit','On time'],offTime:['Aus-Zeit','Off time'],auto:['Auto Layout','Auto layout'],delete:['L\u00f6schen','Delete'],props:['Eigenschaften','Properties'],name:['Name','Name'],signal:['Signal / Ziel','Signal / target'],timer:['Timer','Timer'],duplicate:['Duplizieren','Duplicate'],clearLinks:['Verbindungen l\u00f6schen','Delete links'],simulation:['Simulation','Simulation'],liveMode:['Live','Live'],save:['Speichern','Save'],load:['Laden','Load'],new:['Neu','New'],clear:['Leeren','Clear'],enabledDef:['Aktiv','Enabled']};
+function applyLogicLang(){document.querySelectorAll('[data-l]').forEach(e=>{let v=L[e.dataset.l];if(v)e.textContent=logicDe()?v[0]:v[1]});syncLogicSymbols()}
+function defaultNames(type){return {input:['Input'],output:['Output'],and:['UND','AND'],or:['ODER','OR'],not:['NICHT','NOT'],toggle:['Toggle'],sr:['RS-Latch','RS latch','SR-Latch','SR latch'],ton:['TON'],tof:['TOFF','TOF'],pulse:['Pulse','R_TRIG'],clock:['Takt','Clock']}[type]||[]}
+function retitleDefaultNodes(){graph.nodes.forEach(n=>{let d=defaultNames(n.type);if(d.includes(n.name))n.name=nodeTypeLabel(n)});let name=document.getElementById('logic_name');if(name&&['Absaugung Logik','Extractor logic'].includes(name.value)){name.value=defaultGraphName();graph.name=name.value}}
 async function refreshLogicLanguage(){await loadSignals();retitleDefaultNodes();applyLogicLang();render();loadLogicDefs()}
 function setupLogicLangSync(){let s=document.getElementById('lang_sel');if(s&&!s.dataset.logicSync){s.dataset.logicSync='1';s.addEventListener('change',()=>setTimeout(refreshLogicLanguage,80))}}
-function labelType(k){return ({input:t('Input','Input'),output:t('Output','Output'),and:t('UND','AND'),or:t('ODER','OR'),not:t('NICHT','NOT'),toggle:t('Toggle','Toggle'),sr:t('RS-Latch','RS latch'),ton:'TON',tof:'TOFF',pulse:t('Pulse','Pulse'),clock:t('Takt','Clock')})[k]||k}
-function symbolType(k){return ({input:'IN',output:'OUT',and:'&',or:'>=1',not:'!',toggle:'T',sr:'RS',ton:'TON',tof:'TOFF',pulse:'^',clock:'CLK'})[k]||'?'}
+function labelType(k){return ({input:t('Input','Input'),output:t('Output','Output'),and:t('UND','AND'),or:t('ODER','OR'),not:t('NICHT','NOT'),toggle:t('Toggle','Toggle'),sr:t('SR-Latch','SR latch'),ton:'TON',tof:'TOF',pulse:'R_TRIG',clock:t('Takt','Clock')})[k]||k}
+function latchMode(n){return n&&n.type==='sr'&&n.latchMode==='rs'?'rs':'sr'}
+function nodeTypeLabel(n){return n&&n.type==='sr'?(latchMode(n)==='rs'?t('RS-Latch','RS latch'):t('SR-Latch','SR latch')):labelType(n?n.type:'')}
+function logicSymbolSvg(k,mode='sr'){let base=(txt,size=9.5)=>`<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="16" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="Arial,sans-serif" font-size="${size}" font-weight="800">${txt}</text></svg>`;if(k==='and')return base('&amp;',13);if(k==='or')return base('≥1',9.5);if(k==='not')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4.5" width="20" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="14" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="Arial,sans-serif" font-size="12" font-weight="800">1</text><line x1="24" y1="16" x2="25.2" y2="16" stroke="currentColor" stroke-width="1.7"/><circle cx="27.6" cy="16" r="2.35" fill="#10161d" stroke="currentColor" stroke-width="1.7"/></svg>`;if(k==='toggle')return base('T',12);if(k==='sr')return base(mode==='rs'?'RS':'SR',9.5);if(k==='ton')return base('TON',7.8);if(k==='tof')return base('TOF',7.8);if(k==='pulse')return base('R_TRIG',5.7);if(k==='clock')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 20v-8h5v8h6v-8h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;if(k==='input')return base('IN',9);if(k==='output')return base('OUT',7.5);return base('?',12)}
+function syncLogicSymbols(){document.querySelectorAll('[data-logic-icon]').forEach(e=>{e.innerHTML=logicSymbolSvg(e.dataset.logicIcon)})}
 function defaultGraphName(){return t('Absaugung Logik','Extractor logic')}
 function emptyGraph(name=defaultGraphName()){return {schema:1,name,enabled:true,nodes:[],links:[]}}function editGraphEnabled(){let e=document.getElementById('logic_enabled');graph.enabled=!!(e&&e.checked)}
-function nodeDefaults(type){let n={id:nid(),type,x:120+graph.nodes.length*28,y:120+graph.nodes.length*24,name:labelType(type),signal:'',delay:1000,delay2:1000,value:false,inputMode:'switch',last:false,mem:false,until:0};if(type==='input')n.signal=signals.inputs[0]?.id||'manual';if(type==='output')n.signal=signals.outputs[0]?.id||'main_output';return n}
+function nodeDefaults(type){let n={id:nid(),type,x:120+graph.nodes.length*28,y:120+graph.nodes.length*24,name:labelType(type),signal:'',delay:1000,delay2:1000,value:false,inputMode:'switch',latchMode:'sr',last:false,mem:false,until:0};if(type==='input')n.signal=signals.inputs[0]?.id||'manual';if(type==='output')n.signal=signals.outputs[0]?.id||'main_output';return n}
 function addNode(type){graph.nodes.push(nodeDefaults(type));sel=graph.nodes[graph.nodes.length-1].id;selLink=null;render()}
 function resetGraph(){if(!confirm(t('Aktuelle Definition wirklich leeren?','Really clear current definition?')))return;graph=emptyGraph(defaultGraphName());sel=null;selLink=null;linkFrom=null;lineDrag=null;drag=null;linkDrag=null;let name=document.getElementById('logic_name');if(name)name.value=graph.name;let en=document.getElementById('logic_enabled');if(en)en.checked=!!graph.enabled;render();applyLogicLang();msg(t('Leere Definition angelegt','Empty definition created'))}function moduleAddr(m){return '0x'+Number(m.addr).toString(16).toUpperCase().padStart(2,'0')}
 function moduleLogicName(m){return (m.display_name||m.name||m.type_name||'Modul')}
@@ -1010,6 +1182,13 @@ function liveSignalInfo(signal){let d=liveState||{};signal=String(signal||'');if
 function liveBadge(n){if(!(n.type==='input'||n.type==='output')||!n.signal||n.signal==='manual'||n.signal.startsWith('extractor:action:'))return '';let info=liveSignalInfo(n.signal),cls=!info.online?'offline':(info.on?'on':'off'),text=!info.online?t('offline','offline'):(info.on?t('live an','live on'):t('live aus','live off'));return `<div class="logic-live ${cls}" data-live="${escHtml(n.id)}"><span class="logic-live-dot"></span><span>${text}</span></div>`}
 function refreshLiveBadges(){document.querySelectorAll('.logic-node').forEach(e=>{let n=graph.nodes.find(x=>x.id===e.dataset.id);if(!n)return;let info=liveSignalInfo(n.signal);e.classList.toggle('live-on',!!(info.known&&info.online&&info.on));e.classList.toggle('live-offline',!!(info.known&&!info.online));let b=e.querySelector('.logic-live');if(!b)return;let cls=!info.online?'offline':(info.on?'on':'off');b.className='logic-live '+cls;let s=b.querySelector('span:last-child');if(s)s.textContent=!info.online?t('offline','offline'):(info.on?t('live an','live on'):t('live aus','live off'))})}
 async function refreshLiveState(){try{let r=await fetch('/state',{cache:'no-store'});liveState=await r.json();refreshLiveBadges()}catch(e){}}
+function runtimeNode(id){if(!logicRuntimeState||Number(logicRuntimeState.slot)!==Number(currentLogicSlot)||!Array.isArray(logicRuntimeState.nodes))return null;return logicRuntimeState.nodes.find(x=>String(x.id)===String(id))||null}
+function runtimeLogicValues(){let vals={};if(!logicRuntimeState||!logicRuntimeState.ready||!logicRuntimeState.used||!logicRuntimeState.enabled||Number(logicRuntimeState.slot)!==Number(currentLogicSlot))return vals;(logicRuntimeState.nodes||[]).forEach(x=>vals[String(x.id)]=!!x.value);return vals}
+function updateLogicModeUi(){let live=logicViewMode==='live',sw=document.getElementById('logic_mode_switch'),sl=document.getElementById('logic_mode_sim_label'),ll=document.getElementById('logic_mode_live_label'),st=document.getElementById('logic_mode_status');if(sw){sw.classList.toggle('on',live);sw.setAttribute('aria-checked',live?'true':'false')}if(sl)sl.classList.toggle('active',!live);if(ll)ll.classList.toggle('active',live);if(st){st.className='logic-mode-status'+(live?' live':'');if(!live)st.textContent=t('Grün = simulierte Logik','Green = simulated logic');else if(!logicRuntimeState||Number(logicRuntimeState.slot)!==Number(currentLogicSlot)){st.className='logic-mode-status warn';st.textContent=t('Live-Daten werden geladen ...','Loading live data ...')}else if(!logicRuntimeState.ready){st.className='logic-mode-status warn';st.textContent=t('Live-Runtime noch nicht bereit','Live runtime not ready')}else if(!logicRuntimeState.used){st.className='logic-mode-status warn';st.textContent=t('Definition noch nicht gespeichert','Definition not saved yet')}else if(!logicRuntimeState.enabled){st.className='logic-mode-status warn';st.textContent=t('Definition ist deaktiviert','Definition is disabled')}else st.textContent=t('Blau = echter Signalfluss des Masters','Blue = actual master signal flow')}}
+async function refreshLogicRuntime(force=false){if(logicViewMode!=='live'&&!force)return;try{let r=await fetch('/logic/runtime?slot='+encodeURIComponent(currentLogicSlot),{cache:'no-store'});if(!r.ok)return;logicRuntimeState=await r.json();updateLogicModeUi();if(logicViewMode==='live')refreshFlowDisplay()}catch(e){}}
+function toggleLogicViewMode(){logicViewMode=logicViewMode==='live'?'simulation':'live';if(logicViewMode==='live'){logicRuntimeState=null;refreshLogicRuntime(true)}lastTick=performance.now();updateLogicModeUi();render()}
+function flowValues(){return logicViewMode==='live'?runtimeLogicValues():evalGraph()}
+function refreshFlowDisplay(){let vals=logicViewMode==='live'?runtimeLogicValues():evalGraph();drawLinks(vals);document.querySelectorAll('.logic-node').forEach(e=>{let n=graph.nodes.find(x=>x.id===e.dataset.id);if(!n)return;let on=!!vals[n.id];e.classList.toggle('is-on',logicViewMode!=='live'&&on);e.classList.toggle('live-flow-on',logicViewMode==='live'&&on)});if(!(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#sim_inputs')))renderSim(vals);refreshLiveBadges();updateLogicModeUi()}
 function extractorActionSignals(){return [{id:'extractor:action:level_next',name:t('Nächste Absaugstufe','Cycle suction level')},{id:'extractor:action:level_previous',name:t('Vorherige Absaugstufe','Previous suction level')},{id:'extractor:action:level_high',name:t('Absaugstufe Hoch','Suction level High')},{id:'extractor:action:level_medium',name:t('Absaugstufe Mittel','Suction level Medium')},{id:'extractor:action:level_low',name:t('Absaugstufe Niedrig','Suction level Low')},{id:'extractor:action:level_custom',name:t('Absaugstufe Benutzer','Suction level Custom')},{id:'extractor:action:power_plus_1',name:t('Benutzerleistung +1 %','Custom power +1%')},{id:'extractor:action:power_minus_1',name:t('Benutzerleistung -1 %','Custom power -1%')},{id:'extractor:action:power_plus_10',name:t('Benutzerleistung +10 %','Custom power +10%')},{id:'extractor:action:power_minus_10',name:t('Benutzerleistung -10 %','Custom power -10%')}]}function baseLogicOutputs(){return [{id:'main_output',name:t('Hauptausgang Absaugung','Main extractor output')},{id:'extractor:continuous',name:t('Dauerlauf','Continuous'),group:t('Absaugung steuern','Control extractor')}]}
 function logicModuleGroup(m){return moduleAddr(m)+' '+moduleLogicName(m)}
 function logicSignalOption(parent,s,current){let o=document.createElement('option');o.value=s.id;o.textContent=s.optionName||s.name;o.selected=current===s.id;parent.appendChild(o)}
@@ -1020,35 +1199,42 @@ async function selectLogicDef(slot){currentLogicSlot=Number(slot||0);await fetch
 async function newLogicDef(){let n=prompt(t('Name der neuen Definition','Name of the new definition'),defaultGraphName());if(!n)return;let r=await fetch('/logic/new?name='+encodeURIComponent(n),{method:'POST',cache:'no-store'});let txt=await r.text();if(!r.ok){alert(txt);return}currentLogicSlot=Number(txt||0);let selEl=document.getElementById('logic_slot');if(selEl)selEl.value=String(currentLogicSlot);await loadLogicDefs(currentLogicSlot);await loadGraph(currentLogicSlot)}
 async function deleteLogicDef(){let slot=selectedLogicSlot();if(!confirm(t('Definition wirklich Löschen?','Really delete definition?')))return;let r=await fetch('/logic/delete?slot='+encodeURIComponent(slot),{method:'POST',cache:'no-store'});let txt=await r.text();if(!r.ok){alert(txt);return}currentLogicSlot=Number(txt||0);await loadLogicDefs(currentLogicSlot);await loadGraph(currentLogicSlot)}
 function escHtml(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function loadGraph(slot=currentLogicSlot){await loadSignals();currentLogicSlot=Number(slot??currentLogicSlot??0);if(!Number.isFinite(currentLogicSlot)||currentLogicSlot<0)currentLogicSlot=0;await loadLogicDefs(currentLogicSlot);try{let r=await fetch('/logic/json?slot='+encodeURIComponent(currentLogicSlot),{cache:'no-store'});graph=await r.json();graph.slot=currentLogicSlot;if(!graph.nodes)graph=emptyGraph(defaultGraphName());graph.nodes.forEach(n=>{if(n.type==='input'&&!n.inputMode)n.inputMode='switch'});graph.links=(graph.links||[]).map(l=>({from:l.from,to:l.to,port:Number(l.port||0)}));let nameEl=document.getElementById('logic_name'),graphName=graph.name||defaultGraphName();if(['Absaugung Logik','Extractor logic'].includes(graphName)){graphName=defaultGraphName();graph.name=graphName}if(nameEl)nameEl.value=graphName;let enEl=document.getElementById('logic_enabled');if(enEl)enEl.checked=!!graph.enabled;let selEl=document.getElementById('logic_slot');if(selEl)selEl.value=String(currentLogicSlot);msg(t('Geladen','Loaded'))}catch(e){graph=emptyGraph(defaultGraphName());let name=document.getElementById('logic_name');if(name)name.value=graph.name;let en=document.getElementById('logic_enabled');if(en)en.checked=!!graph.enabled;msg(t('Neue leere Logik angelegt','New empty logic created'))}render();applyLogicLang()}
-async function saveGraph(){graph.name=document.getElementById('logic_name').value||defaultGraphName();let en=document.getElementById('logic_enabled');graph.enabled=!!(en&&en.checked);currentLogicSlot=selectedLogicSlot();graph.slot=currentLogicSlot;let r=await fetch('/logic/json/save?slot='+encodeURIComponent(currentLogicSlot),{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(graph),cache:'no-store'});let txt=await r.text();msg(r.ok?t('Gespeichert','Saved'):txt);if(!r.ok){alert(txt);return}await loadLogicDefs(currentLogicSlot);await loadGraph(currentLogicSlot)}function inputPorts(type){if(type==='input')return[];if(type==='and'||type==='or')return['A','B','C','D'];if(type==='sr')return['S','R'];if(type==='toggle')return['T','S','R'];return['IN']}
-function inputPortY(type,port){let p=inputPorts(type);if(p.length<=1)return NODE_OUT_Y;if(p.length===2)return 52+port*28;return 39+port*18}
+async function loadGraph(slot=currentLogicSlot){await loadSignals();currentLogicSlot=Number(slot??currentLogicSlot??0);if(!Number.isFinite(currentLogicSlot)||currentLogicSlot<0)currentLogicSlot=0;logicRuntimeState=null;await loadLogicDefs(currentLogicSlot);try{let r=await fetch('/logic/json?slot='+encodeURIComponent(currentLogicSlot),{cache:'no-store'});graph=await r.json();graph.slot=currentLogicSlot;if(!graph.nodes)graph=emptyGraph(defaultGraphName());graph.nodes.forEach(n=>{if(n.type==='input'&&!n.inputMode)n.inputMode='switch';if(n.type==='sr'&&!n.latchMode){n.latchMode='sr';if(n.name==='RS-Latch'||n.name==='RS latch')n.name=labelType('sr')}});graph.links=(graph.links||[]).map(l=>({from:l.from,to:l.to,port:Number(l.port||0)}));let nameEl=document.getElementById('logic_name'),graphName=graph.name||defaultGraphName();if(['Absaugung Logik','Extractor logic'].includes(graphName)){graphName=defaultGraphName();graph.name=graphName}if(nameEl)nameEl.value=graphName;let enEl=document.getElementById('logic_enabled');if(enEl)enEl.checked=!!graph.enabled;let selEl=document.getElementById('logic_slot');if(selEl)selEl.value=String(currentLogicSlot);msg(t('Geladen','Loaded'))}catch(e){graph=emptyGraph(defaultGraphName());let name=document.getElementById('logic_name');if(name)name.value=graph.name;let en=document.getElementById('logic_enabled');if(en)en.checked=!!graph.enabled;msg(t('Neue leere Logik angelegt','New empty logic created'))}render();applyLogicLang();if(logicViewMode==='live')refreshLogicRuntime(true)}
+async function saveGraph(){graph.name=document.getElementById('logic_name').value||defaultGraphName();let en=document.getElementById('logic_enabled');graph.enabled=!!(en&&en.checked);currentLogicSlot=selectedLogicSlot();graph.slot=currentLogicSlot;let r=await fetch('/logic/json/save?slot='+encodeURIComponent(currentLogicSlot),{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(graph),cache:'no-store'});let txt=await r.text();msg(r.ok?t('Gespeichert','Saved'):txt);if(!r.ok){alert(txt);return}await loadLogicDefs(currentLogicSlot);await loadGraph(currentLogicSlot)}function inputPorts(type,n=null){if(type==='input')return[];if(type==='and'||type==='or')return['A','B','C','D'];if(type==='sr')return n&&latchMode(n)==='rs'?['S','R1']:['S1','R'];if(type==='toggle')return['T','S','R'];return['IN']}
+function inputPortY(type,port,n=null){let p=inputPorts(type,n);if(p.length<=1)return NODE_OUT_Y;if(p.length===2)return 52+port*28;return 39+port*18}
 function linksTo(id,port){return graph.links.filter(l=>l.to===id&&Number(l.port||0)===port)}
 function portValue(n,values,port){return linksTo(n.id,port).some(l=>!!values[l.from])}
 function linkedValues(n,values){return graph.links.filter(l=>l.to===n.id).map(l=>!!values[l.from])}
-function evalGraph(){let now=performance.now(),dt=Math.min(500,now-lastTick);lastTick=now;let values={};for(let pass=0;pass<8;pass++){graph.nodes.forEach(n=>{let linked=linkedValues(n,values),p0=portValue(n,values,0),p1=portValue(n,values,1),v=false;if(n.type==='input')v=!!n.value;else if(n.type==='and')v=linked.length?linked.every(Boolean):false;else if(n.type==='or')v=linked.some(Boolean);else if(n.type==='not')v=linked.length?!p0:false;else if(n.type==='toggle'){let p2=portValue(n,values,2);if(p2)n.mem=false;else if(p1)n.mem=true;else if(p0&&!n.last)n.mem=!n.mem;n.last=!!p0;v=n.mem}else if(n.type==='sr'){if(p1)n.mem=false;if(p0)n.mem=true;v=n.mem}else if(n.type==='ton'){if(p0){if(pass===7)n.until=(n.until||0)+dt;v=(n.until||0)>=Number(n.delay||0)}else{if(pass===7)n.until=0;v=false}}else if(n.type==='tof'){if(p0){if(pass===7)n.until=Number(n.delay||0);v=true}else{if(pass===7)n.until=Math.max(0,(n.until||0)-dt);v=(n.until||0)>0}}else if(n.type==='pulse'){v=p0&&!n.last;if(pass===7)n.last=!!p0}else if(n.type==='clock'){let on=Math.max(1,Number(n.delay||1000)),off=Math.max(1,Number(n.delay2||on));if(!p0){if(pass===7){n.mem=false;n.last=false;n.until=0}v=false}else{if(pass===7){if(!n.last){n.mem=true;n.until=0}else{n.until=(n.until||0)+dt;for(let guard=0;guard<8;guard++){let phase=n.mem?on:off;if((n.until||0)<phase)break;n.until-=phase;n.mem=!n.mem}}n.last=true}v=!!n.mem}}else if(n.type==='output')v=!!p0;values[n.id]=v})}return values}
-function portPoint(n,out,port=0){return {x:n.x+(out?NODE_W:0),y:n.y+(out?NODE_OUT_Y:inputPortY(n.type,port))}}
+function evalGraph(){let now=performance.now(),dt=Math.min(500,now-lastTick);lastTick=now;let values={};for(let pass=0;pass<8;pass++){graph.nodes.forEach(n=>{let linked=linkedValues(n,values),p0=portValue(n,values,0),p1=portValue(n,values,1),v=false;if(n.type==='input')v=!!n.value;else if(n.type==='and')v=linked.length?linked.every(Boolean):false;else if(n.type==='or')v=linked.some(Boolean);else if(n.type==='not')v=linked.length?!p0:false;else if(n.type==='toggle'){let p2=portValue(n,values,2);if(p2)n.mem=false;else if(p1)n.mem=true;else if(p0&&!n.last)n.mem=!n.mem;n.last=!!p0;v=n.mem}else if(n.type==='sr'){if(latchMode(n)==='rs'){if(p0)n.mem=true;if(p1)n.mem=false}else{if(p1)n.mem=false;if(p0)n.mem=true}v=n.mem}else if(n.type==='ton'){if(p0){if(pass===7)n.until=(n.until||0)+dt;v=(n.until||0)>=Number(n.delay||0)}else{if(pass===7)n.until=0;v=false}}else if(n.type==='tof'){if(p0){if(pass===7)n.until=Number(n.delay||0);v=true}else{if(pass===7)n.until=Math.max(0,(n.until||0)-dt);v=(n.until||0)>0}}else if(n.type==='pulse'){v=p0&&!n.last;if(pass===7)n.last=!!p0}else if(n.type==='clock'){let on=Math.max(1,Number(n.delay||1000)),off=Math.max(1,Number(n.delay2||on));if(!p0){if(pass===7){n.mem=false;n.last=false;n.until=0}v=false}else{if(pass===7){if(!n.last){n.mem=true;n.until=0}else{n.until=(n.until||0)+dt;for(let guard=0;guard<8;guard++){let phase=n.mem?on:off;if((n.until||0)<phase)break;n.until-=phase;n.mem=!n.mem}}n.last=true}v=!!n.mem}}else if(n.type==='output')v=!!p0;values[n.id]=v})}return values}
+function portPoint(n,out,port=0){return {x:n.x+(out?NODE_W:0),y:n.y+(out?NODE_OUT_Y:inputPortY(n.type,port,n))}}
 function screenToCanvas(ev){let c=document.getElementById('logic_canvas'),r=c.getBoundingClientRect();return{x:ev.clientX-r.left,y:ev.clientY-r.top}}
-function addLink(from,to,port){if(!from||!to||from===to)return;port=Number(port||0);graph.links=graph.links.filter(l=>!(l.from===from&&l.to===to&&Number(l.port||0)===port));graph.links.push({from,to,port});msg(t('Verbunden mit ','Connected to ')+(inputPorts(graph.nodes.find(n=>n.id===to)?.type||'')[port]||'IN'))}
+function addLink(from,to,port){if(!from||!to||from===to)return;port=Number(port||0);graph.links=graph.links.filter(l=>!(l.from===from&&l.to===to&&Number(l.port||0)===port));graph.links.push({from,to,port});let tn=graph.nodes.find(n=>n.id===to);msg(t('Verbunden mit ','Connected to ')+(inputPorts(tn?.type||'',tn)[port]||'IN'))}
 function startLink(id,out,port=0){linkFrom={id,out:!!out,port:Number(port||0)};linkDrag=null;msg(t('Verbindung ziehen...','Drag link...'));drawLinks()}
 function finishLink(n,isOut,port=0){if(!linkFrom)return;port=Number(port||0);if(linkFrom.out&&!isOut)addLink(linkFrom.id,n.id,port);else if(!linkFrom.out&&isOut)addLink(n.id,linkFrom.id,linkFrom.port);linkFrom=null;linkDrag=null;render()}
 function connectTo(n,port){finishLink(n,false,port)}
-function inlineInputControl(n){let mode=n.inputMode||'switch';if(mode==='button')return `<button class="secondary" onpointerdown="pressInput('${n.id}')" onpointerup="releaseInput('${n.id}')" onpointerleave="releaseInput('${n.id}')">${t('Taster','Button')}</button>`;return `<button class="switch mini ${n.value?'on':''}" onclick="toggleInput('${n.id}')">.</button>`}
-function nodeBody(n){let txt=signalName(n)+timerText(n)+liveBadge(n);if(n.type==='input')txt+=`<div class="logic-inline-sim"><span>${(n.inputMode||'switch')==='button'?t('Taster','Button'):t('Schalter','Switch')}</span>${inlineInputControl(n)}</div>`;return txt}
-function render(){let c=document.getElementById('logic_canvas');c.querySelectorAll('.logic-node').forEach(e=>e.remove());let vals=evalGraph();graph.nodes.forEach(n=>{let live=liveSignalInfo(n.signal);let e=document.createElement('div');e.className='logic-node '+(vals[n.id]?'is-on ':'')+(live.known&&live.online&&live.on?'live-on ':'')+(live.known&&!live.online?'live-offline ':'')+(sel===n.id?'logic-selected':'');e.dataset.type=n.type;e.dataset.id=n.id;e.style.left=n.x+'px';e.style.top=n.y+'px';let ports=inputPorts(n.type);let showPinName=ports.length>1;let pins=ports.map((p,i)=>`<span class="logic-port logic-in" data-port="${i}" title="${p}" style="top:${inputPortY(n.type,i)}px"></span>${showPinName?`<span class="logic-port-name" style="top:${inputPortY(n.type,i)}px">${p}</span>`:''}`).join('');let out=n.type==='output'?'':`<span class="logic-port logic-out" title="Output"></span>`;e.innerHTML=`<span class="logic-symbol">${symbolType(n.type)}</span>${pins}${out}<h3>${nodeTitle(n)}<small>${labelType(n.type)}</small></h3><div class="body">${nodeBody(n)}</div>`;e.addEventListener('pointerdown',ev=>{if(ev.target.classList.contains('logic-port')||ev.target.closest('button,select,input'))return;sel=n.id;selLink=null;drag={id:n.id,dx:ev.clientX-n.x,dy:ev.clientY-n.y};e.setPointerCapture(ev.pointerId);markSelected();renderInspector();ev.preventDefault()});e.addEventListener('pointermove',ev=>{if(!drag||drag.id!==n.id)return;n.x=Math.max(0,Math.min(2600,ev.clientX-drag.dx));n.y=Math.max(0,Math.min(1580,ev.clientY-drag.dy));e.style.left=n.x+'px';e.style.top=n.y+'px';drawLinks()});e.addEventListener('pointerup',()=>{drag=null;renderInspector()});let outPort=e.querySelector('.logic-out');if(outPort){outPort.onpointerdown=ev=>{ev.stopPropagation();ev.preventDefault();startLink(n.id,true,0);linkDrag=screenToCanvas(ev)};outPort.onpointerup=ev=>{ev.stopPropagation();finishLink(n,true,0)}}e.querySelectorAll('.logic-in').forEach(pin=>{pin.onpointerdown=ev=>{ev.stopPropagation();ev.preventDefault();startLink(n.id,false,Number(pin.dataset.port||0));linkDrag=screenToCanvas(ev)};pin.onpointerup=ev=>{ev.stopPropagation();finishLink(n,false,Number(pin.dataset.port||0))};pin.onclick=ev=>{ev.stopPropagation();if(linkFrom)finishLink(n,false,Number(pin.dataset.port||0));else{sel=n.id;selLink=null;markSelected();renderInspector()}}});c.appendChild(e)});drawLinks(vals);renderInspector();renderSim(vals)}function markSelected(){document.querySelectorAll('.logic-node').forEach(e=>e.classList.toggle('logic-selected',e.dataset.id===sel))}
-function drawLinks(vals={}){let svg=document.getElementById('logic_svg');if(!svg)return;svg.innerHTML='';graph.links.forEach((l,i)=>{let a=graph.nodes.find(n=>n.id===l.from),b=graph.nodes.find(n=>n.id===l.to);if(!a||!b)return;let p1=portPoint(a,true,0),p2=portPoint(b,false,Number(l.port||0));let path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',routePath(p1,p2,i,a.id,b.id));path.setAttribute('class','logic-line '+(vals[l.from]?'is-on ':'')+(selLink===i?'selected':''));path.onpointerdown=ev=>{ev.stopPropagation();sel=null;selLink=i;lineDrag={from:l.from,to:l.to,port:Number(l.port||0),clientX:ev.clientX,clientY:ev.clientY};renderInspector();drawLinks(vals)};svg.appendChild(path)});if(linkFrom&&linkDrag){let n=graph.nodes.find(x=>x.id===linkFrom.id);if(n){let p1=portPoint(n,linkFrom.out,linkFrom.port),p2=linkDrag;if(!linkFrom.out){let t=p1;p1=p2;p2=t}let path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',previewPath(p1,p2));path.setAttribute('class','logic-line pending');svg.appendChild(path)}}}function nodeRect(n){let h=Math.max(116,Number(n.h||116));return {l:n.x-22,r:n.x+NODE_W+22,t:n.y-18,b:n.y+h+18}}
+function inlineInputControl(n){if(logicViewMode==='live')return '';let mode=n.inputMode||'switch';if(mode==='button')return `<button class="secondary" onpointerdown="pressInput('${n.id}')" onpointerup="releaseInput('${n.id}')" onpointerleave="releaseInput('${n.id}')">${t('Taster','Button')}</button>`;return `<button class="switch mini ${n.value?'on':''}" onclick="toggleInput('${n.id}')">.</button>`}
+function liveTimerText(n){let r=runtimeNode(n.id);if(!r)return n.type==='clock'?'<br>'+t('Ein','On')+': '+delayTextValue(n.delay||1000)+'<br>'+t('Aus','Off')+': '+delayTextValue(n.delay2||n.delay||1000):((n.type==='ton'||n.type==='tof')?'<br>'+t('Zeit','Time')+': '+delayText(n):'');if(n.type==='ton'){let ms=Number(n.delay||0),u=bestDelayUnit(ms),remain=Math.max(0,ms-Number(r.timer_ms||0));return '<br>'+t('Zeit','Time')+': '+delayText(n)+'<br>'+t('Rest','Remaining')+': '+Math.ceil(remain/u)+' '+delayUnitName(u)}if(n.type==='tof'){let ms=Number(n.delay||0),u=bestDelayUnit(ms),remain=Math.max(0,Number(r.timer_ms||0));return '<br>'+t('Zeit','Time')+': '+delayText(n)+'<br>'+t('Rest','Remaining')+': '+Math.ceil(remain/u)+' '+delayUnitName(u)}if(n.type==='clock'){let on=Math.max(1,Number(n.delay||1000)),off=Math.max(1,Number(n.delay2||on)),phase=r.mem?on:off,u=bestDelayUnit(phase),remain=Math.max(0,phase-Number(r.timer_ms||0));return '<br>'+t('Ein','On')+': '+delayTextValue(on)+'<br>'+t('Aus','Off')+': '+delayTextValue(off)+'<br>'+t('Rest','Remaining')+': '+(r.mem?t('an','on'):t('aus','off'))+' / '+Math.ceil(remain/u)+' '+delayUnitName(u)}return ''}
+function nodeBody(n){let txt=signalName(n)+(logicViewMode==='live'?liveTimerText(n):timerText(n))+liveBadge(n);if(n.type==='input'&&logicViewMode!=='live')txt+=`<div class="logic-inline-sim"><span>${(n.inputMode||'switch')==='button'?t('Taster','Button'):t('Schalter','Switch')}</span>${inlineInputControl(n)}</div>`;return txt}
+function render(){let c=document.getElementById('logic_canvas');c.querySelectorAll('.logic-node').forEach(e=>e.remove());let vals=flowValues();graph.nodes.forEach(n=>{let live=liveSignalInfo(n.signal),flowOn=!!vals[n.id];let e=document.createElement('div');e.className='logic-node '+(logicViewMode!=='live'&&flowOn?'is-on ':'')+(logicViewMode==='live'&&flowOn?'live-flow-on ':'')+(live.known&&live.online&&live.on?'live-on ':'')+(live.known&&!live.online?'live-offline ':'')+(sel===n.id?'logic-selected':'');e.dataset.type=n.type;e.dataset.id=n.id;e.style.left=n.x+'px';e.style.top=n.y+'px';let ports=inputPorts(n.type,n);let showPinName=ports.length>1;let pins=ports.map((p,i)=>`<span class="logic-port logic-in" data-port="${i}" title="${p}" style="top:${inputPortY(n.type,i,n)}px"></span>${showPinName?`<span class="logic-port-name" style="top:${inputPortY(n.type,i,n)}px">${p}</span>`:''}`).join('');let out=n.type==='output'?'':`<span class="logic-port logic-out" title="Output"></span>`;e.innerHTML=`<span class="logic-symbol">${logicSymbolSvg(n.type,latchMode(n))}</span>${pins}${out}<h3>${nodeTitle(n)}<small>${nodeTypeLabel(n)}</small></h3><div class="body">${nodeBody(n)}</div>`;e.addEventListener('pointerdown',ev=>{if(ev.target.classList.contains('logic-port')||ev.target.closest('button,select,input'))return;sel=n.id;selLink=null;drag={id:n.id,dx:ev.clientX-n.x,dy:ev.clientY-n.y};e.setPointerCapture(ev.pointerId);markSelected();renderInspector();ev.preventDefault()});e.addEventListener('pointermove',ev=>{if(!drag||drag.id!==n.id)return;n.x=Math.max(0,Math.min(2600,ev.clientX-drag.dx));n.y=Math.max(0,Math.min(1580,ev.clientY-drag.dy));e.style.left=n.x+'px';e.style.top=n.y+'px';drawLinks()});e.addEventListener('pointerup',()=>{drag=null;renderInspector()});let outPort=e.querySelector('.logic-out');if(outPort){outPort.onpointerdown=ev=>{ev.stopPropagation();ev.preventDefault();startLink(n.id,true,0);linkDrag=screenToCanvas(ev)};outPort.onpointerup=ev=>{ev.stopPropagation();finishLink(n,true,0)}}e.querySelectorAll('.logic-in').forEach(pin=>{pin.onpointerdown=ev=>{ev.stopPropagation();ev.preventDefault();startLink(n.id,false,Number(pin.dataset.port||0));linkDrag=screenToCanvas(ev)};pin.onpointerup=ev=>{ev.stopPropagation();finishLink(n,false,Number(pin.dataset.port||0))};pin.onclick=ev=>{ev.stopPropagation();if(linkFrom)finishLink(n,false,Number(pin.dataset.port||0));else{sel=n.id;selLink=null;markSelected();renderInspector()}}});c.appendChild(e)});drawLinks(vals);renderInspector();renderSim(vals);updateLogicModeUi()}function markSelected(){document.querySelectorAll('.logic-node').forEach(e=>e.classList.toggle('logic-selected',e.dataset.id===sel))}
+function drawLinks(vals={}){let svg=document.getElementById('logic_svg');if(!svg)return;svg.innerHTML='';let routed=[];graph.links.forEach((l,i)=>{let a=graph.nodes.find(n=>n.id===l.from),b=graph.nodes.find(n=>n.id===l.to);if(!a||!b)return;let p1=portPoint(a,true,0),p2=portPoint(b,false,Number(l.port||0)),points=routePoints(p1,p2,i,a.id,b.id,routed);let path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',pathD(points));path.setAttribute('class','logic-line '+(vals[l.from]?(logicViewMode==='live'?'live-flow-on ':'is-on '):'')+(selLink===i?'selected':''));path.onpointerdown=ev=>{ev.stopPropagation();sel=null;selLink=i;lineDrag={from:l.from,to:l.to,port:Number(l.port||0),clientX:ev.clientX,clientY:ev.clientY};renderInspector();drawLinks(vals)};svg.appendChild(path);routed.push({points,fromId:a.id,toId:b.id})});if(linkFrom&&linkDrag){let n=graph.nodes.find(x=>x.id===linkFrom.id);if(n){let p1=portPoint(n,linkFrom.out,linkFrom.port),p2=linkDrag;if(!linkFrom.out){let t=p1;p1=p2;p2=t}let path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',previewPath(p1,p2));path.setAttribute('class','logic-line pending');svg.appendChild(path)}}}function nodeRect(n){let h=Math.max(116,Number(n.h||116));return {l:n.x-22,r:n.x+NODE_W+22,t:n.y-18,b:n.y+h+18}}
 function segCrossRect(a,b,r){let pad=2;if(Math.abs(a.y-b.y)<0.1){let x1=Math.min(a.x,b.x),x2=Math.max(a.x,b.x);return a.y>=r.t-pad&&a.y<=r.b+pad&&x2>=r.l-pad&&x1<=r.r+pad}if(Math.abs(a.x-b.x)<0.1){let y1=Math.min(a.y,b.y),y2=Math.max(a.y,b.y);return a.x>=r.l-pad&&a.x<=r.r+pad&&y2>=r.t-pad&&y1<=r.b+pad}return false}
 function pathClear(points,fromId,toId){let last=points.length-2;for(let i=0;i<points.length-1;i++){for(let n of graph.nodes){let endpoint=(n.id===fromId||n.id===toId);if(endpoint&&((n.id===fromId&&i===0)||(n.id===toId&&i===last)))continue;if(segCrossRect(points[i],points[i+1],nodeRect(n)))return false}}return true}
 function cleanPts(pts){let out=[];pts.forEach(p=>{let q={x:Math.round(p.x),y:Math.round(p.y)};let last=out[out.length-1];if(!last||last.x!==q.x||last.y!==q.y)out.push(q)});return out}
 function simplifyPts(pts){pts=cleanPts(pts);let changed=true;while(changed){changed=false;for(let i=1;i<pts.length-1;i++){let a=pts[i-1],b=pts[i],c=pts[i+1];if((a.x===b.x&&b.x===c.x)||(a.y===b.y&&b.y===c.y)){pts.splice(i,1);changed=true;break}}}return pts}
-function scorePath(pts){pts=simplifyPts(pts);let bends=Math.max(0,pts.length-2),len=0;for(let i=1;i<pts.length;i++)len+=Math.abs(pts[i].x-pts[i-1].x)+Math.abs(pts[i].y-pts[i-1].y);let drift=pts.length?Math.abs(pts[0].y-pts[pts.length-1].y):0;return bends*12000+len+drift}
+function basePathScore(pts){pts=simplifyPts(pts);let bends=Math.max(0,pts.length-2),len=0;for(let i=1;i<pts.length;i++)len+=Math.abs(pts[i].x-pts[i-1].x)+Math.abs(pts[i].y-pts[i-1].y);let drift=pts.length?Math.abs(pts[0].y-pts[pts.length-1].y):0;return bends*12000+len+drift}
+function segInfo(a,b){return {a,b,h:Math.abs(a.y-b.y)<0.1,v:Math.abs(a.x-b.x)<0.1}}
+function overlap1d(a1,a2,b1,b2){return Math.max(0,Math.min(Math.max(a1,a2),Math.max(b1,b2))-Math.max(Math.min(a1,a2),Math.min(b1,b2)))}
+function pointNearEndpoint(x,y,s,pad=5){return (Math.abs(x-s.a.x)<=pad&&Math.abs(y-s.a.y)<=pad)||(Math.abs(x-s.b.x)<=pad&&Math.abs(y-s.b.y)<=pad)}
+function routeInteractionPenalty(pts,routed,fromId,toId){pts=simplifyPts(pts);let segs=[];for(let i=1;i<pts.length;i++)segs.push(segInfo(pts[i-1],pts[i]));let penalty=0;for(let route of (routed||[])){let rp=simplifyPts(route.points||[]),rsegs=[];for(let j=1;j<rp.length;j++)rsegs.push(segInfo(rp[j-1],rp[j]));for(let i=0;i<segs.length;i++){let a=segs[i];for(let j=0;j<rsegs.length;j++){let b=rsegs[j];if(a.h&&b.h){let ov=overlap1d(a.a.x,a.b.x,b.a.x,b.b.x),dy=Math.abs(a.a.y-b.a.y);if(ov>6&&dy<1){let shared=(route.fromId===fromId&&i===0&&j===0)||(route.toId===toId&&i===segs.length-1&&j===rsegs.length-1);if(!shared)penalty+=26000+ov*85}else if(ov>20&&dy>0&&dy<18)penalty+=2500+ov*18}else if(a.v&&b.v){let ov=overlap1d(a.a.y,a.b.y,b.a.y,b.b.y),dx=Math.abs(a.a.x-b.a.x);if(ov>6&&dx<1){let shared=(route.fromId===fromId&&i===0&&j===0)||(route.toId===toId&&i===segs.length-1&&j===rsegs.length-1);if(!shared)penalty+=26000+ov*85}else if(ov>20&&dx>0&&dx<18)penalty+=2500+ov*18}else if((a.h&&b.v)||(a.v&&b.h)){let h=a.h?a:b,v=a.v?a:b,x=v.a.x,y=h.a.y;if(x>=Math.min(h.a.x,h.b.x)-1&&x<=Math.max(h.a.x,h.b.x)+1&&y>=Math.min(v.a.y,v.b.y)-1&&y<=Math.max(v.a.y,v.b.y)+1){let sharedNode=(route.fromId===fromId||route.toId===toId||route.fromId===toId||route.toId===fromId),endpointTouch=pointNearEndpoint(x,y,a)&&pointNearEndpoint(x,y,b);if(!(sharedNode&&endpointTouch))penalty+=72000}}}}}return penalty}
+function scorePath(pts,routed=[],fromId='',toId=''){return basePathScore(pts)+routeInteractionPenalty(pts,routed,fromId,toId)}
 function pathD(points){points=simplifyPts(points);return 'M'+points.map((p,i)=>(i?`L${p.x},${p.y}`:`${p.x},${p.y}`)).join(' ')}
 function previewPath(p1,p2){let lead=p1.x+44,near=p2.x-34,mid=(lead+near)/2;return pathD([{x:p1.x,y:p1.y},{x:lead,y:p1.y},{x:mid,y:p1.y},{x:mid,y:p2.y},{x:p2.x,y:p2.y}])}
-function uniqNums(a){let out=[];a.forEach(v=>{v=Math.round(v);if(v>=12&&v<=1688&&!out.some(x=>Math.abs(x-v)<8))out.push(v)});return out}
-function routeCandidates(p1,p2,i){let sx=p1.x,sy=p1.y,tx=p2.x,ty=p2.y;let sxLead=sx+44;let txLead=Math.max(16,tx-48);let rects=graph.nodes.map(nodeRect);let ys=[sy,ty,(sy+ty)/2,Math.min(sy,ty)-64,Math.max(sy,ty)+64];rects.forEach(r=>{ys.push(r.t-30,r.b+30)});ys=uniqNums(ys);ys.sort((a,b)=>Math.abs(a-(sy+ty)/2)-Math.abs(b-(sy+ty)/2));let xs=[sxLead,txLead,(sxLead+txLead)/2,Math.max(sxLead,txLead)+92+(i%8)*24,Math.max(sxLead,txLead)+180+(i%8)*28,Math.max(16,Math.min(sxLead,txLead)-92-(i%8)*24)];rects.forEach(r=>{xs.push(r.l-32,r.r+32)});xs=uniqNums(xs);xs.sort((a,b)=>Math.abs(a-(sxLead+txLead)/2)-Math.abs(b-(sxLead+txLead)/2));let c=[];ys.forEach(y=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:ty},{x:tx,y:ty}])));xs.forEach(x=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:x,y:sy},{x:x,y:ty},{x:txLead,y:ty},{x:tx,y:ty}])));ys.slice(0,10).forEach(y=>xs.slice(0,10).forEach(x=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:sxLead,y:y},{x:x,y:y},{x:x,y:ty},{x:txLead,y:ty},{x:tx,y:ty}]))));return c}
-function routePath(p1,p2,i=0,fromId='',toId=''){let candidates=routeCandidates(p1,p2,i).filter(pts=>pathClear(pts,fromId,toId));if(candidates.length){candidates.sort((a,b)=>scorePath(a)-scorePath(b));return pathD(candidates[0])}let rects=graph.nodes.map(nodeRect),minY=18,maxY=1680;rects.forEach(r=>{minY=Math.min(minY,r.t-50);maxY=Math.max(maxY,r.b+50)});let txLead=Math.max(16,p2.x-48),sxLead=p1.x+44;let rescue=[Math.max(18,minY),Math.min(1680,maxY),Math.max(18,Math.min(p1.y,p2.y)-140),Math.min(1680,Math.max(p1.y,p2.y)+140)].map(y=>cleanPts([{x:p1.x,y:p1.y},{x:sxLead,y:p1.y},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:p2.y},{x:p2.x,y:p2.y}])).filter(pts=>pathClear(pts,fromId,toId));if(rescue.length){rescue.sort((a,b)=>scorePath(a)-scorePath(b));return pathD(rescue[0])}let y=Math.max(18,Math.min(p1.y,p2.y)-140-(i%10)*30);let pts=cleanPts([{x:p1.x,y:p1.y},{x:sxLead,y:p1.y},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:p2.y},{x:p2.x,y:p2.y}]);return pathD(pts)}function blockIndex(n,type){return graph.nodes.filter(x=>x.type===type).findIndex(x=>x.id===n.id)+1}
+function uniqNums(a,max=1688){let out=[];a.forEach(v=>{v=Math.round(v);if(v>=12&&v<=max&&!out.some(x=>Math.abs(x-v)<8))out.push(v)});return out}
+function routeCandidates(p1,p2,i){let sx=p1.x,sy=p1.y,tx=p2.x,ty=p2.y;let sxLead=sx+44,txLead=Math.max(16,tx-48),midY=(sy+ty)/2,midX=(sxLead+txLead)/2,lane=((i%7)-3)*18;let rects=graph.nodes.map(nodeRect);let ys=[sy,ty,midY,midY+lane,Math.min(sy,ty)-64,Math.max(sy,ty)+64,sy-36,sy+36,ty-36,ty+36];rects.forEach(r=>{ys.push(r.t-30,r.b+30,r.t-48,r.b+48)});ys=uniqNums(ys,1688);ys.sort((a,b)=>Math.abs(a-midY)-Math.abs(b-midY));let xs=[sxLead,txLead,midX,midX+lane,Math.max(sxLead,txLead)+92+(i%8)*24,Math.max(sxLead,txLead)+180+(i%8)*28,Math.max(16,Math.min(sxLead,txLead)-92-(i%8)*24)];rects.forEach(r=>{xs.push(r.l-32,r.r+32,r.l-50,r.r+50)});xs=uniqNums(xs,2788);xs.sort((a,b)=>Math.abs(a-midX)-Math.abs(b-midX));let c=[];ys.forEach(y=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:ty},{x:tx,y:ty}])));xs.forEach(x=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:x,y:sy},{x:x,y:ty},{x:txLead,y:ty},{x:tx,y:ty}])));ys.slice(0,14).forEach(y=>xs.slice(0,14).forEach(x=>c.push(cleanPts([{x:sx,y:sy},{x:sxLead,y:sy},{x:sxLead,y:y},{x:x,y:y},{x:x,y:ty},{x:txLead,y:ty},{x:tx,y:ty}]))));return c}
+function routePoints(p1,p2,i=0,fromId='',toId='',routed=[]){let candidates=routeCandidates(p1,p2,i).filter(pts=>pathClear(pts,fromId,toId));if(candidates.length){let scored=candidates.map(pts=>({pts,score:scorePath(pts,routed,fromId,toId)}));scored.sort((a,b)=>a.score-b.score);return simplifyPts(scored[0].pts)}let rects=graph.nodes.map(nodeRect),minY=18,maxY=1680;rects.forEach(r=>{minY=Math.min(minY,r.t-50);maxY=Math.max(maxY,r.b+50)});let txLead=Math.max(16,p2.x-48),sxLead=p1.x+44;let rescue=[Math.max(18,minY),Math.min(1680,maxY),Math.max(18,Math.min(p1.y,p2.y)-140),Math.min(1680,Math.max(p1.y,p2.y)+140)].map(y=>cleanPts([{x:p1.x,y:p1.y},{x:sxLead,y:p1.y},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:p2.y},{x:p2.x,y:p2.y}])).filter(pts=>pathClear(pts,fromId,toId));if(rescue.length){let scored=rescue.map(pts=>({pts,score:scorePath(pts,routed,fromId,toId)}));scored.sort((a,b)=>a.score-b.score);return simplifyPts(scored[0].pts)}let y=Math.max(18,Math.min(p1.y,p2.y)-140-(i%10)*30);return simplifyPts(cleanPts([{x:p1.x,y:p1.y},{x:sxLead,y:p1.y},{x:sxLead,y:y},{x:txLead,y:y},{x:txLead,y:p2.y},{x:p2.x,y:p2.y}]))}
+function routePath(p1,p2,i=0,fromId='',toId='',routed=[]){return pathD(routePoints(p1,p2,i,fromId,toId,routed))}function blockIndex(n,type){return graph.nodes.filter(x=>x.type===type).findIndex(x=>x.id===n.id)+1}
 function nodeNo(n){return n.type==='input'?'I'+blockIndex(n,'input'):(n.type==='output'?'O'+blockIndex(n,'output'):'')}
-function nodeTitle(n){let no=nodeNo(n);let name=n.name||labelType(n.type);return no?no+' '+name:name}function signalName(n){let list=n.type==='input'?signals.inputs:(n.type==='output'?signals.outputs:[]);let s=list.find(x=>x.id===n.signal);return s?s.name:''}
+function nodeTitle(n){let no=nodeNo(n);let name=n.name||nodeTypeLabel(n);return no?no+' '+name:name}function signalName(n){let list=n.type==='input'?signals.inputs:(n.type==='output'?signals.outputs:[]);let s=list.find(x=>x.id===n.signal);return s?s.name:''}
 function bestDelayUnit(ms){ms=Number(ms||0);if(ms&&ms%3600000===0)return 3600000;if(ms&&ms%60000===0)return 60000;if(ms&&ms%1000===0)return 1000;return 1}
 function delayUnitName(u){return u===3600000?'h':(u===60000?'min':(u===1000?'s':'ms'))}
 function delayTextValue(ms){let u=bestDelayUnit(ms);return (Number(ms||0)/u)+' '+delayUnitName(u)}
@@ -1056,12 +1242,12 @@ function delayText(n){return delayTextValue(n.delay||0)}
 function runtimeText(n){let ms=Number(n.delay||0),u=bestDelayUnit(ms),raw=n.type==='ton'?Math.max(0,ms-Number(n.until||0)):Math.max(0,Number(n.until||0));let v=Math.ceil(raw/u);return v+' '+delayUnitName(u)}
 function clockRuntimeText(n){let on=Math.max(1,Number(n.delay||1000)),off=Math.max(1,Number(n.delay2||on)),phase=n.mem?on:off,u=bestDelayUnit(phase),raw=Math.max(0,phase-Number(n.until||0));return (n.mem?t('an','on'):t('aus','off'))+' / '+Math.ceil(raw/u)+' '+delayUnitName(u)}
 function timerText(n){if(n.type==='clock')return '<br>'+t('Ein','On')+': '+delayTextValue(n.delay||1000)+'<br>'+t('Aus','Off')+': '+delayTextValue(n.delay2||n.delay||1000)+'<br>'+t('Rest','Remaining')+': '+clockRuntimeText(n);return (n.type==='ton'||n.type==='tof')?'<br>'+t('Zeit','Time')+': '+delayText(n)+'<br>'+t('Rest','Remaining')+': '+runtimeText(n):''}
-function renderInspector(){let n=graph.nodes.find(x=>x.id===sel),name=document.getElementById('node_name'),sig=document.getElementById('node_signal'),delay=document.getElementById('node_delay'),unit=document.getElementById('node_delay_unit'),delay2=document.getElementById('node_delay2'),unit2=document.getElementById('node_delay2_unit'),delay2Row=document.getElementById('node_delay2_row'),delayTitle=document.getElementById('node_delay_title'),delayLabel=document.getElementById('node_delay_label');name.value=n?n.name||'':(selLink!==null?t('Verbindung','Link'):'');let u=n?bestDelayUnit(n.delay||0):1,u2=n?bestDelayUnit(n.delay2||n.delay||0):1;delay.value=n?Number(n.delay||0)/u:'';unit.value=String(u);if(delay2)delay2.value=n?Number(n.delay2||n.delay||0)/u2:'';if(unit2)unit2.value=String(u2);if(delayTitle)delayTitle.textContent=n&&n.type==='clock'?t('Ein-Zeit / Aus-Zeit','On time / off time'):t('Timer','Timer');let list=n&&n.type==='input'?signals.inputs:(n&&n.type==='output'?signals.outputs:[]);renderLogicSignalOptions(sig,list,n?n.signal:'');sig.disabled=!list.length;name.disabled=delay.disabled=unit.disabled=!n;if(delay2)delay2.disabled=!n;if(unit2)unit2.disabled=!n;let timed=n&&(n.type==='ton'||n.type==='tof'||n.type==='clock');delayLabel.style.display=timed?'block':'none';if(delay2Row)delay2Row.style.display=n&&n.type==='clock'?'grid':'none'}
-function editSelected(){let n=graph.nodes.find(x=>x.id===sel);if(!n)return;n.name=document.getElementById('node_name').value;n.signal=document.getElementById('node_signal').value;let u=Number(document.getElementById('node_delay_unit').value||1);n.delay=Math.max(0,Math.round(Number(document.getElementById('node_delay').value||0)*u));let d2=document.getElementById('node_delay2'),u2=document.getElementById('node_delay2_unit');if(d2&&u2)n.delay2=Math.max(0,Math.round(Number(d2.value||0)*Number(u2.value||1)));render()}
-function renderSim(vals){if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#sim_inputs')&&document.activeElement.tagName==='SELECT')return;let si=document.getElementById('sim_inputs'),so=document.getElementById('sim_outputs');si.innerHTML='';so.innerHTML='';graph.nodes.filter(n=>n.type==='input').forEach(n=>{let r=document.createElement('div');r.className='sim-row';let mode=n.inputMode||'switch';let title=nodeTitle(n);let btn=mode==='button'?`<button class="secondary" onpointerdown="pressInput('${n.id}')" onpointerup="releaseInput('${n.id}')" onpointerleave="releaseInput('${n.id}')">${t('Taster','Button')}</button>`:`<button class="switch mini ${n.value?'on':''}" onclick="toggleInput('${n.id}')">.</button>`;r.innerHTML=`<span><b>${title}</b><small style="display:block;color:#84909d">${signalName(n)}</small></span><select onchange="setInputMode('${n.id}',this.value)"><option value="switch" ${mode==='switch'?'selected':''}>${t('Schalter','Switch')}</option><option value="button" ${mode==='button'?'selected':''}>${t('Taster','Button')}</option></select>${btn}`;si.appendChild(r)});graph.nodes.filter(n=>n.type==='output').forEach(n=>{let r=document.createElement('div');r.className='sim-row';r.innerHTML=`<span><b>${nodeTitle(n)}</b><small style="display:block;color:#84909d">${signalName(n)}</small></span><span></span><b class="${vals[n.id]?'on':'off'}">${vals[n.id]?t('an','on'):t('aus','off')}</b>`;so.appendChild(r)})}function setInputMode(id,mode){let n=graph.nodes.find(x=>x.id===id);if(!n)return;n.inputMode=mode;if(mode==='button')n.value=false;render()}
-function toggleInput(id){let n=graph.nodes.find(x=>x.id===id);if(n)n.value=!n.value;render()}
-function pressInput(id){let n=graph.nodes.find(x=>x.id===id);if(n){n.value=true;render()}}
-function releaseInput(id){let n=graph.nodes.find(x=>x.id===id);if(n&&n.inputMode==='button'){n.value=false;render()}}
+function renderInspector(){let n=graph.nodes.find(x=>x.id===sel),name=document.getElementById('node_name'),sig=document.getElementById('node_signal'),delay=document.getElementById('node_delay'),unit=document.getElementById('node_delay_unit'),delay2=document.getElementById('node_delay2'),unit2=document.getElementById('node_delay2_unit'),delay2Row=document.getElementById('node_delay2_row'),delayTitle=document.getElementById('node_delay_title'),delayLabel=document.getElementById('node_delay_label'),latchRow=document.getElementById('node_latch_row'),latch=document.getElementById('node_latch_mode');name.value=n?n.name||'':(selLink!==null?t('Verbindung','Link'):'');let u=n?bestDelayUnit(n.delay||0):1,u2=n?bestDelayUnit(n.delay2||n.delay||0):1;delay.value=n?Number(n.delay||0)/u:'';unit.value=String(u);if(delay2)delay2.value=n?Number(n.delay2||n.delay||0)/u2:'';if(unit2)unit2.value=String(u2);if(delayTitle)delayTitle.textContent=n&&n.type==='clock'?t('Ein-Zeit / Aus-Zeit','On time / off time'):t('Timer','Timer');let list=n&&n.type==='input'?signals.inputs:(n&&n.type==='output'?signals.outputs:[]);renderLogicSignalOptions(sig,list,n?n.signal:'');sig.disabled=!list.length;name.disabled=delay.disabled=unit.disabled=!n;if(delay2)delay2.disabled=!n;if(unit2)unit2.disabled=!n;if(latchRow)latchRow.style.display=n&&n.type==='sr'?'block':'none';if(latch){latch.disabled=!(n&&n.type==='sr');latch.value=n&&n.type==='sr'?latchMode(n):'sr'}let timed=n&&(n.type==='ton'||n.type==='tof'||n.type==='clock');delayLabel.style.display=timed?'block':'none';if(delay2Row)delay2Row.style.display=n&&n.type==='clock'?'grid':'none'}
+function editSelected(){let n=graph.nodes.find(x=>x.id===sel);if(!n)return;let nameEl=document.getElementById('node_name'),wasDefault=defaultNames(n.type).includes(n.name);n.name=nameEl.value;n.signal=document.getElementById('node_signal').value;if(n.type==='sr'){let latch=document.getElementById('node_latch_mode');n.latchMode=latch&&latch.value==='rs'?'rs':'sr';if(wasDefault){n.name=nodeTypeLabel(n);nameEl.value=n.name}}let u=Number(document.getElementById('node_delay_unit').value||1);n.delay=Math.max(0,Math.round(Number(document.getElementById('node_delay').value||0)*u));let d2=document.getElementById('node_delay2'),u2=document.getElementById('node_delay2_unit');if(d2&&u2)n.delay2=Math.max(0,Math.round(Number(d2.value||0)*Number(u2.value||1)));render()}
+function renderSim(vals){if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#sim_inputs')&&document.activeElement.tagName==='SELECT')return;let si=document.getElementById('sim_inputs'),so=document.getElementById('sim_outputs');si.innerHTML='';so.innerHTML='';if(logicViewMode==='live'){si.innerHTML=`<div class="logic-note">${t('Die Simulationseingänge sind im Live-Modus deaktiviert. Der echte Signalfluss wird im Plan blau angezeigt.','Simulation inputs are disabled in Live mode. The actual signal flow is shown in blue in the diagram.')}</div>`;return}graph.nodes.filter(n=>n.type==='input').forEach(n=>{let r=document.createElement('div');r.className='sim-row';let mode=n.inputMode||'switch';let title=nodeTitle(n);let btn=mode==='button'?`<button class="secondary" onpointerdown="pressInput('${n.id}')" onpointerup="releaseInput('${n.id}')" onpointerleave="releaseInput('${n.id}')">${t('Taster','Button')}</button>`:`<button class="switch mini ${n.value?'on':''}" onclick="toggleInput('${n.id}')">.</button>`;r.innerHTML=`<span><b>${title}</b><small style="display:block;color:#84909d">${signalName(n)}</small></span><select onchange="setInputMode('${n.id}',this.value)"><option value="switch" ${mode==='switch'?'selected':''}>${t('Schalter','Switch')}</option><option value="button" ${mode==='button'?'selected':''}>${t('Taster','Button')}</option></select>${btn}`;si.appendChild(r)});graph.nodes.filter(n=>n.type==='output').forEach(n=>{let r=document.createElement('div');r.className='sim-row';r.innerHTML=`<span><b>${nodeTitle(n)}</b><small style="display:block;color:#84909d">${signalName(n)}</small></span><span></span><b class="${vals[n.id]?'on':'off'}">${vals[n.id]?t('an','on'):t('aus','off')}</b>`;so.appendChild(r)})}function setInputMode(id,mode){let n=graph.nodes.find(x=>x.id===id);if(!n)return;n.inputMode=mode;if(mode==='button')n.value=false;render()}
+function toggleInput(id){if(logicViewMode==='live')return;let n=graph.nodes.find(x=>x.id===id);if(n)n.value=!n.value;render()}
+function pressInput(id){if(logicViewMode==='live')return;let n=graph.nodes.find(x=>x.id===id);if(n){n.value=true;render()}}
+function releaseInput(id){if(logicViewMode==='live')return;let n=graph.nodes.find(x=>x.id===id);if(n&&n.inputMode==='button'){n.value=false;render()}}
 function deleteSelected(){if(selLink!==null){graph.links.splice(selLink,1);selLink=null;render();return}if(!sel)return;graph.nodes=graph.nodes.filter(n=>n.id!==sel);graph.links=graph.links.filter(l=>l.from!==sel&&l.to!==sel);sel=null;render()}
 function duplicateSelected(){let n=graph.nodes.find(x=>x.id===sel);if(!n)return;let c=JSON.parse(JSON.stringify(n));c.id=nid();c.x+=44;c.y+=44;c.name+=' '+t('Kopie','copy');graph.nodes.push(c);sel=c.id;selLink=null;render()}
 function clearLinks(){if(selLink!==null){graph.links.splice(selLink,1);selLink=null;render();return}if(!sel)return;graph.links=graph.links.filter(l=>l.from!==sel&&l.to!==sel);render()}
@@ -1069,7 +1255,7 @@ function clearPending(){linkFrom=null;linkDrag=null;msg('');drawLinks()}
 function autoLayout(){let xs={input:120,and:560,or:560,not:560,toggle:560,sr:560,ton:560,tof:560,pulse:560,clock:560,output:1020};let rows={};graph.nodes.forEach(n=>{let x=xs[n.type]||560;rows[x]=(rows[x]||0)+1;n.x=x;n.y=50+rows[x]*118});render()}
 window.addEventListener('pointermove',ev=>{if(lineDrag){let dx=ev.clientX-lineDrag.clientX,dy=ev.clientY-lineDrag.clientY;if(Math.hypot(dx,dy)>6){let d=lineDrag;lineDrag=null;let removed=false;graph.links=graph.links.filter(l=>{if(!removed&&l.from===d.from&&l.to===d.to&&Number(l.port||0)===d.port){removed=true;return false}return true});startLink(d.from,true,0);linkDrag=screenToCanvas(ev);drawLinks();return}}if(!linkFrom)return;linkDrag=screenToCanvas(ev);drawLinks()});
 window.addEventListener('pointerup',ev=>{lineDrag=null;if(linkFrom){let target=document.elementFromPoint(ev.clientX,ev.clientY),pin=target&&target.closest?target.closest('.logic-in,.logic-out'):null;if(pin){let nodeEl=pin.closest('.logic-node'),n=nodeEl&&graph.nodes.find(x=>x.id===nodeEl.dataset.id);if(n)finishLink(n,pin.classList.contains('logic-out'),Number(pin.dataset.port||0));}else{linkFrom=null;linkDrag=null;drawLinks();msg('')}}let changed=false;graph.nodes.forEach(n=>{if(n.type==='input'&&n.inputMode==='button'&&n.value){n.value=false;changed=true}});if(changed)render();});
-setInterval(refreshLiveState,500);setInterval(()=>{let vals=evalGraph();drawLinks(vals);if(!(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#sim_inputs')))renderSim(vals);document.querySelectorAll('.logic-node').forEach(e=>{let n=graph.nodes.find(x=>x.id===e.dataset.id);if(n){e.classList.toggle('is-on',!!vals[n.id]);if(n.type==='ton'||n.type==='tof'||n.type==='clock'){let b=e.querySelector('.body');if(b)b.innerHTML=nodeBody(n)}}});refreshLiveBadges();},200);setupLogicLangSync();applyLogicLang();loadGraph();</script>
+setInterval(refreshLiveState,500);setInterval(refreshLogicRuntime,300);setInterval(()=>{refreshFlowDisplay();document.querySelectorAll('.logic-node').forEach(e=>{let n=graph.nodes.find(x=>x.id===e.dataset.id);if(n&&(n.type==='ton'||n.type==='tof'||n.type==='clock')){let b=e.querySelector('.body');if(b)b.innerHTML=nodeBody(n)}})},200);setupLogicLangSync();applyLogicLang();updateLogicModeUi();loadGraph();</script>
 )HTML");
   web_shell_end(html);
   web.send(200, "text/html; charset=utf-8", html);

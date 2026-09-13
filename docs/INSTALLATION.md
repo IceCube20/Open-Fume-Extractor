@@ -10,6 +10,9 @@
 
 See [PINOUT.md](PINOUT.md) for GPIO assignments.
 
+For the complete configuration workflow, continue with the
+[Master Guide](MASTER.md) and [Module Guide](MODULES.md).
+
 ## Firmware file types
 
 Each target has two files:

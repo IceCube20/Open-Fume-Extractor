@@ -139,6 +139,7 @@ static void web_begin() {
   web.on("/update/module/stats", HTTP_GET, [](){ if (web_require_auth()) web_handle_module_update_stats(); });
   web.on("/logic", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic(); });
   web.on("/logic/json", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic_json(); });
+  web.on("/logic/runtime", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic_runtime(); });
   web.on("/logic/json/save", HTTP_POST, [](){ if (web_require_auth()) web_handle_logic_json(); });
   web.on("/logic/list", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic_list(); });
   web.on("/logic/select", HTTP_POST, [](){ if (web_require_auth()) web_handle_logic_select(); });

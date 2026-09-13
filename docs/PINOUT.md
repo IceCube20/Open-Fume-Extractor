@@ -72,6 +72,11 @@ from the OFE bus.
 The final fan power stage and protection circuit are application-specific and
 are not defined by this firmware pinout.
 
+Important ESP32 GPIO limitation: GPIO34 through GPIO39 are input-only and have
+no internal pull-up or pull-down resistors. When one of these pins is selected as
+a configurable Fan/IO input, fit an external pull resistor so the disconnected
+state cannot float. The hardware editor must not assign these pins to outputs.
+
 ## JBC USB ESP32-S3
 
 | Function | GPIO / connection |
