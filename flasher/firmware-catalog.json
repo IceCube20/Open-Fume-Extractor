@@ -2,133 +2,133 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "2.0.8beta",
+    "version": "2.0.12RC",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.8beta-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.8beta.bin",
-    "mergedSha256": "49238a0f6bd2eb57cee973fd177effd342d5459850d7d4948249deb8ab74d996"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.12RC-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.12RC.bin",
+    "mergedSha256": "041628391707cebf1b40f7b951d49a07e5c19d5bbdf516529cac4c9eb522ba87"
   },
   {
     "id": "JBC-FAE-Bus",
     "label": "JBC FAE Bus",
-    "version": "1.1.66beta",
+    "version": "1.1.66RC",
     "signatureTarget": "JBC_BUS",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/JBC-FAE-Bus.json",
-    "merged": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.66beta-merged.bin",
-    "ota": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.66beta.bin",
-    "mergedSha256": "8da89c9e734aa9085df419688272d9452def0bd4c45047a8a672836e9a7b3310"
+    "merged": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.66RC-merged.bin",
+    "ota": "firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.66RC.bin",
+    "mergedSha256": "1a717d2fa31ad086d08670cf6045f15bc0f008a8d9eb2395a180b54cde8e2cf5"
   },
   {
     "id": "JBC-USB",
     "label": "JBC USB",
-    "version": "1.1.82beta",
+    "version": "1.1.82RC",
     "signatureTarget": "JBC_USB",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/JBC-USB.json",
-    "merged": "firmware/JBC-USB/JBC-USB-1.1.82beta-merged.bin",
-    "ota": "firmware/JBC-USB/JBC-USB-1.1.82beta.bin",
-    "mergedSha256": "9c5d51358552cae5f7fa67dbbfd2b14593eed9047262f03c241d9fcf2b2de4c2"
+    "merged": "firmware/JBC-USB/JBC-USB-1.1.82RC-merged.bin",
+    "ota": "firmware/JBC-USB/JBC-USB-1.1.82RC.bin",
+    "mergedSha256": "cb2660bf7095556ca5a315bd9a1c1e34d83ecac8b68a3337cb6e2f52758a6e2d"
   },
   {
     "id": "Fan-IO",
     "label": "Fan/IO",
-    "version": "1.1.73beta",
+    "version": "1.1.73RC",
     "signatureTarget": "FAN_IO",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Fan-IO.json",
-    "merged": "firmware/Fan-IO/Fan-IO-1.1.73beta-merged.bin",
-    "ota": "firmware/Fan-IO/Fan-IO-1.1.73beta.bin",
-    "mergedSha256": "3c05bc134c6b5d3c6a5007ea79b7be4da66afd09f69aa9759291e381233041fa"
+    "merged": "firmware/Fan-IO/Fan-IO-1.1.73RC-merged.bin",
+    "ota": "firmware/Fan-IO/Fan-IO-1.1.73RC.bin",
+    "mergedSha256": "fa660bb1e1b18e6caa1ca3c7ab0d1ec1364bf0c3654882606866b8652c066119"
   },
   {
     "id": "Fan-IO-Pro",
     "label": "Fan/IO Pro",
-    "version": "1.1.68beta",
+    "version": "1.1.68RC",
     "signatureTarget": "FAN_IO_PRO",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Fan-IO-Pro.json",
-    "merged": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68beta-merged.bin",
-    "ota": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68beta.bin",
-    "mergedSha256": "d6f230d607c6ffdad4396473ed246813863d834f7bf9cd17ed06415f7a6304c7"
+    "merged": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68RC-merged.bin",
+    "ota": "firmware/Fan-IO-Pro/Fan-IO-Pro-1.1.68RC.bin",
+    "mergedSha256": "0364491738e67b34bb2566439a63d7bdf3d4f9fe6aa1cb510d109fc1af2ece02"
   },
   {
     "id": "Weller-Zero-Smog",
     "label": "Weller Zero Smog",
-    "version": "1.1.79beta",
+    "version": "1.1.79RC",
     "signatureTarget": "WELLER_ZERO_SMOG",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Weller-Zero-Smog.json",
-    "merged": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.79beta-merged.bin",
-    "ota": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.79beta.bin",
-    "mergedSha256": "41037ecee25826a9848bc012e2c28dd5d205970f4c706e36546798bc6aed2e96"
+    "merged": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.79RC-merged.bin",
+    "ota": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.79RC.bin",
+    "mergedSha256": "c97035b0190cbb12c124f739120f8ff2bdff9686f53a9cad321df169b663ba93"
   },
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.3.98beta",
+    "version": "1.3.98RC",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.3.98beta-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.3.98beta.bin",
-    "mergedSha256": "8ef73b65b55c5eebdab58729ad3ae4924bcbaa89409b5f38b6d4fe6051cee5b3"
+    "merged": "firmware/Display-320x480/Display-320x480-1.3.98RC-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.3.98RC.bin",
+    "mergedSha256": "85010733bce992b4ac4a39ee3fd5873456e824ceb8e4d8d0ead5765a5f17bda5"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.4.5beta",
+    "version": "1.4.5RC",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.4.5beta-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.4.5beta.bin",
-    "mergedSha256": "c27010e3cd4f8cb92d2f44877b2ea3485bae4e37cf760f8f05734654e468517e"
+    "merged": "firmware/Display-800x480/Display-800x480-1.4.5RC-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.4.5RC.bin",
+    "mergedSha256": "05339b553489dbd1ce2cc64319f3cfb994362ef582109fe2b553262a642800a5"
   },
   {
     "id": "Display-ST7796-320x480",
     "label": "Display ST7796 320x480",
-    "version": "1.0.8beta",
+    "version": "1.0.8RC",
     "signatureTarget": "DISPLAY_ST7796_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-ST7796-320x480.json",
-    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.8beta-merged.bin",
-    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.8beta.bin",
-    "mergedSha256": "2850eb46f2551d079c5d8ec67061e0989570f1cbd2919323bbefa2dc01da80c3"
+    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.8RC-merged.bin",
+    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.8RC.bin",
+    "mergedSha256": "5d6d21ab9bd60637185bb6198718de267bb0df1bab67d84cf93c57a0c66f4c96"
   },
   {
     "id": "Universal-RS232",
     "label": "Universal RS232",
-    "version": "1.0.71alpha",
+    "version": "1.0.71beta",
     "signatureTarget": "UNIVERSAL_RS232",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Universal-RS232.json",
-    "merged": "firmware/Universal-RS232/Universal-RS232-1.0.71alpha-merged.bin",
-    "ota": "firmware/Universal-RS232/Universal-RS232-1.0.71alpha.bin",
-    "mergedSha256": "6fc7e73229cc7b84eb2da94240d062cc0bb0a1410b683ff729e2a090085ab32e"
+    "merged": "firmware/Universal-RS232/Universal-RS232-1.0.71beta-merged.bin",
+    "ota": "firmware/Universal-RS232/Universal-RS232-1.0.71beta.bin",
+    "mergedSha256": "5d3b5648960db05ac9510e96bbad77ab4b1a695b5ca6dad441566e212bac6ef2"
   },
   {
     "id": "Modbus-RTU",
     "label": "Modbus RTU",
-    "version": "1.0.57alpha",
+    "version": "1.0.57beta",
     "signatureTarget": "MODBUS_RTU",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Modbus-RTU.json",
-    "merged": "firmware/Modbus-RTU/Modbus-RTU-1.0.57alpha-merged.bin",
-    "ota": "firmware/Modbus-RTU/Modbus-RTU-1.0.57alpha.bin",
-    "mergedSha256": "ec4001f4a1c1d42b628bca77bcf54cade3c24abf9aec80f9622770af5db65f7c"
+    "merged": "firmware/Modbus-RTU/Modbus-RTU-1.0.57beta-merged.bin",
+    "ota": "firmware/Modbus-RTU/Modbus-RTU-1.0.57beta.bin",
+    "mergedSha256": "e479ef0e2e8dfc1aeb1706357b7df7fdeba63d0837348fc262dad27f3567459a"
   }
 ]

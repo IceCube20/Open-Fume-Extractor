@@ -3830,7 +3830,7 @@ function fanIoEditorState(m){
 }
 function fanIoPinAllowed(pin,output){if(pin<0||pin>39||fanIoReservedPins[pin])return false;return !output||pin<=33}
 function fanIoPinUses(){let d=fanIoEditorDraft,uses={};if(!d)return uses;let add=(pin,key,label)=>{pin=Number(pin);if(pin>=0)(uses[pin]||(uses[pin]=[])).push({key,label})};d.inputs.forEach((c,i)=>{if(c.enabled)add(c.pin,'in'+i,(uiLang=='de'?'Eingang ':'Input ')+(i+1)+' · '+c.name)});d.outputs.forEach((c,i)=>{if(c.enabled)add(c.pin,'out'+i,(uiLang=='de'?'Ausgang ':'Output ')+(i+1)+' · '+c.name)});if(d.fan.enabled){let usesRelay=d.fan.outputMode==0||d.fan.outputMode==2,usesPwm=d.fan.outputMode==1||d.fan.outputMode==2;if(usesRelay)add(d.fan.enablePin,'fan_enable',uiLang=='de'?'Relaisausgang':'Relay output');if(usesPwm)add(d.fan.pwmPin,'fan_pwm',uiLang=='de'?'Lüfter PWM':'Fan PWM');add(d.fan.tachoPin,'fan_tacho',uiLang=='de'?'Drehzahlrückmeldung':'Tach feedback')}let pressure=d.pro&&(d.filter.mode==2||d.filter.mode==3);if(pressure&&d.filter.sensor==1)add(d.filter.pinA,'filter_a',uiLang=='de'?'Drucksensor analog':'Analog pressure sensor');if(pressure&&d.filter.sensor==2){add(d.filter.pinA,'filter_a','Drucksensor SDA');add(d.filter.pinB,'filter_b','Drucksensor SCL')}return uses}
-function fanIoPinOptions(current,output,owner){current=fanIoPin(current);let uses=fanIoPinUses(),html=`<option value="-1"${current<0?' selected':''}>${uiLang=='de'?'Nicht verwendet':'Not used'}</option>`;for(let pin=0;pin<=39;pin++){let reason=fanIoReservedPins[pin]||(!fanIoPinAllowed(pin,output)?(output&&pin>=34?(uiLang=='de'?'nur als Eingang nutzbar':'input only'):(uiLang=='de'?'nicht verfügbar':'unavailable')):'');let foreign=(uses[pin]||[]).filter(x=>x.key!=owner);if(foreign.length)reason=(uiLang=='de'?'belegt: ':'used by: ')+foreign.map(x=>x.label).join(', ');let disabled=!!reason&&pin!==current,label='GPIO '+pin+(reason?' · '+reason:'');html+=`<option value="${pin}"${pin===current?' selected':''}${disabled?' disabled':''} title="${escAttr(reason||label)}">${escHtml(label)}</option>`}return html}
+function fanIoPinOptions(current,output,owner){current=fanIoPin(current);let uses=fanIoPinUses(),html=`<option value="-1"${current<0?' selected':''}>${uiLang=='de'?'Nicht verwendet':'Not used'}</option>`;for(let pin=0;pin<=39;pin++){let reason=fanIoReservedPins[pin]||(!fanIoPinAllowed(pin,output)?(output&&pin>=34?(uiLang=='de'?'nur als Eingang nutzbar':'input only'):(uiLang=='de'?'nicht verfügbar':'unavailable')):''),note=!output&&pin>=34&&pin<=39?(uiLang=='de'?'kein interner Pull-up/down · externer Widerstand nötig':'no internal pull-up/down · external resistor required'):'';let foreign=(uses[pin]||[]).filter(x=>x.key!=owner);if(foreign.length)reason=(uiLang=='de'?'belegt: ':'used by: ')+foreign.map(x=>x.label).join(', ');let disabled=!!reason&&pin!==current,label='GPIO '+pin+((reason||note)?' · '+(reason||note):'');html+=`<option value="${pin}"${pin===current?' selected':''}${disabled?' disabled':''} title="${escAttr(reason||note||label)}">${escHtml(label)}</option>`}return html}
 function fanIoEditorChannelHtml(output,index,c){let group=output?'outputs':'inputs',owner=(output?'out':'in')+index,kind=output?(uiLang=='de'?'Ausgang':'Output'):(uiLang=='de'?'Eingang':'Input');return `<div class="fanio-channel ${output?'is-output':'is-input'}"><label><span class="fanio-channel-index">${kind} ${index+1}</span><input maxlength="18" value="${escAttr(c.name)}" oninput="fanIoEditorDraft.${group}[${index}].name=this.value"></label><label>GPIO<select onchange="fanIoEditorDraft.${group}[${index}].pin=Number(this.value);fanIoEditorRender()">${fanIoPinOptions(c.pin,output,owner)}</select></label><label>${uiLang=='de'?'Aktiver Pegel':'Active level'}<select onchange="fanIoEditorDraft.${group}[${index}].activeLow=this.value=='1'"><option value="0"${c.activeLow?'':' selected'}>High</option><option value="1"${c.activeLow?' selected':''}>Low</option></select></label>${output?'':`<label>Pull<select onchange="fanIoEditorDraft.inputs[${index}].pull=this.value"><option value="none"${c.pull=='none'?' selected':''}>None</option><option value="up"${c.pull=='up'?' selected':''}>Up</option><option value="down"${c.pull=='down'?' selected':''}>Down</option></select></label>`}<button class="secondary danger fanio-channel-remove" title="${uiLang=='de'?'Kanal löschen':'Delete channel'}" onclick="fanIoEditorRemove(${output?1:0},${index})">&#215;</button></div>`}
 function fanIoEditorAdd(output){if(!fanIoEditorDraft)return;let list=output?fanIoEditorDraft.outputs:fanIoEditorDraft.inputs,index=list.findIndex(c=>!c.enabled);if(index<0){fanIoEditorMessage(uiLang=='de'?'Es sind bereits alle acht Plätze belegt.':'All eight slots are already used.',true);return}let c=list[index];c.enabled=true;c.name=(output?'OUT':'IN')+(index+1);c.pin=-1;c.activeLow=false;c.pull='none';fanIoEditorRender()}
 function fanIoEditorRemove(output,index){if(!fanIoEditorDraft)return;let c=(output?fanIoEditorDraft.outputs:fanIoEditorDraft.inputs)[index];c.enabled=false;c.pin=-1;fanIoEditorRender()}
@@ -3934,6 +3934,37 @@ if(m.type==5){let sl=document.getElementById('wsl_'+m.addr);pillText('wmod_'+m.a
 })}
 const updateDetailsCore=updateDetails;
 updateDetails=function(d){updateDetailsCore(d);(d.modules||[]).forEach(m=>{if(!((m.type==2||m.type==3)&&(m.caps&65536)))return;renderFanIoEntities(m);let configured=fanIoMainConfigured(m),box=document.getElementById('io_main_controls_'+m.addr),title=document.getElementById('io_main_title_'+m.addr);if(box)box.style.display=configured?'':'none';if(title)title.style.display=configured?'':'none';if(!configured){set('io_main_'+m.addr,uiLang=='de'?'Nicht konfiguriert':'Not configured');set('io_power_v_'+m.addr,'- %');let slider=document.getElementById('io_power_'+m.addr);if(slider)slider.disabled=true;swNA('io_fan_'+m.addr)}})}
+function syncWellerFilterCard(m){
+  let label=(id,text)=>{let value=document.getElementById(id),fact=value&&value.closest('.jbu-fact'),key=fact&&fact.querySelector('.k');if(key)key.textContent=text};
+  label('wfstat_'+m.addr,uiLang=='de'?'Filterzustand':'Filter status');
+  label('wfprog_'+m.addr,t('fan_filter_lifetime'));
+  label('wfrun_'+m.addr,t('fan_filter_runtime'));
+  let programmed=document.getElementById('wfprog_'+m.addr),facts=programmed&&programmed.closest('.jbu-facts'),remaining=document.getElementById('wfremain_'+m.addr);
+  if(facts&&!remaining){let fact=document.createElement('div');fact.className='jbu-fact';fact.innerHTML='<div class="k"></div><div id="wfremain_'+m.addr+'" class="v">-</div>';facts.appendChild(fact);remaining=document.getElementById('wfremain_'+m.addr)}
+  label('wfremain_'+m.addr,t('fan_filter_remaining'));
+  if(facts){
+    let card=facts.closest('.weller-card'),groups=card&&card.querySelectorAll('.jbu-facts'),sw=document.getElementById('wver_'+m.addr),swFact=sw&&sw.closest('.jbu-fact');
+    if(groups&&groups.length>1&&swFact)groups[0].appendChild(swFact);
+    ['wfstat_','wfprog_','wfrun_','wfremain_'].forEach(prefix=>{let value=document.getElementById(prefix+m.addr),fact=value&&value.closest('.jbu-fact');if(fact)facts.appendChild(fact)});
+  }
+  let runtime=Number(m.weller_filter_runtime_minutes||0),lifetime=Number(m.weller_programmed_filter_minutes||0);
+  set('wfremain_'+m.addr,m.online?dhm(Math.max(0,lifetime-runtime)):'-');
+  let actions=facts&&facts.parentElement&&facts.parentElement.querySelector('.filter-actions'),button=actions&&actions.querySelector('button'),select=actions&&actions.querySelector('select');
+  if(actions){
+    actions.style.display='flex';actions.style.flexDirection='column';actions.style.alignItems='stretch';actions.style.gap='9px';
+    if(button){
+      button.textContent=t('fan_reset_filter_runtime');button.style.width='100%';button.style.minWidth='0';button.style.whiteSpace='normal';button.style.order='1';
+      if(!button.dataset.fanioStyle){let reference=document.querySelector('.fan-card .filter-actions button'),style=reference&&getComputedStyle(reference);button.style.minHeight=style?style.minHeight:'40px';button.style.padding=style?style.padding:'9px 14px';button.style.fontFamily=style?style.fontFamily:'Arial, Helvetica, sans-serif';button.style.fontSize=style?style.fontSize:'13.3333px';button.style.fontWeight=style?style.fontWeight:'700';button.style.lineHeight=style?style.lineHeight:'normal';button.dataset.fanioStyle='1'}
+    }
+    if(select){
+      let interval=actions.querySelector('.weller-filter-interval');
+      if(!interval){interval=document.createElement('label');interval.className='weller-filter-interval';interval.style.margin='0';let caption=document.createElement('span');caption.className='k';caption.style.margin='0 0 6px';interval.appendChild(caption);actions.appendChild(interval);interval.appendChild(select)}
+      interval.style.display='block';interval.style.width='100%';interval.style.order='2';interval.style.paddingTop='5px';let caption=interval.querySelector('.k');if(caption){caption.textContent=t('fan_filter_lifetime');caption.style.marginBottom='10px'}select.style.width='100%';select.style.minWidth='0';select.style.fontSize='12px';select.style.padding='9px 10px';
+    }
+  }
+}
+const updateDetailsFilterTextCore=updateDetails;
+updateDetails=function(d){updateDetailsFilterTextCore(d);(d.modules||[]).forEach(m=>{if(m.type==5)syncWellerFilterCard(m)})}
 let universalEntitySig={};
 let universalWoSwitchTarget={};
 function fixText(s){return String(s||'').replaceAll('\u00c3\u00bc','\u00fc').replaceAll('\u00c3\u0153','\u00dc').replaceAll('\u00c3\u00a4','\u00e4').replaceAll('\u00c3\u201e','\u00c4').replaceAll('\u00c3\u00b6','\u00f6').replaceAll('\u00c3\u2013','\u00d6').replaceAll('\u00c3\u0178','\u00df').replaceAll('\u00c2\u00b7','\u00b7')}
@@ -4661,6 +4692,9 @@ applyLang();
   web.setContentLength(CONTENT_LENGTH_UNKNOWN);
   web.send(200, "text/html; charset=utf-8", "");
   web.sendContent_P(html1);
+#if !OFE_DEVELOPER_MODE_ENABLE
+  web.sendContent(F("<style>#dev_btn{display:none!important}</style>"));
+#endif
   web.sendContent(web_csrf_script());
   web.sendContent_P(html2);
   web.sendContent("");

@@ -961,6 +961,36 @@ static const char* mqtt_fanio_filter_mode_text(uint8_t mode) {
   }
 }
 
+static bool mqtt_module_has_fanio_filter_telemetry(const ModuleRecord& m) {
+  // Weller advertises CAP_FILTER_SENSOR for its own filter status/runtime
+  // protocol, but it has no Fan/IO pressure sensor or filter-mode telemetry.
+  return m.type == MODULE_FAN_IO_PRO ||
+         (m.type != MODULE_WELLER_ZERO_SMOG && (m.caps & CAP_FILTER_SENSOR));
+}
+
+static uint8_t mqtt_fanio_filter_mode(const ModuleRecord& m) {
+  if (!mqtt_module_has_fanio_filter_telemetry(m)) return 0;
+  if (m.fanio_filter_runtime_valid && m.fanio_filter_mode <= 3) {
+    return m.fanio_filter_mode;
+  }
+
+  // Older Fan/IO Pro firmware may not append the mode to telemetry. Its
+  // descriptor still contains the authoritative persisted filter_mode header.
+  if (m.universal_descriptor_valid) {
+    const char* line = m.universal_descriptor;
+    while (line && *line) {
+      while (*line == ' ' || *line == '\t' || *line == '\r') ++line;
+      if (!strncmp(line, "filter_mode=", 12)) {
+        const unsigned long mode = strtoul(line + 12, nullptr, 10);
+        return mode <= 3 ? (uint8_t)mode : 0;
+      }
+      line = strchr(line, '\n');
+      if (line) ++line;
+    }
+  }
+  return 0;
+}
+
 static String mqtt_io_input_label(const ModuleRecord& m, uint8_t bit) {
   const char* alias = bit ? m.io_in2_alias : m.io_in1_alias;
   if (alias && alias[0]) return String(alias);
@@ -1596,7 +1626,7 @@ static void mqtt_publish_universal_descriptor_entities(const ModuleRecord& m, co
       seen_entity_id[def.id] = true;
       // Fan/IO Pro filter values have dedicated MQTT entities with stable names
       // and direct telemetry. Avoid duplicate generic entity_63/64/66/67 entries.
-      if ((m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) &&
+      if (mqtt_module_has_fanio_filter_telemetry(m) &&
           (def.id == 63 || def.id == 64 || def.id == 66 || def.id == 67)) {
         p = next ? next + 1 : nullptr;
         continue;
@@ -1744,6 +1774,10 @@ static String mqtt_module_discovery_signature_now() {
       sig += ':'; sig += m.jbc_usb_model;
       sig += ':'; sig += core.family;
       sig += ':'; sig += core.port_count;
+    }
+    if (mqtt_module_has_fanio_filter_telemetry(m)) {
+      sig += F(":filter_mode:");
+      sig += mqtt_fanio_filter_mode(m);
     }
     if (mqtt_module_has_descriptor(m)) {
       sig += ':';
@@ -2248,13 +2282,22 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_module_entity(m, "sensor", "fault", base + String(mqtt_txt(" Fehler", " Fault")), "{{ value_json.fault }}");
   }
 
-  if (m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) {
-    mqtt_publish_module_entity(m, "sensor", "filter_saturation", base + String(mqtt_txt(" Filter", " Filter")), "{{ value_json.fanio_filter_saturation_pct }}", ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:air-filter\"");
-    mqtt_publish_module_entity(m, "sensor", "filter_pressure", base + String(mqtt_txt(" Druck", " Pressure")), "{{ value_json.fanio_filter_pressure_raw }}", ",\"icon\":\"mdi:gauge\"");
-    mqtt_publish_module_entity(m, "sensor", "filter_mode", base + String(mqtt_txt(" Filtermodus", " Filter mode")), "{{ value_json.fanio_filter_mode_text }}", ",\"icon\":\"mdi:tune-variant\"");
-    mqtt_publish_module_entity(m, "sensor", "filter_lifetime", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.fanio_filter_lifetime_text }}", ",\"icon\":\"mdi:calendar-sync\"");
-    mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterbetriebszeit", " Filter operating time")), "{{ value_json.fanio_filter_runtime_text }}", ",\"icon\":\"mdi:timer-outline\"");
-    mqtt_publish_module_entity(m, "sensor", "filter_remaining", base + String(mqtt_txt(" Filter-Restlaufzeit", " Filter remaining time")), "{{ value_json.fanio_filter_remaining_text }}", ",\"icon\":\"mdi:timer-sand\"");
+  if (mqtt_module_has_fanio_filter_telemetry(m)) {
+    const uint8_t filter_mode = mqtt_fanio_filter_mode(m);
+    const bool runtime_enabled = filter_mode == 1 || filter_mode == 3;
+    const bool pressure_enabled = filter_mode == 2 || filter_mode == 3;
+    if (filter_mode) {
+      mqtt_publish_module_entity(m, "sensor", "filter_mode", base + String(mqtt_txt(" Filtermodus", " Filter mode")), "{{ value_json.fanio_filter_mode_text }}", ",\"icon\":\"mdi:tune-variant\"");
+    }
+    if (pressure_enabled) {
+      mqtt_publish_module_entity(m, "sensor", "filter_saturation", base + String(mqtt_txt(" Filter", " Filter")), "{{ value_json.fanio_filter_saturation_pct }}", ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:air-filter\"");
+      mqtt_publish_module_entity(m, "sensor", "filter_pressure", base + String(mqtt_txt(" Druck", " Pressure")), "{{ value_json.fanio_filter_pressure_raw }}", ",\"icon\":\"mdi:gauge\"");
+    }
+    if (runtime_enabled) {
+      mqtt_publish_module_entity(m, "sensor", "filter_lifetime", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.fanio_filter_lifetime_text }}", ",\"icon\":\"mdi:calendar-sync\"");
+      mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterbetriebszeit", " Filter operating time")), "{{ value_json.fanio_filter_runtime_text }}", ",\"icon\":\"mdi:timer-outline\"");
+      mqtt_publish_module_entity(m, "sensor", "filter_remaining", base + String(mqtt_txt(" Filter-Restlaufzeit", " Filter remaining time")), "{{ value_json.fanio_filter_remaining_text }}", ",\"icon\":\"mdi:timer-sand\"");
+    }
   }
 
   if (m.type == MODULE_WELLER_ZERO_SMOG) {
@@ -2263,9 +2306,10 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_module_entity(m, "switch", "fan", base + String(mqtt_txt(" Lüfter", " Fan")), "{{ 'ON' if value_json.fan else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "weller_fan"));
     mqtt_publish_module_entity(m, "switch", "light", base + String(mqtt_txt(" Licht", " Light")), "{{ 'ON' if value_json.light else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "weller_light"));
     mqtt_publish_module_entity(m, "sensor", "rpm", base + String(mqtt_txt(" RPM", " RPM")), "{{ value_json.rpm }}", ",\"unit_of_meas\":\"rpm\",\"stat_cla\":\"measurement\"");
-    mqtt_publish_module_entity(m, "sensor", "filter", base + String(mqtt_txt(" Filter", " Filter")), "{{ value_json.filter_text }}");
-    mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterlaufzeit", " Filter Runtime")), "{{ value_json.filter_runtime_text }}");
-    mqtt_publish_module_entity(m, "sensor", "filter_time", base + String(mqtt_txt(" Filterzeit", " Filter Time")), "{{ value_json.filter_programmed_text }}");
+    mqtt_publish_module_entity(m, "sensor", "filter", base + String(mqtt_txt(" Filterzustand", " Filter status")), "{{ value_json.filter_text }}", ",\"icon\":\"mdi:air-filter\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_lifetime", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.filter_lifetime_text }}", ",\"icon\":\"mdi:calendar-sync\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterbetriebszeit", " Filter operating time")), "{{ value_json.filter_runtime_text }}", ",\"icon\":\"mdi:timer-outline\"");
+    mqtt_publish_module_entity(m, "sensor", "filter_remaining", base + String(mqtt_txt(" Filter-Restlaufzeit", " Filter remaining time")), "{{ value_json.filter_remaining_text }}", ",\"icon\":\"mdi:timer-sand\"");
   }
 
   if (m.type == MODULE_DISPLAY || (m.caps & CAP_DISPLAY)) {
@@ -2701,8 +2745,8 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"out2\":"; json += mqtt_mask_bit(m.io_output_mask, 1) ? "true" : "false";
   }
 
-  if (m.type == MODULE_FAN_IO_PRO || (m.caps & CAP_FILTER_SENSOR)) {
-    const uint8_t filter_mode = m.fanio_filter_runtime_valid ? m.fanio_filter_mode : 0;
+  if (mqtt_module_has_fanio_filter_telemetry(m)) {
+    const uint8_t filter_mode = mqtt_fanio_filter_mode(m);
     const uint32_t filter_runtime_min = m.fanio_filter_runtime_valid ? m.fanio_filter_runtime_minutes : 0;
     const uint32_t filter_lifetime_min = m.fanio_filter_runtime_valid ? m.fanio_filter_lifetime_minutes : 0;
     const uint32_t filter_remaining_min = filter_lifetime_min > filter_runtime_min ? (filter_lifetime_min - filter_runtime_min) : 0;
@@ -2720,6 +2764,11 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
 
   if (m.type == MODULE_WELLER_ZERO_SMOG) {
     const bool weller_link = m.weller_uart_age_sec != 0xFFFF && m.weller_uart_age_sec <= 10;
+    const uint32_t filter_runtime_min = m.weller_filter_runtime_minutes;
+    const uint32_t filter_lifetime_min = m.weller_programmed_filter_minutes;
+    const uint32_t filter_remaining_min = filter_lifetime_min > filter_runtime_min
+      ? filter_lifetime_min - filter_runtime_min
+      : 0;
     json += ",\"weller_link\":"; json += weller_link ? "true" : "false";
     json += ",\"speed\":"; json += m.weller_speed_percent ? m.weller_speed_percent : 30;
     json += ",\"rpm\":"; json += m.weller_fan_rpm;
@@ -2727,10 +2776,16 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"light\":"; json += (mqtt_mask_bit(m.io_output_mask, 1) || m.weller_work_light) ? "true" : "false";
     json += ",\"filter_status\":"; json += m.weller_filter_status;
     json += ",\"filter_text\":\""; json += mqtt_weller_filter_text(m.weller_filter_status); json += "\"";
-    json += ",\"filter_runtime_min\":"; json += m.weller_filter_runtime_minutes;
-    json += ",\"filter_runtime_text\":\""; json += duration_text_minutes(m.weller_filter_runtime_minutes); json += "\"";
-    json += ",\"filter_programmed_min\":"; json += m.weller_programmed_filter_minutes;
-    json += ",\"filter_programmed_text\":\""; json += duration_text_minutes(m.weller_programmed_filter_minutes); json += "\"";
+    json += ",\"filter_runtime_min\":"; json += filter_runtime_min;
+    json += ",\"filter_runtime_text\":\""; json += duration_text_minutes(filter_runtime_min); json += "\"";
+    json += ",\"filter_lifetime_min\":"; json += filter_lifetime_min;
+    json += ",\"filter_lifetime_text\":\""; json += duration_text_minutes(filter_lifetime_min); json += "\"";
+    json += ",\"filter_remaining_min\":"; json += filter_remaining_min;
+    json += ",\"filter_remaining_text\":\""; json += duration_text_minutes(filter_remaining_min); json += "\"";
+    // Keep the old raw state keys for user automations that consume the module
+    // JSON directly. Home Assistant discovery now uses the unified names above.
+    json += ",\"filter_programmed_min\":"; json += filter_lifetime_min;
+    json += ",\"filter_programmed_text\":\""; json += duration_text_minutes(filter_lifetime_min); json += "\"";
     json += ",\"sw\":"; json += m.weller_version;
   }
 

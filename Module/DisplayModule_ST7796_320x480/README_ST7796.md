@@ -44,7 +44,7 @@ v30 also inherited the AXS15231B full-frame Canvas strategy. A complete RGB565 f
 - Addressing: automatic display range starting at `0x40` (same allocator as the other OFE displays)
 - Capabilities include `CAP_DISPLAY_320X480` and dedicated `CAP_DISPLAY_ST7796`
 - Firmware target: `DISPLAY_ST7796_320X480`
-- Default firmware version: `1.0.7beta`
+- Default firmware version: `1.0.8RC`
 
 The dedicated target/capability prevents the regular AXS15231B 320x480 firmware from being accepted as a normal OTA image for this hardware.
 

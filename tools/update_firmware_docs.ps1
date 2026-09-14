@@ -13,6 +13,7 @@ $targets = @(
   @{ Name='Weller Zero Smog'; Path='Module\WellerZeroSmogModule\WellerZeroSmogModule.ino'; Prefix='OFE_MODULE_FW'; Target='WELLER_ZERO_SMOG'; Address='0x30'; Board='ESP32 DevKit V1' },
   @{ Name='Display 320x480'; Path='Module\DisplayModule_320x480\DisplayModule_320x480.ino'; Prefix='OFE_MODULE_FW'; Target='DISPLAY_320X480'; Address='0x40'; Board='ESP32-S3 / JC3248W535C_I_Y' },
   @{ Name='Display 800x480'; Path='Module\DisplayModule_800x480\DisplayModule_800x480.ino'; Prefix='OFE_MODULE_FW'; Target='DISPLAY_800X480'; Address='0x40'; Board='ESP32-S3 / Guition JC8048W550' },
+  @{ Name='Display ST7796 320x480'; Path='Module\DisplayModule_ST7796_320x480\DisplayModule_ST7796_320x480.ino'; Prefix='OFE_MODULE_FW'; Target='DISPLAY_ST7796_320X480'; Address='0x40'; Board='ESP32-S3 / ST7796 320x480' },
   @{ Name='Universal RS232'; Path='Module\UniversalRs232Module\UniversalRs232Module.ino'; Prefix='OFE_MODULE_FW'; Target='UNIVERSAL_RS232'; Address='0x50'; Board='ESP32 DevKit V1' },
   @{ Name='Modbus RTU'; Path='Module\ModbusRtuModule\ModbusRtuModule.ino'; Prefix='OFE_MODULE_FW'; Target='MODBUS_RTU'; Address='0x60'; Board='ESP32 DevKit V1' }
 )

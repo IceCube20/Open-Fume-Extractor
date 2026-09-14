@@ -70,6 +70,9 @@ class FanIoDynamicSourceTest(unittest.TestCase):
         self.assertIn("belegt: ", self.master_status)
         self.assertIn("OFE-Bus TX", self.master_status)
         self.assertIn("OFE-Bus RX", self.master_status)
+        self.assertIn("pin>=34&&pin<=39", self.master_status)
+        self.assertIn("kein interner Pull-up/down", self.master_status)
+        self.assertIn("external resistor required", self.master_status)
 
     def test_fan_descriptor_exposes_editor_only_flags(self):
         for source in (self.fan, self.pro):

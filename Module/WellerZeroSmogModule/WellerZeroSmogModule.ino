@@ -62,7 +62,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
 #define OFE_MODULE_FW_PATCH 79
-#define OFE_MODULE_FW_SUFFIX "beta"
+#define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
 static const uint8_t FW_MAJOR = OFE_MODULE_FW_MAJOR;
@@ -1435,6 +1435,5 @@ void loop() {
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);
 }
-
 
 

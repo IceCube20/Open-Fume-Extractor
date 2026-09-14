@@ -26,6 +26,13 @@ static void web_shell_begin(String& html, const char* title, const char* section
   html += F(">Deutsch</option><option value='en'");
   if (!web_is_german()) html += F(" selected");
   html += F(">English</option></select><a class='btn "); html += strcmp(active_page, "status") == 0 ? F("active") : F("secondary"); html += F("' href='/'>Status</a><a class='btn "); html += strcmp(active_page, "config") == 0 ? F("active") : F("secondary"); html += F("' href='/config'>"); html += web_text("Netzwerk Setup", "Network Setup"); html += F("</a><a class='btn "); html += strcmp(active_page, "update") == 0 ? F("active") : F("secondary"); html += F("' href='/update'>Updates</a><a class='btn "); html += strcmp(active_page, "diagnostics") == 0 ? F("active") : F("secondary"); html += F("' href='/diagnostics'>"); html += web_text("Bus Diagnose", "Bus Diagnostics"); html += F("</a><a class='btn "); html += strcmp(active_page, "logic") == 0 ? F("active") : F("secondary"); html += F("' href='/logic'>"); html += web_text("Logik Designer", "Logic Designer"); html += F("</a><button class='danger' onclick='restartShellMaster()'>"); html += web_text("Neustart", "Restart"); html += F("</button></nav></header><main>");
+#if !OFE_DEVELOPER_MODE_ENABLE
+  const int dev_button_start = html.indexOf("<button class='secondary dev-toggle brand-dev' id='shell_dev_btn'");
+  if (dev_button_start >= 0) {
+    const int dev_button_end = html.indexOf("</button>", dev_button_start);
+    if (dev_button_end >= dev_button_start) html.remove(dev_button_start, dev_button_end + 9 - dev_button_start);
+  }
+#endif
   html += web_csrf_script();
   html += F("<div class='page-head'><div class='eyebrow'>"); html += html_escape(String(section)); html += F("</div><h1>"); html += html_escape(String(title)); html += F("</h1></div>");
 }

@@ -34,7 +34,12 @@ class MasterHardeningSourceTest(unittest.TestCase):
 
     def test_public_developer_mode_is_disabled(self):
         config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")
+        shell = self.read("OpenFumeExtractorMaster/src/WebShell.inc.h")
+        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
         self.assertIn("#define OFE_DEVELOPER_MODE_ENABLE 0", config)
+        self.assertIn("#if !OFE_DEVELOPER_MODE_ENABLE", shell)
+        self.assertIn("html.remove(dev_button_start", shell)
+        self.assertIn('#dev_btn{display:none!important}', status)
         legacy_password = "OFE" + "develop" + "123"
         self.assertNotIn(legacy_password, config)
 

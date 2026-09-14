@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Display 800x480",
-  "version": "1.4.5beta",
+  "version": "1.4.5RC",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Display-800x480/Display-800x480-1.4.5beta-merged.bin",
+          "path": "../../firmware/Display-800x480/Display-800x480-1.4.5RC-merged.bin",
           "offset": 0
         }
       ]

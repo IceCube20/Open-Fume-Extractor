@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Modbus RTU",
-  "version": "1.0.57alpha",
+  "version": "1.0.57beta",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Modbus-RTU/Modbus-RTU-1.0.57alpha-merged.bin",
+          "path": "../../firmware/Modbus-RTU/Modbus-RTU-1.0.57beta-merged.bin",
           "offset": 0
         }
       ]

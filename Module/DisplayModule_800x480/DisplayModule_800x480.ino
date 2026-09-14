@@ -307,7 +307,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 4
 #define OFE_MODULE_FW_PATCH 5
-#define OFE_MODULE_FW_SUFFIX "beta"
+#define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
 static const uint8_t FW_MAJOR = OFE_MODULE_FW_MAJOR;
@@ -2091,7 +2091,7 @@ static void draw_static_panel_test() {
   gfx->setTextColor(RGB565(0, 0, 0));
   gfx->setTextSize(2);
   gfx->setCursor(24, DISPLAY_RGB_HEIGHT - 58);
-  gfx->print("OFE 800x480 STATIC RGB TEST 1.3.12beta");
+  gfx->print("OFE 800x480 STATIC RGB TEST " OFE_MODULE_FW_VERSION);
   gfx->setCursor(24, DISPLAY_RGB_HEIGHT - 32);
   gfx->print("No LVGL, no RS485. Image must be rock solid.");
   gfx->flush(true);
