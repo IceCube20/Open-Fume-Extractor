@@ -5,6 +5,7 @@
 #include <Update.h>
 #include <stdarg.h>
 #include "src/ProfileEntityFwd.h"
+#include "src/OfeStateTransaction.h"
 #ifndef OFE_STATUS_LED_ENABLE
 #define OFE_STATUS_LED_ENABLE 1
 #endif
@@ -63,7 +64,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 57
+#define OFE_MODULE_FW_PATCH 59
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -288,7 +289,6 @@ static bool profile_uses_text_output(const ProfileEntity& e);
 static bool append_profile_entity_value(uint8_t* p, uint8_t& o, const ProfileEntity& e);
 static uint8_t entity_read_func_code(const ProfileEntity& e);
 static uint8_t entity_write_func_code(const ProfileEntity& e);
-static ProfileEntity* modbus_find_entity_for_response(uint8_t slave, uint8_t fc, uint16_t reg);
 static bool modbus_send_request(ProfileEntity& e, uint8_t fc, uint16_t value);
 static bool profile_output_entity(const ProfileEntity& e);
 static bool profile_output_enable_entity(const ProfileEntity& e);
@@ -315,6 +315,18 @@ static uint8_t profile_readback_entity_id = 0;
 static uint8_t pending_modbus_entity_id = 0;
 static uint8_t pending_modbus_func = 0;
 static uint32_t pending_modbus_ms = 0;
+static uint8_t pending_modbus_slave = 0;
+static uint16_t pending_modbus_reg = 0;
+static uint16_t pending_modbus_value = 0;
+struct ModbusQueuedWrite {
+  uint8_t entity_id;
+  uint8_t function;
+  uint16_t value;
+};
+static ModbusQueuedWrite modbus_writes[PROFILE_ENTITY_MAX];
+static uint8_t modbus_write_count = 0;
+static bool modbus_recovering = false;
+static uint32_t modbus_recovery_ms = 0;
 
 static const char fault_map_text[] =
   "0x0001,warn,Local UART inactive,Lokaler UART inaktiv,0\n";
@@ -1646,7 +1658,7 @@ static uint8_t entity_write_func_code(const ProfileEntity& e) {
 }
 
 static bool modbus_send_request(ProfileEntity& e, uint8_t fc, uint16_t value) {
-  if (!fc) return false;
+  if (!fc || pending_modbus_entity_id || modbus_recovering) return false;
   const uint8_t slave = e.slave ? e.slave : modbus_slave;
   if (!slave || slave > 247) return false;
   uint8_t frame[8];
@@ -1671,11 +1683,34 @@ static bool modbus_send_request(ProfileEntity& e, uint8_t fc, uint16_t value) {
   if (!append_active_checksum(frame, len, sizeof(frame))) return false;
   pending_modbus_entity_id = e.id;
   pending_modbus_func = fc;
+  pending_modbus_slave = slave;
+  pending_modbus_reg = e.reg;
+  pending_modbus_value = ((uint16_t)frame[4] << 8) | frame[5];
   pending_modbus_ms = millis();
   local_send_raw(frame, len);
   return true;
 }
 
+static bool modbus_queue_write(uint8_t id, uint8_t fc, uint16_t value, bool coalesce = true) {
+  for (uint8_t i = 0; i < modbus_write_count; ++i) {
+    if (!coalesce || modbus_writes[i].entity_id != id) continue;
+    modbus_writes[i] = {id, fc, value};
+    return true;
+  }
+  if (modbus_write_count >= PROFILE_ENTITY_MAX) return false;
+  modbus_writes[modbus_write_count++] = {id, fc, value};
+  return true;
+}
+
+static void modbus_reset_exchange() {
+  pending_modbus_entity_id = 0;
+  modbus_write_count = 0;
+  profile_readback_entity_id = 0;
+  rx_packet_len = 0;
+  // Drain delayed responses before issuing requests against the new profile.
+  modbus_recovering = true;
+  modbus_recovery_ms = millis();
+}
 
 static uint8_t profile_max_entity_index(const String& cfg) {
   uint8_t max_idx = 0;
@@ -1700,13 +1735,25 @@ static uint8_t profile_max_entity_index(const String& cfg) {
 
 static bool apply_profile_text(const String& cfg, bool persist) {
   if (!cfg.length()) {
+    if (persist && prefs.isKey("profile_text") && !prefs.remove("profile_text")) return false;
     profile_clear_entities();
+    modbus_reset_exchange();
     saved_profile_text = "";
-    if (persist) prefs.remove("profile_text");
     descriptor_dirty = true;
     return true;
   }
   if (cfg.length() > PROFILE_TEXT_MAX) return false;
+
+  const ofe_profile::StateRegion regions[] = {
+    ofe_profile::region(profile_entities), ofe_profile::region(profile_entity_count),
+    ofe_profile::region(profile_readback_entity_id), ofe_profile::region(profile_name),
+    ofe_profile::region(station_name), ofe_profile::region(frame_name),
+    ofe_profile::region(protocol_name), ofe_profile::region(checksum_name),
+    ofe_profile::region(local_baud), ofe_profile::region(local_serial_config),
+    ofe_profile::region(modbus_slave), ofe_profile::region(default_poll_ms),
+  };
+  ofe_profile::StateTransaction transaction(regions, sizeof(regions) / sizeof(regions[0]));
+  if (!transaction.valid()) return false;
 
   String v = config_value(cfg, "profile");
   if (!v.length()) v = config_value(cfg, "name");
@@ -1912,12 +1959,14 @@ static bool apply_profile_text(const String& cfg, bool persist) {
     if (profile_entity_count >= PROFILE_ENTITY_MAX) break;
   }
 
-  saved_profile_text = cfg;
   local_serial_config = serial_config_from_frame(frame_name);
   if (persist) {
-    prefs.putString("profile_text", cfg);
+    if (prefs.putString("profile_text", cfg) != cfg.length()) return false;
     save_profile_config();
   }
+  saved_profile_text = cfg;
+  transaction.commit();
+  modbus_reset_exchange();
   descriptor_dirty = true;
   restart_local_uart();
   return true;
@@ -1928,29 +1977,13 @@ static ProfileEntity* profile_find_entity(uint8_t id) {
   return nullptr;
 }
 
-static ProfileEntity* modbus_find_entity_for_response(uint8_t slave, uint8_t fc, uint16_t reg) {
-  if (pending_modbus_entity_id) {
-    ProfileEntity* e = profile_find_entity(pending_modbus_entity_id);
-    if (e && (e->slave ? e->slave : modbus_slave) == slave) return e;
-  }
-  for (uint8_t i = 0; i < profile_entity_count; ++i) {
-    ProfileEntity& e = profile_entities[i];
-    if (!e.used) continue;
-    if ((e.slave ? e.slave : modbus_slave) != slave) continue;
-    if (e.reg != reg) continue;
-    const uint8_t rfc = profile_entity_readable(e) ? entity_read_func_code(e) : 0;
-    const uint8_t wfc = profile_entity_writable(e) ? entity_write_func_code(e) : 0;
-    if (rfc == fc || wfc == fc) return &e;
-  }
-  return nullptr;
-}
-
 static bool process_profile_rx(const uint8_t* data, uint8_t len) {
-  if (!data || len < 5) return false;
+  if (!data || len < 5 || !pending_modbus_entity_id || modbus_recovering) return false;
   const uint8_t slave = data[0];
   uint8_t fc = data[1];
-  if (slave == 0 || slave > 247) return false;
+  if (slave != pending_modbus_slave || (fc & 0x7F) != pending_modbus_func) return false;
   if (fc & 0x80) {
+    if (len != 5) return false;
     pending_modbus_entity_id = 0;
     return true;
   }
@@ -1958,10 +1991,12 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
   ProfileEntity* e = nullptr;
   uint16_t echo_reg = 0;
   if (fc == 0x05 || fc == 0x06) {
-    if (len < 8) return false;
+    if (len != 8) return false;
     echo_reg = ((uint16_t)data[2] << 8) | data[3];
-    e = modbus_find_entity_for_response(slave, fc, echo_reg);
-    if (!e) return true;
+    const uint16_t echo_value = ((uint16_t)data[4] << 8) | data[5];
+    if (echo_reg != pending_modbus_reg || echo_value != pending_modbus_value) return false;
+    e = profile_find_entity(pending_modbus_entity_id);
+    if (!e) return false;
     // A write echo confirms transport only; it is not a physical readback.
     // RW is immediately followed by its configured read function. WO has no
     // readback by definition.
@@ -1976,22 +2011,12 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
   if (fc >= 0x01 && fc <= 0x04) {
     if (len < 5) return false;
     e = pending_modbus_entity_id ? profile_find_entity(pending_modbus_entity_id) : nullptr;
-    if (!e) {
-      for (uint8_t i = 0; i < profile_entity_count; ++i) {
-        if (profile_entities[i].used && profile_entity_readable(profile_entities[i]) &&
-            (profile_entities[i].slave ? profile_entities[i].slave : modbus_slave) == slave &&
-            entity_read_func_code(profile_entities[i]) == fc) {
-          e = &profile_entities[i];
-          break;
-        }
-      }
-    }
-    if (!e || !profile_entity_readable(*e)) { pending_modbus_entity_id = 0; return true; }
+    if (!e || !profile_entity_readable(*e)) return false;
     if (fc == 0x01 || fc == 0x02) {
-      if (len < 6 || data[2] < 1) return false;
+      if (len != 6 || data[2] != 1) return false;
       profile_store_read_value(*e, (data[3] & 0x01) != 0 ? 1 : 0);
     } else {
-      if (len < 7 || data[2] < 2) return false;
+      if (len != 7 || data[2] != 2) return false;
       const uint16_t raw = ((uint16_t)data[3] << 8) | data[4];
       profile_store_read_value(*e, raw);
     }
@@ -1999,7 +2024,7 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
     pending_modbus_entity_id = 0;
     return true;
   }
-  return true;
+  return false;
 }
 
 static bool profile_send_entity(ProfileEntity& e, const uint8_t* data, uint8_t len) {
@@ -2058,10 +2083,14 @@ static bool profile_send_entity(ProfileEntity& e, const uint8_t* data, uint8_t l
     e.value = old_value;
     e.last_update_ms = old_update_ms;
     memcpy(e.text_value, old_text_value, sizeof(e.text_value));
-    profile_readback_entity_id = e.id;
-    e.last_poll_ms = 0;
   }
-  const bool sent = modbus_send_request(e, fc, raw);
+  const bool sent = modbus_queue_write(e.id, fc, raw, !str_eq_ci(e.type, "button"));
+  if (!sent) {
+    e.bool_value = old_bool_value;
+    e.value = old_value;
+    e.last_update_ms = old_update_ms;
+    memcpy(e.text_value, old_text_value, sizeof(e.text_value));
+  }
   if (sent && !preserve_actual && !str_eq_ci(e.type, "button")) {
     // WO: keep the last issued command as runtime target/shadow. A Modbus
     // write response confirms transport/device acceptance, but it is not a
@@ -2173,6 +2202,8 @@ static void update_local_fault_state(uint32_t now) {
 
 static void output_off() {
   static const uint8_t off_payload[] = {'0'};
+  // A failsafe supersedes queued commands, including repeated button writes.
+  modbus_write_count = 0;
   for (uint8_t i = 0; i < profile_entity_count; ++i) {
     ProfileEntity& e = profile_entities[i];
     if (!e.used || !profile_output_entity(e)) continue;
@@ -2189,11 +2220,36 @@ static void check_output_failsafe() {
   }
   if (!output_failsafe_active) output_off();
 }
+static uint32_t modbus_response_timeout_ms() {
+  const uint32_t baud = local_baud >= 300UL ? local_baud : 300UL;
+  // The pending timestamp includes the blocking transmit; budget both frames.
+  const uint32_t wire_ms = (16UL * 12UL * 1000UL + baud - 1UL) / baud;
+  const uint32_t deadline = wire_ms + local_rx_idle_gap_ms() + 150UL;
+  return deadline > 250UL ? deadline : 250UL;
+}
+
 static void profile_poll_tick() {
   if (!profile_entity_count) return;
   const uint32_t now = millis();
-  if (pending_modbus_entity_id && (uint32_t)(now - pending_modbus_ms) < 250UL) return;
-  if (pending_modbus_entity_id && (uint32_t)(now - pending_modbus_ms) >= 250UL) pending_modbus_entity_id = 0;
+  if (pending_modbus_entity_id && (uint32_t)(now - pending_modbus_ms) < modbus_response_timeout_ms()) return;
+  if (pending_modbus_entity_id) {
+    pending_modbus_entity_id = 0;
+    modbus_recovering = true;
+    modbus_recovery_ms = now;
+  }
+  if (modbus_recovering) {
+    if ((uint32_t)(now - modbus_recovery_ms) < 250UL || rx_packet_len ||
+        (uint32_t)(now - rx_packet_last_ms) < local_rx_idle_gap_ms()) return;
+    modbus_recovering = false;
+  }
+  if (modbus_write_count) {
+    const ModbusQueuedWrite write = modbus_writes[0];
+    ProfileEntity* target = profile_find_entity(write.entity_id);
+    if (target) modbus_send_request(*target, write.function, write.value);
+    --modbus_write_count;
+    memmove(modbus_writes, modbus_writes + 1, modbus_write_count * sizeof(modbus_writes[0]));
+    return;
+  }
   if (profile_poll_pause_until_ms && (int32_t)(now - profile_poll_pause_until_ms) < 0) return;
   if ((uint32_t)(now - last_profile_poll_ms) < 50UL) return;
   last_profile_poll_ms = now;

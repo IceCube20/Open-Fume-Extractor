@@ -67,6 +67,8 @@ void Parser::reset() {
 
 void Parser::resetStats() {
   stats_ = BusStats();
+  last_length_error_ = LengthErrorSnapshot();
+  last_version_error_ = VersionErrorSnapshot();
 }
 
 bool Parser::input(uint8_t byte, Frame& out) {
@@ -116,6 +118,8 @@ bool Parser::decodeBuffer(Frame& out) {
   }
   if (buf_[0] != PROTOCOL_VERSION) {
     stats_.bad_version++;
+    last_version_error_.actual_length = (uint16_t)len_;
+    memcpy(last_version_error_.header, buf_, sizeof(last_version_error_.header));
     return false;
   }
 
@@ -123,6 +127,32 @@ bool Parser::decodeBuffer(Frame& out) {
   const size_t expected = (size_t)6 + payload_len + 2;
   if (payload_len > MAX_PAYLOAD || len_ != expected) {
     stats_.bad_length++;
+    last_length_error_ = LengthErrorSnapshot();
+    last_length_error_.actual_length = (uint16_t)len_;
+    last_length_error_.expected_length = (uint16_t)expected;
+    memcpy(last_length_error_.header, buf_, sizeof(last_length_error_.header));
+    // Inspect possible joined contents for diagnostics only; never recover them.
+    if (payload_len <= MAX_PAYLOAD && expected <= len_) {
+      last_length_error_.first_crc_checked = true;
+      last_length_error_.first_crc_valid =
+          crc16_modbus(buf_, expected - 2) == get_u16_le(buf_ + expected - 2);
+      const size_t remaining = len_ - expected;
+      last_length_error_.remaining_length = (uint16_t)remaining;
+      if (remaining >= sizeof(last_length_error_.second_header)) {
+        last_length_error_.second_header_present = true;
+        memcpy(last_length_error_.second_header, buf_ + expected,
+               sizeof(last_length_error_.second_header));
+        const uint8_t second_payload = buf_[expected + 5];
+        const size_t second_expected = (size_t)second_payload + 8;
+        last_length_error_.second_expected_length = (uint16_t)second_expected;
+        if (second_payload <= MAX_PAYLOAD && remaining == second_expected) {
+          last_length_error_.second_crc_checked = true;
+          last_length_error_.second_crc_valid =
+              crc16_modbus(buf_ + expected, remaining - 2) ==
+              get_u16_le(buf_ + len_ - 2);
+        }
+      }
+    }
     return false;
   }
 
@@ -143,18 +173,6 @@ bool Parser::decodeBuffer(Frame& out) {
   return true;
 }
 
-void Link::writeEscaped(uint8_t byte) {
-  if (byte == SOF) {
-    stream_.write(ESC);
-    stream_.write(ESC_SOF);
-  } else if (byte == ESC) {
-    stream_.write(ESC);
-    stream_.write(ESC_ESC);
-  } else {
-    stream_.write(byte);
-  }
-}
-
 void Link::send(const Frame& frame) {
   if (frame.len > MAX_PAYLOAD) { parser_.countOverflow(); return; }
   if (send_route_ && send_route_(context_, frame)) { tx_network_ = true; return; }
@@ -167,7 +185,7 @@ void Link::sendPhysical(const Frame& frame) {
     parser_.countOverflow();
     return;
   }
-  uint8_t raw[MAX_PAYLOAD + 8];
+  uint8_t raw[2 * (MAX_PAYLOAD + 8) + 2];
   size_t n = 0;
   raw[n++] = PROTOCOL_VERSION;
   raw[n++] = frame.dst;
@@ -183,9 +201,20 @@ void Link::sendPhysical(const Frame& frame) {
   raw[n++] = (uint8_t)(crc & 0xFF);
   raw[n++] = (uint8_t)(crc >> 8);
 
-  stream_.write(SOF);
-  for (size_t i = 0; i < n; ++i) writeEscaped(raw[i]);
-  stream_.write(SOF);
+  // Expand backwards in place so escaping needs only one bounded stack buffer.
+  size_t begin = sizeof(raw);
+  raw[--begin] = SOF;
+  while (n) {
+    const uint8_t byte = raw[--n];
+    if (byte == SOF || byte == ESC) {
+      raw[--begin] = byte == SOF ? ESC_SOF : ESC_ESC;
+      raw[--begin] = ESC;
+    } else {
+      raw[--begin] = byte;
+    }
+  }
+  raw[--begin] = SOF;
+  stream_.write(raw + begin, sizeof(raw) - begin);
   stream_.flush();
   parser_.countTxFrame();
   if (activity_cb_) activity_cb_();
@@ -206,7 +235,9 @@ bool Link::poll(Frame& out) {
   while (budget-- && stream_.available()) {
     if (parser_.input((uint8_t)stream_.read(), out)) {
       rx_network_ = false;
-      if (serial_filter_ && !serial_filter_(context_, out)) continue;
+      const bool filtered = serial_filter_ && !serial_filter_(context_, out);
+      last_physical_frame_ = {out.dst, out.src, out.seq, out.cmd, out.len, filtered};
+      if (filtered) continue;
       if (activity_cb_) activity_cb_();
       return true;
     }

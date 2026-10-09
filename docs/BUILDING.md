@@ -7,7 +7,7 @@ deliberately excluded.
 ## Tested toolchain
 
 - Arduino IDE 2.x
-- Arduino-ESP32 3.3.11 for the master, standard modules and 320x480 display
+- Arduino-ESP32 3.3.12 for the master and standard targets (older tested images used 3.3.11)
 - Arduino-ESP32 3.2.0 plus the pinned high-performance SDK for the 800x480 display
 - Adafruit NeoPixel 1.15.5
 - LVGL 9.5.0

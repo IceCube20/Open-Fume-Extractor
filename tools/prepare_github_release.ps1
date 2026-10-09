@@ -33,7 +33,7 @@ $targets = @(
   @{ Name='Fan-IO-Pro'; Label='Fan/IO Pro'; Target='FAN_IO_PRO'; Chip='ESP32'; Flash='4 MB'; App='Module\FanIoProModule\build\esp32.esp32.esp32\FanIoProModule.ino.bin'; Merged='Module\FanIoProModule\build\esp32.esp32.esp32\FanIoProModule.ino.merged.bin' },
   @{ Name='Weller-Zero-Smog'; Label='Weller Zero Smog'; Target='WELLER_ZERO_SMOG'; Chip='ESP32'; Flash='4 MB'; App='Module\WellerZeroSmogModule\build\esp32.esp32.esp32\WellerZeroSmogModule.ino.bin'; Merged='Module\WellerZeroSmogModule\build\esp32.esp32.esp32\WellerZeroSmogModule.ino.merged.bin' },
   @{ Name='Display-320x480'; Label='Display 320x480'; Target='DISPLAY_320X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_320x480\build\esp32.esp32.esp32s3\DisplayModule_320x480.ino.bin'; Merged='Module\DisplayModule_320x480\build\esp32.esp32.esp32s3\DisplayModule_320x480.ino.merged.bin' },
-  @{ Name='Display-800x480'; Label='Display 800x480'; Target='DISPLAY_800X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_800x480\build\esp32.esp32.esp32s3\DisplayModule_800x480.ino.bin'; Merged='Module\DisplayModule_800x480\build\esp32.esp32.esp32s3\DisplayModule_800x480.ino.merged.bin' },
+  @{ Name='Display-800x480'; Label='Display 800x480'; Target='DISPLAY_800X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_800x480\build\ofe.esp32.ofe800\DisplayModule_800x480.ino.bin'; Merged='Module\DisplayModule_800x480\build\ofe.esp32.ofe800\DisplayModule_800x480.ino.merged.bin' },
   @{ Name='Display-ST7796-320x480'; Label='Display ST7796 320x480'; Target='DISPLAY_ST7796_320X480'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\DisplayModule_ST7796_320x480\build\esp32.esp32.esp32s3\DisplayModule_ST7796_320x480.ino.bin'; Merged='Module\DisplayModule_ST7796_320x480\build\esp32.esp32.esp32s3\DisplayModule_ST7796_320x480.ino.merged.bin' },
   @{ Name='Universal-RS232'; Label='Universal RS232'; Target='UNIVERSAL_RS232'; Chip='ESP32'; Flash='4 MB'; App='Module\UniversalRs232Module\build\esp32.esp32.esp32\UniversalRs232Module.ino.bin'; Merged='Module\UniversalRs232Module\build\esp32.esp32.esp32\UniversalRs232Module.ino.merged.bin' },
   @{ Name='Modbus-RTU'; Label='Modbus RTU'; Target='MODBUS_RTU'; Chip='ESP32'; Flash='4 MB'; App='Module\ModbusRtuModule\build\esp32.esp32.esp32\ModbusRtuModule.ino.bin'; Merged='Module\ModbusRtuModule\build\esp32.esp32.esp32\ModbusRtuModule.ino.merged.bin' }
@@ -85,6 +85,45 @@ function Assert-MergedContainsApp([string]$AppPath, [string]$MergedPath) {
   if ($appHash -ne $embeddedHash) {
     throw "Merged image does not contain the selected app at 0x10000: $MergedPath"
   }
+}
+
+# Validate the complete set before replacing any previously published files.
+foreach ($target in $targets) {
+  $app = if ([IO.Path]::IsPathRooted($target.App)) { $target.App } else { Join-Path $root $target.App }
+  $merged = if ([IO.Path]::IsPathRooted($target.Merged)) { $target.Merged } else { Join-Path $root $target.Merged }
+  foreach ($inputPath in @($app, $merged)) {
+    if (!(Test-Path -LiteralPath $inputPath)) { throw "Firmware build missing: $inputPath" }
+  }
+  $info = Get-FirmwareInfo $app
+  $mergedInfo = Get-FirmwareInfo $merged
+  if ($info.Target -ne $target.Target -or $mergedInfo.Target -ne $target.Target -or $info.Version -ne $mergedInfo.Version) {
+    throw "Target/version mismatch for $($target.Name)"
+  }
+  if ($target.Target -eq 'MASTER') {
+    $sourcePath = Join-Path $root 'OpenFumeExtractorMaster\src\MasterBuildConfig.h'
+    $prefix = 'MASTER_FW'
+    Assert-CommunityMaster $app
+    if ($info.Version -match 'Developer') { throw 'Developer firmware must not be published' }
+  } else {
+    $modulePath = ([regex]::Match($target.App, '^(Module\\[^\\]+)\\build\\')).Groups[1].Value
+    if (!$modulePath) { throw "Module source path missing: $($target.Name)" }
+    $sourcePath = Join-Path $root ($modulePath + '\' + (Split-Path $modulePath -Leaf) + '.ino')
+    $prefix = 'OFE_MODULE_FW'
+  }
+  $sourceText = Get-Content -LiteralPath $sourcePath -Raw
+  $numbers = foreach ($part in @('MAJOR','MINOR','PATCH')) {
+    $macro = [regex]::Match($sourceText, '(?m)^#define\s+' + $prefix + '_' + $part + '\s+(\d+)')
+    if (!$macro.Success) { throw "Version macro missing: $sourcePath ($part)" }
+    $macro.Groups[1].Value
+  }
+  $suffix = [regex]::Match($sourceText, '(?m)^#define\s+' + $prefix + '_SUFFIX\s+"([^"]+)"')
+  if (!$suffix.Success) { throw "Version suffix missing: $sourcePath" }
+  $expectedVersion = ($numbers -join '.') + $suffix.Groups[1].Value
+  if ($target.Target -eq 'MASTER') { $expectedVersion = $expectedVersion -replace '-Developer$', '' }
+  if ($info.Version -ne $expectedVersion) {
+    throw "Stale firmware for $($target.Name): compiled $($info.Version), source $expectedVersion"
+  }
+  Assert-MergedContainsApp $app $merged
 }
 
 if (Test-Path -LiteralPath $firmwareRoot) {

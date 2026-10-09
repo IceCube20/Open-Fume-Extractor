@@ -20,15 +20,12 @@ static void apply_status_led_config() {
 
 static bool save_status_led_config(bool enabled, uint8_t brightness_pct) {
   Preferences led_prefs;
-  if (!led_prefs.begin(MasterSettingsStore::NS_NET, false)) return false;
+  brightness_pct = constrain(brightness_pct, (uint8_t)10, (uint8_t)100);
+  if (!MasterSettingsStore::saveStatusLed(led_prefs, enabled, brightness_pct)) return false;
   status_led_enabled = enabled;
-  status_led_brightness_pct = constrain(brightness_pct, (uint8_t)10, (uint8_t)100);
-  bool ok = true;
-  ok = led_prefs.putBool(MasterSettingsStore::KEY_LED_ENABLED, status_led_enabled) && ok;
-  ok = led_prefs.putUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, status_led_brightness_pct) && ok;
-  led_prefs.end();
-  if (ok) apply_status_led_config();
-  return ok;
+  status_led_brightness_pct = brightness_pct;
+  apply_status_led_config();
+  return true;
 }
 
 static void apply_module_power_save_config() {
@@ -38,14 +35,12 @@ static void apply_module_power_save_config() {
 
 static bool save_module_power_save_config(bool enabled, uint16_t idle_minutes) {
   Preferences prefs;
-  if (!prefs.begin(MasterSettingsStore::NS_NET, false)) return false;
+  idle_minutes = constrain(idle_minutes, (uint16_t)1, (uint16_t)1440);
+  if (!MasterSettingsStore::savePowerSave(prefs, enabled, idle_minutes)) return false;
   module_power_save_enabled = enabled;
-  module_power_save_idle_min = constrain(idle_minutes, (uint16_t)1, (uint16_t)1440);
-  bool ok = prefs.putBool(MasterSettingsStore::KEY_POWER_SAVE_ENABLED, module_power_save_enabled);
-  ok = prefs.putUShort(MasterSettingsStore::KEY_POWER_SAVE_IDLE_MIN, module_power_save_idle_min) && ok;
-  prefs.end();
-  if (ok) apply_module_power_save_config();
-  return ok;
+  module_power_save_idle_min = idle_minutes;
+  apply_module_power_save_config();
+  return true;
 }
 
 static void netcfg_load() {
@@ -70,11 +65,11 @@ static void netcfg_load() {
   if (generated_web_password) {
     snprintf(master_bootstrap_password, sizeof(master_bootstrap_password), "%s", MASTER_DEFAULT_PASSWORD);
     web_pass = master_bootstrap_password;
-    net_prefs.putString(MasterSettingsStore::KEY_WEB_PASS, web_pass);
+    MasterSettingsStore::putStringVerified(net_prefs, MasterSettingsStore::KEY_WEB_PASS, web_pass);
   }
   if (ap_pass.length() < 8 || ap_pass.length() > 23) {
     ap_pass = MASTER_AP_PASSWORD;
-    net_prefs.putString(MasterSettingsStore::KEY_AP_PASS, ap_pass);
+    MasterSettingsStore::putStringVerified(net_prefs, MasterSettingsStore::KEY_AP_PASS, ap_pass);
   }
   ap_pass.toCharArray(master_ap_password, sizeof(master_ap_password));
   if (host == "open-fume-extractor") host = master_device_id;
@@ -137,29 +132,29 @@ static bool netcfg_save(const String& ssid, const String& pass, const String& ho
   if (!save_prefs.begin(MasterSettingsStore::NS_NET, false)) return false;
   bool ok = true;
 #define OFE_NET_PUT(expr) do { if (!(expr)) ok = false; } while (0)
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_WIFI_SSID, ssid));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_WIFI_PASS, pass));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_HOSTNAME, hostname));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_WEB_USER, web_user_arg));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_WEB_PASS, web_pass_arg));
-  OFE_NET_PUT(save_prefs.putBool(MasterSettingsStore::KEY_STATIC_IP, use_static));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_IP, ip.toString()));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_GATEWAY, gateway.toString()));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_SUBNET, subnet.toString()));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_DNS1, dns1.toString()));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_DNS2, dns2.toString()));
-  OFE_NET_PUT(save_prefs.putBool(MasterSettingsStore::KEY_MQTT_ENABLED, mqtt_en));
-  OFE_NET_PUT(save_prefs.putBool(MasterSettingsStore::KEY_MQTT_TLS, mqtt_tls));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_HOST, mqtt_host_arg));
-  OFE_NET_PUT(save_prefs.putUShort(MasterSettingsStore::KEY_MQTT_PORT, mqtt_port_arg));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_USER, mqtt_user_arg));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_PASS, mqtt_pass_arg));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_TOPIC, mqtt_topic_arg));
-  OFE_NET_PUT(save_prefs.putBool(MasterSettingsStore::KEY_MQTT_HA, mqtt_ha));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_DISC, mqtt_disc_arg));
-  OFE_NET_PUT(save_prefs.putString(MasterSettingsStore::KEY_MQTT_CA, mqtt_ca_arg));
-  OFE_NET_PUT(save_prefs.putBool(MasterSettingsStore::KEY_LED_ENABLED, led_en));
-  OFE_NET_PUT(save_prefs.putUChar(MasterSettingsStore::KEY_LED_BRIGHTNESS, constrain(led_pct, (uint8_t)10, (uint8_t)100)));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_WIFI_SSID, ssid));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_WIFI_PASS, pass));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_HOSTNAME, hostname));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_WEB_USER, web_user_arg));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_WEB_PASS, web_pass_arg));
+  OFE_NET_PUT(MasterSettingsStore::putBoolVerified(save_prefs, MasterSettingsStore::KEY_STATIC_IP, use_static));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_IP, ip.toString()));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_GATEWAY, gateway.toString()));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_SUBNET, subnet.toString()));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_DNS1, dns1.toString()));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_DNS2, dns2.toString()));
+  OFE_NET_PUT(MasterSettingsStore::putBoolVerified(save_prefs, MasterSettingsStore::KEY_MQTT_ENABLED, mqtt_en));
+  OFE_NET_PUT(MasterSettingsStore::putBoolVerified(save_prefs, MasterSettingsStore::KEY_MQTT_TLS, mqtt_tls));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_HOST, mqtt_host_arg));
+  OFE_NET_PUT(MasterSettingsStore::putUShortVerified(save_prefs, MasterSettingsStore::KEY_MQTT_PORT, mqtt_port_arg));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_USER, mqtt_user_arg));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_PASS, mqtt_pass_arg));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_TOPIC, mqtt_topic_arg));
+  OFE_NET_PUT(MasterSettingsStore::putBoolVerified(save_prefs, MasterSettingsStore::KEY_MQTT_HA, mqtt_ha));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_DISC, mqtt_disc_arg));
+  OFE_NET_PUT(MasterSettingsStore::putStringVerified(save_prefs, MasterSettingsStore::KEY_MQTT_CA, mqtt_ca_arg));
+  OFE_NET_PUT(MasterSettingsStore::putBoolVerified(save_prefs, MasterSettingsStore::KEY_LED_ENABLED, led_en));
+  OFE_NET_PUT(MasterSettingsStore::putUCharVerified(save_prefs, MasterSettingsStore::KEY_LED_BRIGHTNESS, constrain(led_pct, (uint8_t)10, (uint8_t)100)));
 #undef OFE_NET_PUT
   save_prefs.end();
   if (!ok) return false;
@@ -204,15 +199,15 @@ static bool netcfg_save_wifi(const String& ssid, const String& pass, const Strin
   if (!wifi_prefs.begin(MasterSettingsStore::NS_NET, false)) return false;
   bool ok = true;
 #define OFE_WIFI_PUT(expr) do { if (!(expr)) ok = false; } while (0)
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_WIFI_SSID, ssid));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_WIFI_PASS, pass));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_HOSTNAME, hostname));
-  OFE_WIFI_PUT(wifi_prefs.putBool(MasterSettingsStore::KEY_STATIC_IP, use_static));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_IP, ip.toString()));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_GATEWAY, gateway.toString()));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_SUBNET, subnet.toString()));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_DNS1, dns1.toString()));
-  OFE_WIFI_PUT(wifi_prefs.putString(MasterSettingsStore::KEY_DNS2, dns2.toString()));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_WIFI_SSID, ssid));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_WIFI_PASS, pass));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_HOSTNAME, hostname));
+  OFE_WIFI_PUT(MasterSettingsStore::putBoolVerified(wifi_prefs, MasterSettingsStore::KEY_STATIC_IP, use_static));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_IP, ip.toString()));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_GATEWAY, gateway.toString()));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_SUBNET, subnet.toString()));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_DNS1, dns1.toString()));
+  OFE_WIFI_PUT(MasterSettingsStore::putStringVerified(wifi_prefs, MasterSettingsStore::KEY_DNS2, dns2.toString()));
 #undef OFE_WIFI_PUT
   wifi_prefs.end();
   if (!ok) return false;
@@ -236,8 +231,8 @@ static void netcfg_reset() {
   bool persisted = false;
   if (reset_prefs.begin(MasterSettingsStore::NS_NET, false)) {
     reset_prefs.clear();
-    reset_prefs.putString(MasterSettingsStore::KEY_WIFI_SSID, "");
-    reset_prefs.putString(MasterSettingsStore::KEY_WIFI_PASS, "");
+    MasterSettingsStore::putStringVerified(reset_prefs, MasterSettingsStore::KEY_WIFI_SSID, "");
+    MasterSettingsStore::putStringVerified(reset_prefs, MasterSettingsStore::KEY_WIFI_PASS, "");
     reset_prefs.end();
     persisted = true;
   }
@@ -285,8 +280,8 @@ static void webauth_reset() {
   Preferences auth_prefs;
   bool persisted = false;
   if (auth_prefs.begin(MasterSettingsStore::NS_NET, false)) {
-    const bool user_written = auth_prefs.putString(MasterSettingsStore::KEY_WEB_USER, web_auth_user) > 0;
-    const bool password_written = auth_prefs.putString(MasterSettingsStore::KEY_WEB_PASS, master_bootstrap_password) > 0;
+    const bool user_written = MasterSettingsStore::putStringVerified(auth_prefs, MasterSettingsStore::KEY_WEB_USER, web_auth_user) > 0;
+    const bool password_written = MasterSettingsStore::putStringVerified(auth_prefs, MasterSettingsStore::KEY_WEB_PASS, master_bootstrap_password) > 0;
     auth_prefs.end();
     persisted = user_written && password_written;
   }

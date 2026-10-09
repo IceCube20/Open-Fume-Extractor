@@ -167,7 +167,7 @@ static String route_key(uint8_t addr, uint8_t bit);
 static String rule_key(uint8_t index, const char* suffix);
 static void load_input_action_rules();
 static void logic_runtime_tick();
-static void save_input_action_rule(uint8_t index, const MasterScheduler::InputActionRule& rule);
+static bool save_input_action_rule(uint8_t index, const MasterScheduler::InputActionRule& rule);
 static void web_handle_jbc_settings();
 static void web_handle_io_set();
 static void web_handle_module_output_set();

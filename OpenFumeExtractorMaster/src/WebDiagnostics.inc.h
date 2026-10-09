@@ -245,6 +245,32 @@ static void diagnostics_descriptor_header_value(const ModuleRecord& m, const cha
   }
 }
 
+// OFE transport availability is separate from the attached device's link.
+static int8_t diagnostics_device_link_state(const ModuleRecord& m) {
+  if (!m.online) return 0;
+  switch (m.type) {
+    case MODULE_JBC_BUS:
+    case MODULE_JBC_USB:
+      return (m.jbc_link_flags & FAST_FLAG_CONNECTED) ? 1 : 0;
+    case MODULE_WELLER_ZERO_SMOG:
+      return m.weller_uart_age_sec != 0xFFFF && m.weller_uart_age_sec <= 10 ? 1 : 0;
+    case MODULE_UNIVERSAL_RS232:
+    case MODULE_MODBUS_RTU:
+      if (!m.universal_entities_valid) return -1;
+      for (uint8_t i = 0; i < m.universal_entity_count; ++i) {
+        const UniversalEntityState& e = m.universal_entities[i];
+        if (e.id == 1 && e.len == 1) return e.data[0] != 0 && e.data[0] != '0' ? 1 : 0;
+      }
+      return -1;
+    case MODULE_FAN_IO:
+    case MODULE_FAN_IO_PRO:
+    case MODULE_DISPLAY:
+      return 1;
+    default:
+      return -1;
+  }
+}
+
 static String diagnostics_device_detail(const ModuleRecord& m) {
   char buf[96];
   switch (m.type) {
@@ -309,6 +335,8 @@ static void web_handle_diagnostics_state() {
   json += F(",\"requests\":"); json += st.requests;
   json += F(",\"responses\":"); json += st.responses;
   json += F(",\"timeouts\":"); json += st.timeouts;
+  json += F(",\"update_timeouts\":"); json += st.update_timeouts;
+  json += F(",\"recovery_timeouts\":"); json += st.recovery_timeouts;
   json += F(",\"dropped\":"); json += st.dropped_events;
   json += F(",\"bad_seq\":"); json += st.bad_seq;
   json += F(",\"bad_cmd\":"); json += st.bad_cmd;
@@ -399,6 +427,7 @@ static void web_handle_diagnostics_state() {
     json += '"';
     json += F(",\"caps\":"); json += m.caps;
     json += F(",\"device_bus\":\""); json += diagnostics_device_bus_name(m.type); json += '"';
+    json += F(",\"device_link_state\":"); json += (int)diagnostics_device_link_state(m);
     json += F(",\"device_detail\":\""); json += json_escape(device_detail.c_str()); json += '"';
     if (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) {
       char v_profile[48], v_station[48], v_protocol[32], v_checksum[32], v_slave[12];
@@ -453,6 +482,10 @@ static void web_handle_diagnostics_state() {
       json += '}';
     }
     json += F(",\"requests\":"); json += bd.requests;
+    json += F(",\"update_requests\":"); json += bd.update_requests;
+    json += F(",\"update_timeouts\":"); json += bd.update_timeouts;
+    json += F(",\"recovery_requests\":"); json += bd.recovery_requests;
+    json += F(",\"recovery_timeouts\":"); json += bd.recovery_timeouts;
     json += F(",\"responses\":"); json += bd.responses;
     json += F(",\"timeouts\":"); json += bd.timeouts;
     json += F(",\"late_responses\":"); json += bd.late_responses;
@@ -462,6 +495,88 @@ static void web_handle_diagnostics_state() {
     json += F(",\"timeout_state\":"); json += bd.timeout_state;
     json += F(",\"timeout_telemetry\":"); json += bd.timeout_telemetry;
     json += F(",\"timeout_io\":"); json += bd.timeout_io;
+    if (developer_mode_enabled) {
+      json += F(",\"io_timeouts\":{\"get\":"); json += bd.timeout_get_io;
+      json += F(",\"set\":"); json += bd.timeout_set_io;
+      json += F(",\"other\":"); json += bd.timeout_io - bd.timeout_get_io - bd.timeout_set_io;
+      json += '}';
+      if (bd.last_timeout_probe_valid) {
+        const RequestWaitObservation& probe = bd.last_timeout_probe;
+        json += F(",\"timeout_probe\":{\"budget_ms\":"); json += bd.last_timeout_budget_ms;
+        json += F(",\"elapsed_us\":"); json += probe.elapsed_us;
+        json += F(",\"max_poll_gap_us\":"); json += probe.max_poll_gap_us;
+        json += F(",\"rx_frames\":"); json += probe.rx_frames;
+        json += F(",\"crc\":"); json += probe.crc_errors;
+        json += F(",\"len\":"); json += probe.bad_length;
+        json += F(",\"version\":"); json += probe.bad_version;
+        json += F(",\"escape\":"); json += probe.escape_errors;
+        json += F(",\"overflow\":"); json += probe.overflow_errors;
+        json += F(",\"short\":"); json += probe.short_frames;
+        json += F(",\"bad_seq\":"); json += probe.bad_seq;
+        json += F(",\"bad_cmd\":"); json += probe.bad_cmd;
+        json += F(",\"late\":"); json += probe.late_responses;
+        json += F(",\"request_seq\":"); json += bd.last_timeout_seq;
+        if (probe.bad_length) {
+          const jbc_rs485::LengthErrorSnapshot& error = bd.last_timeout_length_error;
+          json += F(",\"length_error\":{\"actual\":"); json += error.actual_length;
+          json += F(",\"expected\":"); json += error.expected_length;
+          json += F(",\"header\":[");
+          for (uint8_t hi = 0; hi < sizeof(error.header); ++hi) {
+            if (hi) json += ',';
+            json += error.header[hi];
+          }
+          json += F("],\"split\":{\"first_checked\":"); json += error.first_crc_checked ? '1' : '0';
+          json += F(",\"first_valid\":"); json += error.first_crc_valid ? '1' : '0';
+          json += F(",\"remaining\":"); json += error.remaining_length;
+          json += F(",\"second_expected\":"); json += error.second_expected_length;
+          json += F(",\"second_checked\":"); json += error.second_crc_checked ? '1' : '0';
+          json += F(",\"second_valid\":"); json += error.second_crc_valid ? '1' : '0';
+          json += F(",\"header\":[");
+          if (error.second_header_present) {
+            for (uint8_t hi = 0; hi < sizeof(error.second_header); ++hi) {
+              if (hi) json += ',';
+              json += error.second_header[hi];
+            }
+          }
+          json += F("]}}");
+        }
+        if (probe.bad_version) {
+          const jbc_rs485::VersionErrorSnapshot& error = bd.last_timeout_version_error;
+          json += F(",\"version_error\":{\"actual\":"); json += error.actual_length;
+          json += F(",\"header\":[");
+          for (uint8_t hi = 0; hi < sizeof(error.header); ++hi) {
+            if (hi) json += ',';
+            json += error.header[hi];
+          }
+          json += F("]}");
+        }
+        if (probe.rx_frames) {
+          const jbc_rs485::PhysicalFrameSnapshot& frame = bd.last_timeout_physical_frame;
+          const uint8_t header[] = {jbc_rs485::PROTOCOL_VERSION, frame.dst, frame.src, frame.seq, frame.cmd, frame.len};
+          json += F(",\"last_physical_frame\":{\"header\":[");
+          for (uint8_t hi = 0; hi < sizeof(header); ++hi) {
+            if (hi) json += ',';
+            json += header[hi];
+          }
+          json += F("],\"filtered\":"); json += frame.filtered ? F("true") : F("false");
+          json += '}';
+        }
+        const RequestUnmatchedFrame& unmatched = bd.last_timeout_unmatched_frame;
+        if (unmatched.count) {
+          const uint8_t header[] = {jbc_rs485::PROTOCOL_VERSION, unmatched.dst, unmatched.src, unmatched.seq, unmatched.cmd, unmatched.len};
+          json += F(",\"unmatched_frame\":{\"count\":"); json += unmatched.count;
+          json += F(",\"reason\":"); json += (uint8_t)unmatched.reason;
+          json += F(",\"network\":"); json += unmatched.network ? F("true") : F("false");
+          json += F(",\"header\":[");
+          for (uint8_t hi = 0; hi < sizeof(header); ++hi) {
+            if (hi) json += ',';
+            json += header[hi];
+          }
+          json += F("]}");
+        }
+        json += '}';
+      }
+    }
     json += F(",\"timeout_universal\":"); json += bd.timeout_universal;
     json += F(",\"timeout_display_status\":"); json += bd.timeout_display_status;
     json += F(",\"timeout_display_cache\":"); json += bd.timeout_display_cache;
@@ -784,7 +899,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-dir,.diag-status,.diag-mini-badge{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:800;background:#1b2430}
 .tx{color:#7db7ff}.rx{color:#66e38a}.uart_tx{color:#8fd7ff}.uart_rx{color:#b6f080}.timeout{color:#ff7782}.info{color:#f2c96b}
 .diag-status.ok{color:#72e68d;background:#13281a}.diag-status.warn{color:#f2c96b;background:#2b2613}.diag-status.err{color:#ff8b93;background:#30171a}
-.data{font-family:Consolas,monospace;color:#aeb8c5;word-break:break-all}.decoded{min-width:300px;line-height:1.35}
+.data{font-family:var(--ofe-font-ui);color:#aeb8c5;word-break:break-all}.decoded{min-width:300px;line-height:1.35}
 .diag-log-panel{margin-top:14px}.diag-filter-hit{background:rgba(255,209,102,.06)}#diag_filter{min-width:220px}
 .diag-module-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
 .diag-module-card{border:1px solid var(--line);border-radius:14px;background:#0c131c;overflow:hidden}
@@ -809,6 +924,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-arrow{text-align:center;color:var(--muted);font-size:18px;line-height:15px;margin:-3px 0}
 .diag-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#69717d}
 .diag-dot.ok{background:#5cdb78}.diag-dot.err{background:#ff6570}
+.diag-dot.warn{background:#f2c36b}
 .diag-local-summary{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#0c131c}
 .diag-payload details{max-width:360px}.diag-payload summary{cursor:pointer;color:#8fb9df}.diag-payload-line{margin-top:5px}
 .diag-rate-muted{color:var(--muted);font-size:11px}
@@ -827,6 +943,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-module-copy{min-width:0}.diag-module-name{font-size:15px;font-weight:700;color:#eef3f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.diag-module-type{margin-top:3px;color:#7f8b98;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .diag-mini-badge.diag-online-pill{flex:0 0 78px;width:78px;min-width:78px;height:25px;padding:0 10px;justify-content:center;box-sizing:border-box;background:#303640;color:#aeb7c3;font-size:11px;font-weight:750}
 .diag-online-pill.is-online{background:#1f6f3e;color:#bff5ce}.diag-online-pill.is-offline{background:#4a252a;color:#ffc2c7}
+.diag-online-pill.is-warning{background:#57421f;color:#ffe0a3}
 .diag-module-dynamic{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}.diag-module-body{padding:14px;display:grid;gap:10px}
 .diag-status-metric{display:grid;grid-template-columns:1fr 1fr;gap:0;background:#101318;border:1px solid #2a313a;border-radius:9px;overflow:hidden}
 .diag-status-metric>div{min-width:0;padding:11px 12px}.diag-status-metric>div+div{border-left:1px solid #2a313a}
@@ -835,6 +952,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-errors-line{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:#101318;border:1px solid #2a313a;border-radius:9px}.diag-errors-line>.k{font-size:10px;color:#84909d;text-transform:uppercase}.diag-errors-line .diag-metric-split{display:flex;gap:5px}
 .diag-device-section{margin-top:auto;border-top:1px solid #2b3139;background:#13161b;padding:11px 14px 12px}
 .diag-device-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.diag-device-title{font-size:12px;font-weight:800;color:#dce5ef}.diag-device-detail{min-height:0;margin-top:7px;color:#8e99a5;font-size:12px;line-height:1.4}
+.diag-device-head .diag-online-pill{flex:0 0 auto;width:auto;min-width:78px;white-space:nowrap}
 .diag-module-card .diag-arrow,.diag-module-card .diag-layer{display:none}
 @media(max-width:760px){.diag-trace-head{align-items:stretch}.diag-trace-switch{width:100%;min-width:0}.diag-trace-switch button{min-width:0}.diag-module-grid{grid-template-columns:1fr}}
 
@@ -969,7 +1087,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 /* v1.7.48 JBC visual alignment with Weller */
 .diag-proto-command.jbc{background:#18243a;color:#aecbff}
 .jbc-inline-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px}
-.jbc-meta-badge{display:inline-flex;align-items:center;min-height:20px;padding:2px 6px;border-radius:7px;background:#111923;border:1px solid var(--line);font:10px Consolas,monospace;color:#aab6c2;white-space:nowrap}
+.jbc-meta-badge{display:inline-flex;align-items:center;min-height:20px;padding:2px 6px;border-radius:7px;background:#111923;border:1px solid var(--line);font:10px var(--ofe-font-ui);color:#aab6c2;white-space:nowrap}
 .jbc-result-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .jbc-result-wrap .jbc-decode{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .jbc-result-wrap .jbc-value{min-height:24px;padding:3px 7px}
@@ -984,20 +1102,20 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .jbc-frame-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .jbc-frame-dir{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:24px;border-radius:7px;font-size:10px;font-weight:900}
 .jbc-frame-dir.rx{background:#142a1b;color:#73e18b}.jbc-frame-dir.tx{background:#17263b;color:#87baff}
-.jbc-route{display:inline-flex;align-items:center;gap:5px;font-family:Consolas,monospace;font-size:11px}
+.jbc-route{display:inline-flex;align-items:center;gap:5px;font-family:var(--ofe-font-ui);font-size:11px}
 .jbc-route-node{display:inline-flex;align-items:center;justify-content:center;min-width:35px;height:24px;padding:0 6px;border-radius:7px;border:1px solid var(--line);background:#0b131c}
 .jbc-route-arrow{color:#687c90}
 .jbc-command-stack{display:flex;flex-direction:column;gap:3px;min-width:205px}
-.jbc-command-stack strong{font-size:12px;line-height:1.2}.jbc-command-stack small{font-size:10px;color:var(--muted);font-family:Consolas,monospace}
+.jbc-command-stack strong{font-size:12px;line-height:1.2}.jbc-command-stack small{font-size:10px;color:var(--muted);font-family:var(--ofe-font-ui)}
 .jbc-decode{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
 .jbc-value{display:inline-flex;align-items:center;min-height:25px;padding:3px 8px;border-radius:8px;background:#131f2b;border:1px solid #28394a;font-size:11px;font-weight:800}
 .jbc-value.primary{color:#9fcfff}.jbc-value.bool-on{color:#75df8c;background:#14271a;border-color:#26432e}.jbc-value.bool-off{color:#aeb8c3}
-.jbc-value.text{font-family:Consolas,monospace;font-weight:650;max-width:440px;white-space:normal;word-break:break-word}
+.jbc-value.text{font-family:var(--ofe-font-ui);font-weight:650;max-width:440px;white-space:normal;word-break:break-word}
 .jbc-value.warn{color:#efcc79;background:#292414;border-color:#51461f}
 .jbc-byte-map{display:grid;grid-template-columns:repeat(5,max-content) minmax(110px,1fr);gap:5px;align-items:stretch;margin-top:7px}
 .jbc-byte-field{display:flex;flex-direction:column;gap:2px;padding:5px 7px;border-radius:7px;border:1px solid var(--line);background:#0a1118;min-width:48px}
 .jbc-byte-field.payload{min-width:120px}.jbc-byte-field .k{font-size:8px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.jbc-byte-field .v{font:11px Consolas,monospace;color:#c5ced8;white-space:nowrap}
+.jbc-byte-field .v{font:11px var(--ofe-font-ui);color:#c5ced8;white-space:nowrap}
 .jbc-byte-field.payload .v{white-space:normal;word-break:break-all}
 .jbc-raw-note{margin-top:6px;color:var(--muted);font-size:10px;line-height:1.35}
 .jbc-format-badge{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:999px;background:#1a222c;color:#aab6c2;font-size:9px;font-weight:850;letter-spacing:.025em;text-transform:uppercase}
@@ -1018,9 +1136,9 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-local-txn-table td{vertical-align:middle}
 .diag-local-command{display:flex;flex-direction:column;gap:3px;min-width:170px}
 .diag-local-command strong{font-size:12px}
-.diag-local-command small{font-family:Consolas,monospace;color:var(--muted);font-size:10px}
+.diag-local-command small{font-family:var(--ofe-font-ui);color:var(--muted);font-size:10px}
 .diag-flow{display:flex;align-items:center;gap:5px;white-space:nowrap}
-.diag-flow-node{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:25px;padding:0 7px;border-radius:7px;background:#111c27;border:1px solid var(--line);font-family:Consolas,monospace;font-size:11px}
+.diag-flow-node{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:25px;padding:0 7px;border-radius:7px;background:#111c27;border:1px solid var(--line);font-family:var(--ofe-font-ui);font-size:11px}
 .diag-flow-arrow{color:#64798e;font-size:12px}
 .diag-result-main{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .diag-result-value{font-weight:850;font-variant-numeric:tabular-nums}
@@ -1048,7 +1166,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-check-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:900}
 .diag-check-badge.ok{color:#72df8a;background:#13291a}.diag-check-badge.err{color:#ff8d96;background:#30171a}.diag-check-badge.neutral{color:#aab4bf;background:#1a222c}
 .diag-proto-detail{display:flex;gap:6px;flex-wrap:wrap;align-items:center;line-height:1.45}
-.diag-proto-ascii{font-family:Consolas,monospace;color:#c3ccd6}
+.diag-proto-ascii{font-family:var(--ofe-font-ui);color:#c3ccd6}
 .diag-payload details[data-payload-key],.diag-raw-details{min-width:112px}
 .diag-raw-details summary{cursor:pointer;color:#8fb9df;white-space:nowrap}
 .diag-control-error{margin-top:8px;padding:8px 10px;border:1px solid #63323a;border-radius:9px;background:#271317;color:#ff9ca4;font-size:12px;display:none}
@@ -1213,7 +1331,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-local-table .jbc-meta-badge{
   padding-left:6px !important;
   padding-right:6px !important;
-  font-family:Consolas,monospace !important;
+  font-family:var(--ofe-font-ui) !important;
   font-size:10px !important;
   font-weight:400 !important;
 }
@@ -1337,7 +1455,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
   display:inline-flex;align-items:center;justify-content:center;
   height:24px;min-height:24px;box-sizing:border-box;
   padding:0 7px;border:1px solid var(--line);border-radius:7px;
-  background:#111923;color:#aab6c2;font:10px/1 Consolas,monospace;
+  background:#111923;color:#aab6c2;font:10px/1 var(--ofe-font-ui);
   white-space:nowrap
 }
 .proto-meta-badge.ok{color:#79df91;border-color:#274b31;background:#14291a}
@@ -1354,7 +1472,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .proto-result-value.text{
   max-width:430px;height:auto;min-height:28px;padding-top:5px;padding-bottom:5px;
   white-space:normal;overflow-wrap:anywhere;word-break:break-word;
-  font-family:Consolas,monospace
+  font-family:var(--ofe-font-ui)
 }
 .proto-result-value.primary{color:#9fcfff}
 .proto-result-sub{font-size:10px;color:var(--muted);line-height:1.25}
@@ -1371,7 +1489,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .proto-raw-field.data{min-width:0}
 .proto-raw-field .k{font-size:8px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .proto-raw-field .v{
-  font:11px/1.25 Consolas,monospace;color:#c5ced8;
+  font:11px/1.25 var(--ofe-font-ui);color:#c5ced8;
   white-space:normal;overflow-wrap:anywhere;word-break:break-word
 }
 .proto-raw-note{margin:8px 2px 7px;color:var(--muted);font-size:10px;line-height:1.35}
@@ -1391,7 +1509,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-module-icon .module-head-glyph{width:24px;height:24px;display:block;color:currentColor}
 .diag-module-copy{min-width:0;flex:1 1 auto}
 .diag-module-type{margin-top:0;color:#aeb8c3;font-size:12px;font-weight:700;line-height:1.2;white-space:normal;overflow:visible;text-overflow:clip}
-.diag-module-address{margin-top:5px;color:#718090;font:600 11px/1.15 Consolas,monospace;white-space:nowrap}
+.diag-module-address{margin-top:5px;color:#718090;font:600 11px/1.15 var(--ofe-font-ui);white-space:nowrap}
 .diag-module-statuses{display:flex;height:74px;min-height:74px;flex-direction:column;flex-wrap:nowrap;align-items:flex-end;justify-content:center;gap:3px;flex:0 0 auto;min-width:78px}
 .diag-module-head .diag-online-pill{flex:0 0 auto;width:78px;min-width:78px;height:22px;padding:0 9px;font-size:11px;white-space:nowrap;line-height:1}
 @media(max-width:520px){.diag-module-head{height:auto;min-height:136px;max-height:none;flex-basis:auto}.diag-module-head-main{align-items:center}.diag-module-statuses{flex:0 0 auto}}
@@ -3291,6 +3409,56 @@ function diagModuleVisual(m){
   }
 }
 let diagModuleCardSignature=null;
+function diagTimeoutProbeHtml(m){
+  let html='',io=m.io_timeouts;
+  if(io&&Number(m.timeout_io||0)>0){
+    html+='<div class="diag-rate-muted" style="margin-top:4px">GET_IO '+Number(io.get||0)+' · SET_IO '+Number(io.set||0)+' · '+u('weitere I/O-Befehle','other I/O commands')+' '+Number(io.other||0)+'</div>';
+  }
+  let p=m.timeout_probe;
+  if(!p)return html;
+  const ms=v=>(Number(v||0)/1000).toFixed(1)+' ms';
+  const hex=v=>'0x'+Number(v).toString(16).toUpperCase().padStart(2,'0');
+  const hasHeader=e=>e&&Array.isArray(e.header)&&e.header.length===6;
+  const headerText=h=>'VER '+hex(h[0])+' · DST '+hex(h[1])+' · SRC '+hex(h[2])+' · SEQ '+hex(h[3])+' · CMD '+hex(h[4])+' · LEN '+Number(h[5]);
+  html+='<div class="diag-rate-muted" style="margin-top:7px">'+u('Letzter RS485-Timeout','Last RS485 timeout')+': '+esc(m.last_timeout_name||'-')+' · '+u('Zeitlimit','Time limit')+' '+Number(p.budget_ms||0)+' ms · '+u('Wartezeit','Wait')+' '+ms(p.elapsed_us)+'</div>';
+  html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Master-Empfangsabstand max','Master receive-service gap max')+': '+ms(p.max_poll_gap_us)+'</div>';
+  html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Antwortzuordnung im Wartefenster','Response matching during wait')+': SEQ '+Number(p.bad_seq||0)+' · CMD '+Number(p.bad_cmd||0)+' · Late '+Number(p.late||0)+'</div>';
+  html+='<div class="diag-rate-muted" style="margin-top:4px" title="'+u('Busweite Parser-Zähler während dieses Requests; keine UART-Ankunftszeit und keine Modul-Laufzeit.','Bus-wide parser counters during this request; not UART arrival time or module execution time.')+'">'+u('RS485 im Wartefenster','RS485 during wait')+': '+u('gültige Frames','valid frames')+' '+Number(p.rx_frames||0)+' · CRC '+Number(p.crc||0)+' · LEN '+Number(p.len||0)+' · ESC '+Number(p.escape||0)+' · '+u('Version','Version')+' '+Number(p.version||0)+' · '+u('Parser-Überlauf','Parser overflow')+' '+Number(p.overflow||0)+' · '+u('kurz','short')+' '+Number(p.short||0)+'</div>';
+  const e=p.length_error;
+  if(Number(p.len||0)>0&&hasHeader(e)){
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Letzter LEN-Frame im Wartefenster','Last LEN frame during wait')+': '+u('empfangen','received')+' '+Number(e.actual)+' B · '+u('laut Header erwartet','expected from header')+' '+Number(e.expected)+' B</div>';
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Header des verworfenen Gesamtframes (busweit)','Header of rejected complete frame (bus-wide)')+': '+headerText(e.header)+'</div>';
+    const s=e.split;
+    if(s){
+      const crcText=(checked,valid)=>checked?(valid?u('gültig','valid'):u('ungültig','invalid')):u('nicht prüfbar','not checkable');
+      html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Abschnittsprüfung (nur Diagnose)','Segment checks (diagnostics only)')+': CRC 1 '+crcText(s.first_checked,s.first_valid)+' · '+u('Rest','Remaining')+' '+Number(s.remaining||0)+' B · CRC 2 '+crcText(s.second_checked,s.second_valid)+'</div>';
+      if(hasHeader(s)){
+        html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Zweiter Abschnitt, Header','Second segment header')+': '+headerText(s.header)+' · '+u('erwartet','expected')+' '+Number(s.second_expected||0)+' B</div>';
+      }
+      if(s.first_checked&&s.first_valid&&s.second_checked&&s.second_valid&&hasHeader(s)&&Number(s.header[0])===1){
+        html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Zwei CRC-gültige OFE-Frame-Inhalte; Gesamtframe weiterhin verworfen.','Two CRC-valid OFE frame contents; complete frame still rejected.')+'</div>';
+      }
+    }
+  }
+  const v=p.version_error;
+  if(Number(p.version||0)>0&&hasHeader(v)){
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Letzter VERSION-Frame im Wartefenster','Last VERSION frame during wait')+': '+Number(v.actual)+' B · '+u('Protokollbyte erwartet','Expected protocol byte')+' 0x01</div>';
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Header ungeprüft (keine CRC-Prüfung, busweit)','Unverified header (no CRC validation, bus-wide)')+': '+headerText(v.header)+'</div>';
+  }
+  const physical=p.last_physical_frame;
+  if(Number(p.rx_frames||0)>0&&hasHeader(physical)){
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Letzter gültiger RS485-Frame (CRC-geprüft)','Last valid RS485 frame (CRC checked)')+': '+headerText(physical.header)+' · '+u('Transportfilter','Transport filter')+': '+(physical.filtered?u('verworfen','dropped'):u('weitergegeben','forwarded'))+'</div>';
+  }
+  const f=p.unmatched_frame;
+  if(f&&Number(f.count||0)>0&&hasHeader(f)){
+    const reasons={1:u('andere Quell-/Zieladresse','different source/destination'),2:u('abweichende SEQ','different SEQ'),3:u('abweichender CMD','different CMD'),4:u('erkannte verspätete Antwort','recognized late response'),5:u('separate Display-Antwort verarbeitet','separate display response handled')};
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Nicht diesem Request zugeordnet','Not assigned to this request')+': '+Number(f.count)+' · '+u('letzter Frame','last frame')+' '+(f.network?'WLAN':'RS485')+' · '+(reasons[Number(f.reason)]||u('unbekannt','unknown'))+' · '+headerText(f.header)+'</div>';
+  }
+  if(p.request_seq!==undefined){
+    html+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Timeout-Request SEQ','Timeout request SEQ')+': '+hex(p.request_seq)+'</div>';
+  }
+  return html;
+}
 function diagModuleSignature(modules){return (modules||[]).map(m=>[Number(m.addr||0),Number(m.type||0),String(m.name||''),String(m.type_name||''),String(m.device_bus||''),String(m.transport||'rs485')].join('|')).join(';')}
 function diagRenderModules(d,sec){
   let modules=d.modules||[],totalRate=0;
@@ -3327,8 +3495,9 @@ function diagRenderModules(d,sec){
     body+='<div><div class="k">Req/s</div><div class="v">'+req.toFixed(req<10?1:0)+'</div></div></div>';
     body+='<div class="diag-status-metric"><div><div class="k">TX / RX</div><div class="v">'+fmtBytes(tx)+'<br><span class="diag-rate-muted">'+fmtBytes(rx)+'</span></div></div>';
     body+='<div><div class="k">'+u('Latenz','Latency')+'</div><div class="v">'+m.latency_avg_ms+' ms<br><span class="diag-rate-muted">max '+m.latency_max_ms+' ms</span></div></div></div>';
-    let reqBoot=Number(m.requests||0),timeoutPct=reqBoot>0?(timeouts*100/reqBoot):0;
+    let reqBoot=Number(m.requests||0),updateReq=Number(m.update_requests||0),recoveryReq=Number(m.recovery_requests||0),normalReq=Math.max(0,reqBoot-updateReq-recoveryReq),timeoutPct=normalReq>0?(timeouts*100/normalReq):0;
     body+='<div class="diag-rate-muted" style="margin-top:7px">'+u('Requests seit Boot','Requests since boot')+': '+reqBoot+' · '+u('Timeout-Quote','Timeout rate')+': '+timeoutPct.toFixed(timeoutPct<1?2:1)+'%</div>';
+    if(updateReq||recoveryReq)body+='<div class="diag-rate-muted">'+u('Update-Timeouts','Update timeouts')+': '+Number(m.update_timeouts||0)+' / '+updateReq+' · '+u('Wiederanlauf-Timeouts','Restart wait timeouts')+': '+Number(m.recovery_timeouts||0)+' / '+recoveryReq+'</div>';
     body+='<div class="diag-errors-line"><div class="k">'+u('Fehler seit Boot','Errors since boot')+'</div><div class="diag-metric-split">';
     body+='<span class="diag-metric-chip '+(timeouts?'err':'ok')+'" title="Timeout">T '+timeouts+'</span>';
     body+='<span class="diag-metric-chip '+(late?'warn':'ok')+'" title="'+u('Verspätete Antwort','Late response')+'">L '+late+'</span>';
@@ -3341,11 +3510,14 @@ function diagRenderModules(d,sec){
     body+='<div class="diag-rate-muted" style="margin-top:7px">'+u('Timeout-Aufteilung','Timeout breakdown')+': '+(tc.length?tc.join(' · '):'—');
     if(timeouts&&m.last_timeout_name){body+=' · '+u('zuletzt','last')+' '+esc(m.last_timeout_name);if(Number(m.last_timeout_age_ms||0)>0)body+=' ('+u('vor','ago')+' '+fmtAge(m.last_timeout_age_ms)+')'}
     body+='</div>';
+    body+=diagTimeoutProbeHtml(m);
     let lc=[];
     function lcAdd(label,value){value=Number(value||0);if(value)lc.push(label+' '+value+'ms')}
     lcAdd('Fast',m.latency_fast_max_ms);lcAdd('State',m.latency_state_max_ms);lcAdd('Tel',m.latency_telemetry_max_ms);lcAdd('I/O',m.latency_io_max_ms);lcAdd('Uni',m.latency_universal_max_ms);lcAdd('D-Stat',m.latency_display_status_max_ms);lcAdd('D-Cache',m.latency_display_cache_max_ms);
     body+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Erfolgs-Latenz max','Successful latency max')+': '+(lc.length?lc.join(' · '):'—')+'</div></div>';
-    body+='<div class="diag-device-section"><div class="diag-device-head"><div class="diag-device-title">'+esc(m.device_bus)+'</div><span class="diag-mini-badge diag-online-pill '+online+'"><span class="diag-dot '+(m.online?'ok':'err')+'"></span>'+(m.online?u('bereit','ready'):u('offline','offline'))+'</span></div>';
+    let deviceState=Number(m.device_link_state??-1),deviceClass=!m.online?'is-offline':(deviceState===1?'is-online':(deviceState===0?'is-warning':''));
+    let deviceText=!m.online?'offline':(deviceState===1?u('bereit','ready'):(deviceState===0?u('getrennt','disconnected'):u('unbekannt','unknown')));
+    body+='<div class="diag-device-section"><div class="diag-device-head"><div class="diag-device-title">'+esc(m.device_bus)+'</div><span class="diag-mini-badge diag-online-pill '+deviceClass+'"><span class="diag-dot '+(!m.online?'err':(deviceState===1?'ok':(deviceState===0?'warn':'')))+'"></span>'+deviceText+'</span></div>';
     body+='<div class="diag-device-detail">'+esc(m.device_detail||'-')+'</div></div>';
     let dynamic=document.getElementById('diag_dynamic_'+m.addr);if(dynamic)dynamic.innerHTML=body;
   });

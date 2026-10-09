@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 // Master-wide singleton objects and Web/MQTT/update state.
 static HardwareSerial RS485(1);
 static Link rs485_link(RS485);
@@ -152,6 +154,7 @@ static uint32_t wifi_next_retry_ms = 0;
 static bool master_update_ok = false;
 static bool master_chunk_ok = false;
 static bool master_update_active = false;
+static std::atomic<uint32_t> master_update_restart_due_ms{0};
 static volatile bool module_update_ok = false;
 static volatile bool module_chunk_ok = false;
 static uint32_t master_update_offset = 0;

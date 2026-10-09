@@ -4,6 +4,13 @@
 // execution order for CLI, LEDs, module OTA, scheduler, logic and telemetry.
 static void master_loop_tick() {
 #if WEB_ENABLE
+  const uint32_t master_restart_due_ms = master_update_restart_due_ms.load();
+  if (master_restart_due_ms && (int32_t)(millis() - master_restart_due_ms) >= 0) {
+    prepare_controlled_restart();
+    ESP.restart();
+  }
+#endif
+#if WEB_ENABLE
   // The normal HTTP service runs on its own task. If task creation failed at
   // startup, keep WiFi, captive DNS and HTTP alive from the Arduino loop.
   if (!web_service_task_handle) {

@@ -247,7 +247,7 @@ static void master_command_execute(MasterCommandRequest& r) {
       break;
 
     case MASTER_CMD_SET_PREFERRED_OUTPUT:
-      scheduler.setPreferredOutputAddr(r.addr);
+      scheduler.setPreferredOutputAddr(r.addr, r.flag1);
       r.result = true;
       break;
 
@@ -630,10 +630,11 @@ static bool master_cmd_set_main_input(
   return master_command_submit(r);
 }
 
-static bool master_cmd_set_preferred_output(uint8_t addr) {
+static bool master_cmd_set_preferred_output(uint8_t addr, bool persist = true) {
   MasterCommandRequest r;
   r.type = MASTER_CMD_SET_PREFERRED_OUTPUT;
   r.addr = addr;
+  r.flag1 = persist;
   return master_command_submit(r);
 }
 

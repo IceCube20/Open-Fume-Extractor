@@ -69,6 +69,16 @@ static bool web_password_change_blocked() {
   return true;
 }
 
+static bool web_check_credentials() {
+#if WEB_AUTH_ENABLE
+  if (!web.authenticate(web_auth_user, web_auth_password)) {
+    web.requestAuthentication(BASIC_AUTH, "Open Fume Extractor");
+    return false;
+  }
+#endif
+  return true;
+}
+
 static bool web_require_auth(bool cacheable_private) {
   web_security_headers(cacheable_private);
   if (web_block_captive_non_config()) return false;
@@ -80,14 +90,7 @@ static bool web_require_auth(bool cacheable_private) {
     web.send(403, "text/plain; charset=utf-8", "bad csrf token");
     return false;
   }
-#if WEB_AUTH_ENABLE
-  if (!web.authenticate(web_auth_user, web_auth_password)) {
-    web.requestAuthentication(BASIC_AUTH, "Open Fume Extractor");
-    return false;
-  }
-#else
-  // Authentication is disabled by the build configuration.
-#endif
+  if (!web_check_credentials()) return false;
   if (web_password_change_blocked()) return false;
   return true;
 }
@@ -102,6 +105,7 @@ static bool web_require_config_auth() {
     return false;
   }
   if (web_password_change_blocked()) return false;
-  if (captive_active) return true;
-  return web_require_auth();
+  // Only first setup (or an explicit webauth reset) may bypass credentials.
+  if (captive_active && web_password_change_required) return true;
+  return web_check_credentials();
 }

@@ -2,6 +2,7 @@
 #include "MasterDisplayWifi.h"
 #include "MasterSettingsStore.h"
 #include "MasterBuildConfig.h"
+#include "EntityPresentation.h"
 #include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
@@ -380,64 +381,19 @@ static uint8_t display_universal_type_code(const char* type, size_t type_len) {
 }
 
 static bool descriptor_key_value(const char* line, const char* key, char* out, size_t out_len) {
-  if (!out || !out_len) return false;
-  out[0] = 0;
-  if (!line || !key || !*key) return false;
-  char needle[24];
-  snprintf(needle, sizeof(needle), "%s=", key);
-  const size_t needle_len = strlen(needle);
-  const char* p = line;
-  while ((p = strstr(p, needle)) != nullptr) {
-    if (p == line || p[-1] == ' ' || p[-1] == '\t') break;
-    p += needle_len;
-  }
-  if (!p) return false;
-  p += needle_len;
-  const char* end = p;
-  static const char* keys[] = {
-    " idx=", " gpio=", " active_low=", " pull=", " ppr=", " source=", " group=", " ui=", " key=", " en=", " de=", " role=", " unit=", " access=", " mode=",
-    " min=", " max=", " step=", " value_on=", " value_off=", " options=", " values=",
-    " slave=", " reg=", " func=", " read_func=", " poll_ms=",
-    " scale=", " multiplier=", " divisor=", " divider=", " div=", " offset=", " off=",
-    " bitmask=", " mask=", " bit_shift=", " shift=",
-    " time_base=", " time_display=", " tb=", " tf=", " map_mode=", " map=", " map_default=",
-    " repeat_on_ms=", " repeat_off_ms=",
-    " trace_poll_hex=", " trace_match_hex=", " trace_set_hex=", " trace_on_hex=", " trace_off_hex=", " trace_scale=",
-    " sc=", " tp=", " tm=", " ts=", " tn=", " to="
-  };
-  while (*end) {
-    bool next_key = false;
-    if (*end == ' ') {
-      for (uint8_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-        const size_t kl = strlen(keys[i]);
-        if (strncmp(end, keys[i], kl) == 0) { next_key = true; break; }
-      }
-    }
-    if (next_key) break;
-    ++end;
-  }
-  size_t n = (size_t)(end - p);
-  while (n && (p[n - 1] == ' ' || p[n - 1] == '\t' || p[n - 1] == '\r')) --n;
-  if (n >= out_len) n = out_len - 1;
-  memcpy(out, p, n);
-  out[n] = 0;
-  return n > 0;
+  return ofe_entity::copy(ofe_entity::metadata(ofe_entity::text(line), key), out, out_len) != 0;
 }
 
 static bool descriptor_access_mode(const char* line, char* out, size_t out_len) {
-  if (!out || out_len < 3) return false;
-  out[0] = 0;
-  char mode[8] = {0};
-  descriptor_key_value(line, "access", mode, sizeof(mode));
-  if (!mode[0]) descriptor_key_value(line, "mode", mode, sizeof(mode));
-  if (!mode[0] && line) {
-    char id_s[8], type_s[18], key_s[32];
-    sscanf(line, "%7s %17s %31s %7s", id_s, type_s, key_s, mode);
+  ofe_entity::Definition def;
+  if (!ofe_entity::parse(ofe_entity::text(line), def)) {
+    if (out && out_len) out[0] = 0;
+    return false;
   }
-  for (char* q = mode; *q; ++q) if (*q >= 'A' && *q <= 'Z') *q = (char)(*q + 32);
-  if (strcmp(mode, "ro") && strcmp(mode, "rw") && strcmp(mode, "wo")) return false;
-  snprintf(out, out_len, "%s", mode);
-  return true;
+  const ofe_entity::Text mode = ofe_entity::access(def);
+  ofe_entity::copy(mode, out, out_len);
+  if (out) for (char* p = out; *p; ++p) if (*p >= 'A' && *p <= 'Z') *p += 32;
+  return !mode.empty();
 }
 
 static bool descriptor_access_readable(const char* line) {
@@ -459,180 +415,16 @@ static int16_t descriptor_i16_value(const char* line, const char* key, int16_t f
   return (int16_t)v;
 }
 
-static bool descriptor_token_at(const char* list, uint8_t wanted, char* out, size_t out_len) {
-  if (!out || !out_len) return false;
-  out[0] = 0;
-  if (!list || !*list) return false;
-  uint8_t idx = 0;
-  const char* start = list;
-  const char* p = list;
-  while (true) {
-    if (*p == '|' || *p == ';' || *p == 0) {
-      if (idx == wanted) {
-        const char* end = p;
-        while (start < end && (*start == ' ' || *start == '\t')) ++start;
-        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) --end;
-        size_t n = (size_t)(end - start);
-        if (n >= out_len) n = out_len - 1;
-        if (n) memcpy(out, start, n);
-        out[n] = 0;
-        return n > 0;
-      }
-      if (*p == 0) break;
-      ++idx;
-      start = p + 1;
-    }
-    if (*p == 0) break;
-    ++p;
-  }
-  return false;
-}
-
 
 static uint8_t universal_entity_text_value(const UniversalEntityState* state, char* out, size_t out_len);
 
-static bool descriptor_token_matches_state(const char* token, const char* state) {
-  if (!token || !*token || !state || !*state) return false;
-  if (!strcasecmp(token, state)) return true;
-  bool token_numeric = true;
-  for (const char* p = token; *p; ++p) {
-    if (*p < '0' || *p > '9') { token_numeric = false; break; }
-  }
-  if (token_numeric) {
-    const size_t tl = strlen(token);
-    const size_t sl = strlen(state);
-    if (sl >= tl && !strcmp(state + sl - tl, token)) return true; // e.g. F144 matches 144
-  }
-  return false;
-}
-
-static bool descriptor_state_number(const char* state, int32_t& out) {
-  if (!state || !*state) return false;
-  const char* p = state;
-  while (*p && !((*p >= '0' && *p <= '9') || *p == '-' || *p == '+')) ++p;
-  if (!*p) return false;
-  char tmp[16];
-  uint8_t n = 0;
-  if ((*p == '-' || *p == '+') && n < sizeof(tmp) - 1) tmp[n++] = *p++;
-  while (*p >= '0' && *p <= '9' && n < sizeof(tmp) - 1) tmp[n++] = *p++;
-  if (!n || (n == 1 && (tmp[0] == '-' || tmp[0] == '+'))) return false;
-  tmp[n] = 0;
-  out = atol(tmp);
-  return true;
-}
-
-static bool descriptor_state_numeric_payload(const char* state, int32_t& out) {
-  if (!state || !*state) return false;
-  const char* p = state;
-  while (*p == ' ' || *p == '\t') ++p;
-  if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
-    const char* next = p + 1;
-    if (*next == '-' || *next == '+' || (*next >= '0' && *next <= '9')) p = next;
-  }
-
-  char* endp = nullptr;
-  long v = strtol(p, &endp, 10);
-  if (endp == p) return false;
-  while (endp && (*endp == ' ' || *endp == '\t' || *endp == '\r')) ++endp;
-  if (endp && *endp) return false;
-  out = (int32_t)v;
-  return true;
-}
-
-static uint16_t descriptor_scale_value(const char* line) {
-  int16_t scale = descriptor_i16_value(line, "scale", 0);
-  if (!scale) scale = descriptor_i16_value(line, "sc", 0);
-  if (!scale) scale = descriptor_i16_value(line, "trace_scale", 0);
-  return scale > 1 ? (uint16_t)scale : 1U;
-}
-
-static bool descriptor_token_matches_state_scaled(const char* line, const char* token, const char* state) {
-  if (descriptor_token_matches_state(token, state)) return true;
-  if (!token || !*token) return false;
-  char* endp = nullptr;
-  const long token_num = strtol(token, &endp, 0);
-  while (endp && (*endp == ' ' || *endp == '\t')) ++endp;
-  if (!endp || *endp) return false;
-  int32_t state_num = 0;
-  if (!descriptor_state_number(state, state_num)) return false;
-  if (state_num == token_num) return true;
-  const uint16_t scale = descriptor_scale_value(line);
-  if (scale > 1 && state_num * (int32_t)scale == token_num) return true;
-  if (scale > 1 && token_num * (int32_t)scale == state_num) return true;
-  return false;
-}
-
-static bool descriptor_time_value_text(const char* line, const char* state, char* out, size_t out_len) {
-  if (!out || !out_len) return false;
-  out[0] = 0;
-  char display[12];
-  char base[8];
-  display[0] = 0;
-  base[0] = 0;
-  descriptor_key_value(line, "time_display", display, sizeof(display));
-  if (!display[0]) descriptor_key_value(line, "tf", display, sizeof(display));
-  descriptor_key_value(line, "time_base", base, sizeof(base));
-  if (!base[0]) descriptor_key_value(line, "tb", base, sizeof(base));
-  if (!display[0] || !base[0] || !contains_ci_ascii(display, "dhm")) return false;
-
-  int32_t value = 0;
-  if (!descriptor_state_numeric_payload(state, value)) return false;
-  value *= (int32_t)descriptor_scale_value(line);
-
-  int32_t minutes = value;
-  if (contains_ci_ascii(base, "s")) minutes = value / 60;
-  else if (contains_ci_ascii(base, "h")) minutes = value * 60;
-  else if (contains_ci_ascii(base, "d")) minutes = value * 1440;
-  if (minutes < 0) minutes = 0;
-
-  const int32_t days = minutes / 1440;
-  const int32_t hours = (minutes % 1440) / 60;
-  const int32_t mins = minutes % 60;
-  if (days > 0 && hours > 0) snprintf(out, out_len, "%ldd %ldh", (long)days, (long)hours);
-  else if (days > 0) snprintf(out, out_len, "%ldd", (long)days);
-  else if (hours > 0 && mins > 0) snprintf(out, out_len, "%ldh %ldm", (long)hours, (long)mins);
-  else if (hours > 0) snprintf(out, out_len, "%ldh", (long)hours);
-  else snprintf(out, out_len, "%ldm", (long)mins);
-  return out[0] != 0;
-}
-
-static bool descriptor_scaled_value_text(const char* line, const char* state, char* out, size_t out_len) {
-  if (!out || !out_len) return false;
-  out[0] = 0;
-  int32_t value = 0;
-  if (!descriptor_state_numeric_payload(state, value)) return false;
-  const uint16_t scale = descriptor_scale_value(line);
-  if (scale <= 1) return false;
-  value *= (int32_t)scale;
-  snprintf(out, out_len, "%ld", (long)value);
-  return true;
-}
-
 static bool descriptor_select_index_for_state(const char* line, const UniversalEntityState* state, uint8_t& index) {
+  ofe_entity::Definition def;
+  char raw[33];
+  universal_entity_text_value(state, raw, sizeof(raw));
   index = 0;
-  char state_text[24];
-  universal_entity_text_value(state, state_text, sizeof(state_text));
-  if (!state_text[0]) return false;
-  char values[192];
-  char options[192];
-  values[0] = 0;
-  options[0] = 0;
-  descriptor_key_value(line, "values", values, sizeof(values));
-  descriptor_key_value(line, "options", options, sizeof(options));
-  for (uint8_t i = 0; i < 24; ++i) {
-    char token[32];
-    if (values[0] && descriptor_token_at(values, i, token, sizeof(token)) && descriptor_token_matches_state_scaled(line, token, state_text)) {
-      index = i;
-      return true;
-    }
-    if (options[0] && descriptor_token_at(options, i, token, sizeof(token)) && descriptor_token_matches_state_scaled(line, token, state_text)) {
-      index = i;
-      return true;
-    }
-    if ((!values[0] || !descriptor_token_at(values, i, token, sizeof(token))) &&
-        (!options[0] || !descriptor_token_at(options, i, token, sizeof(token)))) break;
-  }
-  return false;
+  return raw[0] && ofe_entity::parse(ofe_entity::text(line), def) &&
+         ofe_entity::selectIndex(def, ofe_entity::text(raw), index);
 }
 
 static uint8_t descriptor_select_index_or_zero(const char* line, const UniversalEntityState* state) {
@@ -642,74 +434,23 @@ static uint8_t descriptor_select_index_or_zero(const char* line, const Universal
 }
 
 static bool descriptor_select_value_for_index(const char* line, uint8_t index, char* out, size_t out_len) {
-  char list[192];
-  if (descriptor_key_value(line, "values", list, sizeof(list)) && descriptor_token_at(list, index, out, out_len)) return true;
-  if (descriptor_key_value(line, "options", list, sizeof(list)) && descriptor_token_at(list, index, out, out_len)) return true;
-  return false;
-}
-
-static bool descriptor_select_option_for_index(const char* line, uint8_t index, char* out, size_t out_len) {
-  char list[192];
-  return descriptor_key_value(line, "options", list, sizeof(list)) && descriptor_token_at(list, index, out, out_len);
-}
-
-static bool descriptor_map_text_for_state(const char* line, const char* state, char* out, size_t out_len) {
-  if (!out || !out_len) return false;
-  out[0] = 0;
-  if (!line || !state || !*state) return false;
-  char map[180];
-  if (!descriptor_key_value(line, "map", map, sizeof(map))) return false;
-  char mode[12];
-  descriptor_key_value(line, "map_mode", mode, sizeof(mode));
-  if (mode[0] && !contains_ci_ascii(mode, "exact")) return false;
-
-  const char* p = map;
-  while (p && *p) {
-    const char* next = strchr(p, '|');
-    const char* end = next ? next : p + strlen(p);
-    const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
-    if (eq) {
-      char token[24];
-      size_t token_len = (size_t)(eq - p);
-      while (token_len && (p[token_len - 1] == ' ' || p[token_len - 1] == '\t')) --token_len;
-      if (token_len >= sizeof(token)) token_len = sizeof(token) - 1;
-      memcpy(token, p, token_len);
-      token[token_len] = 0;
-      if (descriptor_token_matches_state_scaled(line, token, state)) {
-        const char* value = eq + 1;
-        while (value < end && (*value == ' ' || *value == '\t')) ++value;
-        size_t value_len = (size_t)(end - value);
-        while (value_len && (value[value_len - 1] == ' ' || value[value_len - 1] == '\t' || value[value_len - 1] == '\r')) --value_len;
-        if (value_len >= out_len) value_len = out_len - 1;
-        memcpy(out, value, value_len);
-        out[value_len] = 0;
-        return out[0] != 0;
-      }
-    }
-    p = next ? next + 1 : nullptr;
-  }
-
-  return descriptor_key_value(line, "map_default", out, out_len);
+  ofe_entity::Definition def;
+  if (!ofe_entity::parse(ofe_entity::text(line), def)) return false;
+  return ofe_entity::copy(ofe_entity::selectValue(def, index), out, out_len) != 0;
 }
 
 static void descriptor_display_state_text(const char* line, uint8_t type_code, const UniversalEntityState* state, char* out, size_t out_len) {
-  if (!out || !out_len) return;
-  out[0] = 0;
-  char raw[32];
-  universal_entity_text_value(state, raw, sizeof(raw));
-  if (!raw[0]) return;
-
-  // Universal/Modbus bridges already apply the profile-builder transforms
-  // (scale, time formatting and value mapping) before exposing entity states.
-  // Keep the display path aligned with the web UI: use those finished values
-  // directly and only resolve select raw values to their visible option label.
-  if (type_code == DISPLAY_UNI_SELECT) {
-    uint8_t index = 0;
-    if (descriptor_select_index_for_state(line, state, index) && descriptor_select_option_for_index(line, index, out, out_len)) return;
-    snprintf(out, out_len, "%s", raw);
-    return;
-  }
-  snprintf(out, out_len, "%s", raw);
+  (void)type_code;
+  char raw[33];
+  ofe_entity::Definition def;
+  const bool has_def = ofe_entity::parse(ofe_entity::text(line), def);
+  const size_t len = state ? (state->len <= sizeof(state->data) ? state->len : sizeof(state->data)) : 0;
+  ofe_entity::rawText(state ? state->data : nullptr, len, raw, sizeof(raw),
+      has_def ? ofe_entity::valueEncoding(def) : ofe_entity::Encoding::Auto);
+  if (has_def && raw[0])
+    ofe_entity::displayText(def, ofe_entity::text(raw), out, out_len);
+  else
+    ofe_entity::copy(ofe_entity::text(raw), out, out_len);
 }
 
 static bool descriptor_line_for_entity(const ModuleRecord& rec, uint8_t entity_id, char* out, size_t out_len) {
@@ -853,22 +594,8 @@ static int16_t universal_entity_numeric_value(const UniversalEntityState* state)
 }
 
 static uint8_t universal_entity_text_value(const UniversalEntityState* state, char* out, size_t out_len) {
-  if (!out || !out_len) return 0;
-  out[0] = 0;
-  if (!state || !state->len) return 0;
-  uint8_t n = state->len;
-  if (n > out_len - 1) n = out_len - 1;
-  bool printable = true;
-  for (uint8_t i = 0; i < n; ++i) if (state->data[i] < 0x20 || state->data[i] > 0x7E) printable = false;
-  if (printable) {
-    memcpy(out, state->data, n);
-    out[n] = 0;
-  } else if (state->len >= 4) {
-    snprintf(out, out_len, "%ld", (long)(int32_t)get_u32_le(state->data));
-  } else {
-    snprintf(out, out_len, "%d", (int)state->data[0]);
-  }
-  return (uint8_t)strlen(out);
+  const size_t len = state ? (state->len <= sizeof(state->data) ? state->len : sizeof(state->data)) : 0;
+  return (uint8_t)ofe_entity::rawText(state ? state->data : nullptr, len, out, out_len);
 }
 
 
@@ -1886,6 +1613,8 @@ void MasterScheduler::serviceDelay(uint32_t delay_ms) {
 }
 
 static void bus_diag_record_timeout_class(MasterScheduler::BusModuleDiag& d, uint8_t cmd) {
+  if ((cmd & 0x7F) == CMD_GET_IO) ++d.timeout_get_io;
+  if ((cmd & 0x7F) == CMD_SET_IO) ++d.timeout_set_io;
   switch (cmd & 0x7F) {
     case CMD_FAST_POLL:
       ++d.timeout_fast;
@@ -1970,6 +1699,46 @@ static void bus_diag_record_latency_class(MasterScheduler::BusModuleDiag& d, uin
   }
   if (latency_ms > *target) *target = latency_ms;
 }
+MasterScheduler::RequestDiagnosticsKind MasterScheduler::requestDiagnosticsKind(uint8_t dst, uint8_t cmd) {
+  const bool update_target = module_fw_active_ && module_fw_target_ == dst;
+  if (update_target || cmd == CMD_FW_BEGIN || cmd == CMD_FW_CHUNK ||
+      cmd == CMD_FW_END || cmd == CMD_FW_ABORT) {
+    return RequestDiagnosticsKind::Update;
+  }
+  ModuleRecord* rec = registry_.find(dst);
+  // Unsigned elapsed time also works when the 15-second window crosses millis wrap.
+  if (rec && rec->firmware_recovery_pending) {
+    if ((uint32_t)(millis() - rec->firmware_recovery_started_ms) < 15000UL)
+      return RequestDiagnosticsKind::Recovery;
+    rec->firmware_recovery_pending = false;
+  }
+  return RequestDiagnosticsKind::Normal;
+}
+
+bool MasterScheduler::recordMaintenanceTimeout(uint8_t dst, uint8_t cmd, uint8_t seq,
+                                              uint32_t timeout_ms, RequestDiagnosticsKind kind) {
+  if (kind == RequestDiagnosticsKind::Normal) return false;
+  const int16_t diag_idx = busDiagIndex(dst);
+  if (diag_idx >= 0) {
+    BusModuleDiag& d = bus_module_diag_[diag_idx];
+    if (kind == RequestDiagnosticsKind::Update) ++d.update_timeouts;
+    else ++d.recovery_timeouts;
+    d.last_maintenance_timeout_ms = millis();
+    d.last_maintenance_timeout_seq = seq;
+    d.last_maintenance_timeout_cmd = cmd;
+  }
+  if (traceMatches(dst)) {
+    if (kind == RequestDiagnosticsKind::Update) ++trace_stats_.update_timeouts;
+    else ++trace_stats_.recovery_timeouts;
+    traceLog(dst, TRACE_TIMEOUT, cmd, 0xFF, nullptr, 0,
+             (uint16_t)(timeout_ms > 65535UL ? 65535UL : timeout_ms),
+             kind == RequestDiagnosticsKind::Update ? "firmware update timeout" : "firmware restart wait", seq);
+  }
+  // Keep raw transport counters and trace events, but do not mutate normal
+  // timeout snapshots, miss counters or module availability during maintenance.
+  return true;
+}
+
 bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, Frame& resp, uint32_t timeout_ms, bool physical) {
   if (len > MAX_PAYLOAD) return false;
   // The display tunnel uses authenticated UDP.  Older builds forced every
@@ -2002,12 +1771,19 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
   SchedulerBusLock bus_lock(bus_mutex_, pdMS_TO_TICKS(timeout_ms + 25UL));
   if (!bus_lock.locked) {
     if (traceMatches(dst)) {
-      trace_stats_.timeouts++;
+      const RequestDiagnosticsKind kind = requestDiagnosticsKind(dst, cmd);
+      if (kind == RequestDiagnosticsKind::Update) ++trace_stats_.update_timeouts;
+      else if (kind == RequestDiagnosticsKind::Recovery) ++trace_stats_.recovery_timeouts;
+      else ++trace_stats_.timeouts;
       traceLog(dst, TRACE_TIMEOUT, cmd, 0xFF, nullptr, 0, 0,
                bus_lock.reentrant_blocked ? "nested bus request blocked" : "bus lock timeout");
     }
     return false;
   }
+  const RequestDiagnosticsKind diagnostics_kind = requestDiagnosticsKind(dst, cmd);
+  if (module_fw_active_ && module_fw_target_ == dst &&
+      cmd != CMD_FW_BEGIN && cmd != CMD_FW_CHUNK && cmd != CMD_FW_END &&
+      cmd != CMD_FW_ABORT && cmd != CMD_FW_REBOOT) return false;
   Frame req;
   req.dst = dst;
   req.src = ADDR_MASTER;
@@ -2023,17 +1799,30 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
   ++request_total_;
   request_tx_payload_bytes_ += req.len;
   const int16_t diag_idx = busDiagIndex(dst);
-  if (diag_idx >= 0) ++bus_module_diag_[diag_idx].requests;
+  if (diag_idx >= 0) {
+    BusModuleDiag& d = bus_module_diag_[diag_idx];
+    ++d.requests;
+    if (diagnostics_kind == RequestDiagnosticsKind::Update) ++d.update_requests;
+    else if (diagnostics_kind == RequestDiagnosticsKind::Recovery) ++d.recovery_requests;
+  }
   if (traceMatches(dst)) {
     trace_stats_.requests++;
     traceLog(dst, TRACE_TX, cmd, 0xFF, req.payload, req.len, 0, nullptr, req.seq);
   }
 
   const uint32_t start = millis();
+  RequestWaitProbe wait_probe(micros(), link_.stats());
+  RequestUnmatchedFrame unmatched_frame;
+  const uint32_t initial_bad_seq = diag_idx >= 0 ? bus_module_diag_[diag_idx].bad_seq : 0;
+  const uint32_t initial_bad_cmd = diag_idx >= 0 ? bus_module_diag_[diag_idx].bad_cmd : 0;
+  const uint32_t initial_late = diag_idx >= 0 ? bus_module_diag_[diag_idx].late_responses : 0;
   while ((uint32_t)(millis() - start) < timeout_ms) {
+    wait_probe.sample(micros());
     if (link_.poll(resp)) {
+      const bool rx_via_network = link_.lastRxWasNetwork();
       busDiagRecordRx(resp);
       if (handleAsyncDisplayFrame(resp)) {
+        unmatched_frame.record(resp, rx_via_network, WAIT_FRAME_ASYNC_DISPLAY);
         serviceWhileWaiting();
         continue;
       }
@@ -2045,6 +1834,7 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
           const uint8_t expected_cmd = (uint8_t)(cmd | 0x80);
 
           if (resp.cmd != expected_cmd) {
+            unmatched_frame.record(resp, rx_via_network, WAIT_FRAME_COMMAND);
             ++request_bad_cmd_total_;
             if (diag_idx >= 0) ++bus_module_diag_[diag_idx].bad_cmd;
             if (traceMatches(dst)) {
@@ -2098,6 +1888,10 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
           recognized_late = d.last_timeout_ms && late_age_ms <= 1000UL &&
             resp.seq == d.last_timeout_seq &&
             resp.cmd == (uint8_t)(d.last_timeout_cmd | 0x80);
+          recognized_late = recognized_late || (d.last_maintenance_timeout_cmd &&
+            (uint32_t)(millis() - d.last_maintenance_timeout_ms) <= 1000UL &&
+            resp.seq == d.last_maintenance_timeout_seq &&
+            resp.cmd == (uint8_t)(d.last_maintenance_timeout_cmd | 0x80));
           if (recognized_late) {
             ++d.late_responses;
             ++request_late_response_total_;
@@ -2106,6 +1900,8 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
           }
         }
         if (!recognized_late) ++request_bad_seq_total_;
+        unmatched_frame.record(resp, rx_via_network,
+                               recognized_late ? WAIT_FRAME_LATE : WAIT_FRAME_SEQUENCE);
         if (traceMatches(dst)) {
           if (!recognized_late) trace_stats_.bad_seq++;
           char msg[72];
@@ -2115,8 +1911,11 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
             snprintf(msg, sizeof(msg), "ignored seq rx=%u expected=%u", resp.seq, req.seq);
           traceLog(dst, TRACE_INFO, resp.cmd, resp.len ? resp.payload[0] : 0xFF, resp.payload, resp.len, 0, msg, resp.seq);
         }
-      } else if (trace_stats_.active && trace_stats_.target_addr == 0 && resp.dst == ADDR_MASTER) {
-        traceLog(resp.src, TRACE_RX, resp.cmd, resp.len ? resp.payload[0] : 0xFF, resp.payload, resp.len, 0, "unsolicited", resp.seq);
+      } else {
+        unmatched_frame.record(resp, rx_via_network, WAIT_FRAME_OTHER_ADDRESS);
+        if (trace_stats_.active && trace_stats_.target_addr == 0 && resp.dst == ADDR_MASTER) {
+          traceLog(resp.src, TRACE_RX, resp.cmd, resp.len ? resp.payload[0] : 0xFF, resp.payload, resp.len, 0, "unsolicited", resp.seq);
+        }
       }
       noticeDiscoveryResponse(resp);
     }
@@ -2125,8 +1924,24 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
 
   // An absent cable is expected while a display is connected by WiFi.
   if (physical) return false;
+  if (recordMaintenanceTimeout(dst, cmd, req.seq, timeout_ms, diagnostics_kind)) return false;
   if (diag_idx >= 0) {
     BusModuleDiag& d = bus_module_diag_[diag_idx];
+    d.last_timeout_probe_valid = !wifi_display_active;
+    d.last_timeout_budget_ms = timeout_ms;
+    if (d.last_timeout_probe_valid) {
+      d.last_timeout_probe = wait_probe.finish(micros(), link_.stats());
+      d.last_timeout_probe.bad_seq = d.bad_seq - initial_bad_seq;
+      d.last_timeout_probe.bad_cmd = d.bad_cmd - initial_bad_cmd;
+      d.last_timeout_probe.late_responses = d.late_responses - initial_late;
+      d.last_timeout_length_error = d.last_timeout_probe.bad_length
+        ? link_.lastLengthError() : LengthErrorSnapshot();
+      d.last_timeout_version_error = d.last_timeout_probe.bad_version
+        ? link_.lastVersionError() : VersionErrorSnapshot();
+      d.last_timeout_physical_frame = d.last_timeout_probe.rx_frames
+        ? link_.lastPhysicalFrame() : PhysicalFrameSnapshot();
+      d.last_timeout_unmatched_frame = unmatched_frame;
+    }
     ++d.timeouts;
     bus_diag_record_timeout_class(d, cmd);
     d.last_timeout_ms = millis();
@@ -2143,14 +1958,12 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
   ModuleRecord* rec = registry_.find(dst);
   if (rec) {
     const bool was_online = rec->online;
-    if (rec->consecutive_timeouts < 255) rec->consecutive_timeouts++;
-    // STATUS/list/detail packets over authenticated UDP are intentionally
-    // disposable. A single lost datagram is normal WiFi behavior and the next
-    // scheduler sample repairs it. Do not pollute the long-term bus miss counter
-    // with isolated UDP sample loss; repeated losses still count and still drive
-    // the normal offline state machine.
-    const bool isolated_wifi_sample_drop = disposable_wifi_display_frame && rec->consecutive_timeouts == 1;
-    if (!isolated_wifi_sample_drop && rec->miss_count < 0xFFFFFFFFUL) rec->miss_count++;
+    if (was_online) {
+      if (rec->consecutive_timeouts < 255) rec->consecutive_timeouts++;
+      // Isolated UDP sample loss is expected; only repeated losses count.
+      const bool isolated_wifi_sample_drop = disposable_wifi_display_frame && rec->consecutive_timeouts == 1;
+      if (!isolated_wifi_sample_drop && rec->miss_count < 0xFFFFFFFFUL) rec->miss_count++;
+    }
     rec->last_timeout_ms = millis();
     rec->last_timeout_cmd = cmd;
     // Auto displays wait 3.5 s for the cable, then associate/authenticate WiFi.
@@ -2223,6 +2036,7 @@ bool MasterScheduler::startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const u
   if (len > MAX_PAYLOAD || !master_display_wifi.active(dst)) return false;
   ModuleRecord* rec = registry_.find(dst);
   if (!rec || rec->display_async_pending) return false;
+  if (module_fw_active_ && module_fw_target_ == dst) return false;
 
   // Sending the authenticated UDP datagram is quick. Never wait for a reply
   // here; the normal scheduler loop drains it later and accepts WLAN jitter
@@ -2243,7 +2057,11 @@ bool MasterScheduler::startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const u
   ++request_total_;
   request_tx_payload_bytes_ += req.len;
   const int16_t diag_idx = busDiagIndex(dst);
-  if (diag_idx >= 0) ++bus_module_diag_[diag_idx].requests;
+  if (diag_idx >= 0) {
+    ++bus_module_diag_[diag_idx].requests;
+    if (requestDiagnosticsKind(dst, cmd) == RequestDiagnosticsKind::Recovery)
+      ++bus_module_diag_[diag_idx].recovery_requests;
+  }
   if (traceMatches(dst)) {
     trace_stats_.requests++;
     traceLog(dst, TRACE_TX, cmd, 0xFF, req.payload, req.len, 0, "async display", req.seq);
@@ -2253,19 +2071,24 @@ bool MasterScheduler::startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const u
   rec->display_async_seq = req.seq;
   rec->display_async_cmd = cmd;
   rec->display_async_started_ms = millis();
-  // Because this is non-blocking, the timeout can safely cover real-world
-  // 200-300 ms WLAN outliers without increasing the Master loop maximum.
+  // This path does not wait for the reply, so allow WLAN jitter without
+  // increasing the Master loop maximum.
   if (timeout_ms < 120UL) timeout_ms = 120UL;
-  else if (timeout_ms > 600UL) timeout_ms = 600UL;
+  else if (timeout_ms > 1200UL) timeout_ms = 1200UL;
   rec->display_async_timeout_ms = timeout_ms;
   return true;
 }
 
 void MasterScheduler::recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq,
                                            uint32_t timeout_ms, bool disposable_wifi_sample) {
+  if (recordMaintenanceTimeout(dst, cmd, seq, timeout_ms, requestDiagnosticsKind(dst, cmd))) return;
   const int16_t diag_idx = busDiagIndex(dst);
   if (diag_idx >= 0) {
     BusModuleDiag& d = bus_module_diag_[diag_idx];
+    // An asynchronous WLAN wait does not hold the receive loop. Do not show
+    // an older RS485 observation as if it explained this network timeout.
+    d.last_timeout_probe_valid = false;
+    d.last_timeout_budget_ms = timeout_ms;
     ++d.timeouts;
     bus_diag_record_timeout_class(d, cmd);
     d.last_timeout_ms = millis();
@@ -2282,9 +2105,11 @@ void MasterScheduler::recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq
   ModuleRecord* rec = registry_.find(dst);
   if (!rec) return;
   const bool was_online = rec->online;
-  if (rec->consecutive_timeouts < 255) rec->consecutive_timeouts++;
-  const bool isolated_wifi_sample_drop = disposable_wifi_sample && rec->consecutive_timeouts == 1;
-  if (!isolated_wifi_sample_drop && rec->miss_count < 0xFFFFFFFFUL) rec->miss_count++;
+  if (was_online) {
+    if (rec->consecutive_timeouts < 255) rec->consecutive_timeouts++;
+    const bool isolated_wifi_sample_drop = disposable_wifi_sample && rec->consecutive_timeouts == 1;
+    if (!isolated_wifi_sample_drop && rec->miss_count < 0xFFFFFFFFUL) rec->miss_count++;
+  }
   rec->last_timeout_ms = millis();
   rec->last_timeout_cmd = cmd;
   const bool hybrid_handover = rec->type == MODULE_DISPLAY && (rec->caps & CAP_DISPLAY_HYBRID) &&
@@ -2350,9 +2175,13 @@ bool MasterScheduler::handleAsyncDisplayFrame(const Frame& frame) {
   if (diag_idx >= 0) {
     BusModuleDiag& d = bus_module_diag_[diag_idx];
     const uint32_t late_age_ms = (uint32_t)(millis() - d.last_timeout_ms);
-    if (d.last_timeout_ms && late_age_ms <= 1200UL &&
+    if ((d.last_timeout_ms && late_age_ms <= 1200UL &&
         frame.seq == d.last_timeout_seq &&
-        frame.cmd == (uint8_t)(d.last_timeout_cmd | 0x80)) {
+        frame.cmd == (uint8_t)(d.last_timeout_cmd | 0x80)) ||
+        (d.last_maintenance_timeout_cmd &&
+         (uint32_t)(millis() - d.last_maintenance_timeout_ms) <= 1200UL &&
+         frame.seq == d.last_maintenance_timeout_seq &&
+         frame.cmd == (uint8_t)(d.last_maintenance_timeout_cmd | 0x80))) {
       ++d.late_responses;
       ++request_late_response_total_;
       if (traceMatches(frame.src)) {
@@ -2460,8 +2289,7 @@ void MasterScheduler::serviceAsyncDisplayRequests() {
     }
   }
 
-  // Then expire unanswered transactions. A 400-450 ms WLAN deadline no longer
-  // affects loop latency because nothing waits here.
+  // Then expire unanswered transactions without blocking the loop.
   for (uint8_t i = 0; i < registry_.count(); ++i) {
     ModuleRecord& rec = registry_.at(i);
     if (!rec.display_async_pending) continue;
@@ -2509,6 +2337,7 @@ bool MasterScheduler::readInfo(uint8_t addr) {
   rec->uid = response_uid;
   rec->online = true;
   rec->seen_in_scan = true;
+  rec->firmware_recovery_pending = false;
   rec->came_online = !was_online;
   // A module reboot/power-cycle loses its local Eco state. Never keep the
   // previous registry value across a real offline -> online transition, or the
@@ -2700,17 +2529,13 @@ void MasterScheduler::setJbcInputEnabled(bool enabled) {
 }
 
 bool MasterScheduler::setMainInputSource(uint8_t source_type, uint8_t source_addr, uint8_t source_bit, bool persist) {
-  if (source_type > INPUT_SRC_UNIVERSAL_ENTITY) return false;
-  if ((source_type == INPUT_SRC_IO_INPUT && source_bit > 15) || source_bit == 0xFF) return false;
-  if (source_type == INPUT_SRC_NONE) {
-    source_addr = 0;
-    source_bit = 0;
-  } else if (source_type == INPUT_SRC_JBC_WORK) {
-    if (source_addr != 0 && (source_addr < 0x10 || source_addr > 0x6F)) return false;
-    source_bit = 0;
-  } else if (source_addr < 0x10 || source_addr > 0x6F) {
-    return false;
-  }
+  static_assert(INPUT_SRC_NONE == 0 && INPUT_SRC_JBC_WORK == 1 && INPUT_SRC_IO_INPUT == 2 &&
+                INPUT_SRC_UNIVERSAL_ENTITY == 3, "Settings source IDs must remain compatible");
+  MasterSettingsStore::MainInputSettings source{source_type, source_addr, source_bit};
+  if (!MasterSettingsStore::normalizeMainInput(source)) return false;
+  source_type = source.type;
+  source_addr = source.addr;
+  source_bit = source.bit;
   main_input_source_type_ = source_type;
   main_input_source_addr_ = source_addr;
   main_input_source_bit_ = source_bit;
@@ -2724,9 +2549,11 @@ bool MasterScheduler::setMainInputSource(uint8_t source_type, uint8_t source_add
 
 bool MasterScheduler::setIoInputRoute(uint8_t addr, uint8_t bit, bool enabled) {
   ModuleRecord* rec = registry_.find(addr);
-  if (!rec || !(rec->caps & CAP_INPUT_KEYS) || bit > 7) return false;
-  if (bit == 0) rec->route_in1_output = enabled;
-  else rec->route_in2_output = enabled;
+  if (!rec || !(rec->caps & CAP_INPUT_KEYS) ||
+      bit >= ((rec->type == MODULE_FAN_IO || rec->type == MODULE_FAN_IO_PRO) ? 8 : 2)) return false;
+  const uint16_t channel = (uint16_t)(1U << bit);
+  if (enabled) rec->route_input_output_mask |= channel;
+  else rec->route_input_output_mask &= (uint16_t)~channel;
   updateInputRouting();
   return true;
 }
@@ -3019,7 +2846,7 @@ bool MasterScheduler::readJbcState(uint8_t addr) {
   if (!target || !(target->caps & CAP_JBC_BUS)) return false;
 
   Frame resp;
-  if (!request(addr, CMD_GET_STATE, nullptr, 0, resp, 30)) return false;
+  if (!request(addr, CMD_GET_STATE, nullptr, 0, resp, JBC_BUS_STATE_TIMEOUT_MS)) return false;
   if (resp.cmd != (CMD_GET_STATE | 0x80) || resp.len < 29 || resp.payload[0] != STATUS_OK) return false;
 
   const uint16_t expected_system_error = systemJbcError();
@@ -3137,7 +2964,7 @@ bool MasterScheduler::readJbcState(uint8_t addr) {
 
 bool MasterScheduler::readJbcUsbState(uint8_t addr) {
   Frame resp;
-  if (!request(addr, CMD_GET_STATE, nullptr, 0, resp, 40)) return false;
+  if (!request(addr, CMD_GET_STATE, nullptr, 0, resp, JBC_USB_STATE_TIMEOUT_MS)) return false;
   if (resp.cmd != (CMD_GET_STATE | 0x80) || resp.len < 19 || resp.payload[0] != STATUS_OK) return false;
 
   ModuleRecord* rec = registry_.find(addr);
@@ -3549,8 +3376,9 @@ bool MasterScheduler::universalEntityBoolActive(const ModuleRecord& rec, uint8_t
   for (uint8_t i = 0; i < rec.universal_entity_count; ++i) {
     const UniversalEntityState& e = rec.universal_entities[i];
     if (e.id != entity_id || e.len == 0) continue;
-    if (e.len == 1) return e.data[0] != 0 && e.data[0] != '0';
-    return !(e.data[0] == '0' && (e.len == 1 || e.data[1] == 0));
+    char raw[sizeof(e.data) + 1];
+    universal_entity_text_value(&e, raw, sizeof(raw));
+    return ofe_entity::boolValue(ofe_entity::text(raw));
   }
   return false;
 }
@@ -4091,6 +3919,11 @@ void MasterScheduler::updateInputRouting() {
   if (applying_input_rules_) return;
   applying_input_rules_ = true;
   bool active = mainInputSourceActive() || logic_external_input_;
+  for (uint8_t i = 0; i < registry_.count(); ++i) {
+    const ModuleRecord& rec = registry_.at(i);
+    if (rec.online && (rec.caps & CAP_INPUT_KEYS) &&
+        (rec.io_input_mask & rec.route_input_output_mask)) active = true;
+  }
   bool continuous_signal = logic_continuous_;
   bool continuous_source_present = logic_continuous_present_;
 
@@ -4180,8 +4013,8 @@ bool MasterScheduler::pollNextJbc() {
   }
 
   // Stagger station-absent probes so each bridge is sampled roughly once per
-  // JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS. The target ordinal comes from
-  // millis(), so fairness needs no extra per-module timer/counter RAM.
+  // JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS. A separate cursor keeps probes
+  // fair even if scheduler delays skip one or more time slots.
   uint32_t disconnected_probe_interval_ms = JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS;
   if (disconnected_count > 1) disconnected_probe_interval_ms /= disconnected_count;
   if (disconnected_probe_interval_ms < JBC_FAST_POLL_PER_MODULE_MS)
@@ -4189,14 +4022,11 @@ bool MasterScheduler::pollNextJbc() {
   const bool disconnected_probe_due = disconnected_count &&
     (uint32_t)(now - last_default_jbc_probe_ms_) >= disconnected_probe_interval_ms;
   if (disconnected_probe_due) {
-    const uint8_t target_ordinal = (uint8_t)(
-      (last_default_jbc_probe_ms_ / disconnected_probe_interval_ms) % disconnected_count);
-    uint8_t ordinal = 0;
-    for (uint8_t i = 0; i < count; ++i) {
-      ModuleRecord& rec = registry_.at(i);
+    for (uint8_t tries = 0; tries < count; ++tries) {
+      if (next_disconnected_jbc_poll_index_ >= count) next_disconnected_jbc_poll_index_ = 0;
+      ModuleRecord& rec = registry_.at(next_disconnected_jbc_poll_index_++);
       if (module_fw_active_ && rec.addr == module_fw_target_) continue;
       if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY) || (rec.jbc_link_flags & FAST_FLAG_CONNECTED)) continue;
-      if (ordinal++ != target_ordinal) continue;
       last_default_jbc_probe_ms_ = now;
       return fastPollJbc(rec.addr);
     }
@@ -4517,7 +4347,7 @@ bool MasterScheduler::pollNextTelemetry() {
       // WiFi telemetry can legitimately take >250 ms. Do not block loopTask:
       // share the display's existing single async transaction/frame slot.
       if (rec.display_async_pending) continue;
-      return startAsyncDisplayRequest(rec.addr, CMD_GET_TELEMETRY, nullptr, 0, 450UL);
+      return startAsyncDisplayRequest(rec.addr, CMD_GET_TELEMETRY, nullptr, 0, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
     }
     readTelemetry(rec.addr);
     return true;
@@ -4559,7 +4389,7 @@ bool MasterScheduler::pollNextOutputStatus() {
 }
 bool MasterScheduler::readOutputStatus(uint8_t addr) {
   Frame resp;
-  if (!request(addr, CMD_GET_STATUS, nullptr, 0, resp, 35)) return false;
+  if (!request(addr, CMD_GET_STATUS, nullptr, 0, resp, MODULE_STATUS_TIMEOUT_MS)) return false;
   if (resp.cmd != (CMD_GET_STATUS | 0x80) || resp.len < 8 || resp.payload[0] != STATUS_OK) return false;
 
   OutputModuleState state;
@@ -4599,7 +4429,7 @@ bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
     ? IO_QUERY_INCLUDE_ALIASES
     : (fan_edge_events ? IO_QUERY_INCLUDE_EVENTS : 0);
   Frame resp;
-  if (!request(addr, CMD_GET_IO, &query_flags, 1, resp, 50)) return false;
+  if (!request(addr, CMD_GET_IO, &query_flags, 1, resp, MODULE_IO_TIMEOUT_MS)) return false;
   if (resp.cmd != (CMD_GET_IO | 0x80) || resp.len < 7 || resp.payload[0] != STATUS_OK) return false;
 
   if (include_aliases) ++full_io_poll_total_;
@@ -4660,7 +4490,7 @@ bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
 
 bool MasterScheduler::readTelemetry(uint8_t addr) {
   Frame resp;
-  if (!request(addr, CMD_GET_TELEMETRY, nullptr, 0, resp, 50)) return false;
+  if (!request(addr, CMD_GET_TELEMETRY, nullptr, 0, resp, MODULE_TELEMETRY_TIMEOUT_MS)) return false;
   return processTelemetryResponse(addr, resp);
 }
 
@@ -5549,6 +5379,8 @@ bool MasterScheduler::firmwareTargetIsDisplay(uint8_t addr) const {
 void MasterScheduler::invalidateModuleAfterFirmwareUpdate(uint8_t addr) {
   ModuleRecord* rec = registry_.find(addr);
   if (rec) {
+    rec->firmware_recovery_pending = true;
+    rec->firmware_recovery_started_ms = millis();
     rec->online = false;
     rec->came_online = false;
     if (rec->caps & CAP_JBC_BUS) rec->jbc_settings_valid = false;
@@ -5581,9 +5413,27 @@ bool MasterScheduler::moduleFwBegin(uint8_t addr, uint32_t size) {
       return false;
     }
     master_display_wifi.beginFirmware(addr);
+    // A pre-update WLAN transaction must not expire while its peer writes flash.
+    if (ModuleRecord* rec = registry_.find(addr)) {
+      if (rec->display_async_pending) {
+        const int16_t diag_idx = busDiagIndex(addr);
+        if (diag_idx >= 0) {
+          BusModuleDiag& d = bus_module_diag_[diag_idx];
+          d.last_maintenance_timeout_ms = millis();
+          d.last_maintenance_timeout_seq = rec->display_async_seq;
+          d.last_maintenance_timeout_cmd = rec->display_async_cmd;
+        }
+      }
+      rec->display_async_pending = false;
+      rec->display_async_seq = 0xFF;
+      rec->display_async_cmd = 0;
+      rec->display_async_started_ms = 0;
+      rec->display_async_timeout_ms = 0;
+      rec->firmware_recovery_pending = false;
+    }
+    module_fw_active_ = true;
+    module_fw_target_ = addr;
   }
-  module_fw_active_ = true;
-  module_fw_target_ = addr;
   display_update_active_ = true;
   display_update_target_ = addr;
   display_update_progress_ = 0;
@@ -6286,7 +6136,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   }
 
   if (master_display_wifi.active(addr)) {
-    return startAsyncDisplayRequest(addr, CMD_DISPLAY_STATUS, payload, payload_len, 400UL);
+    return startAsyncDisplayRequest(addr, CMD_DISPLAY_STATUS, payload, payload_len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
   }
   Frame resp;
   if (!request(addr, CMD_DISPLAY_STATUS, payload, payload_len, resp, 100)) return false;
@@ -6521,7 +6371,7 @@ bool MasterScheduler::sendDisplayAlarms(
       }
       display->display_async_alarm_signature = h;
     }
-    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_ALARMS, payload, len, 450UL);
+    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_ALARMS, payload, len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
   }
   Frame resp;
   if (!request(display_addr, CMD_DISPLAY_ALARMS, payload, len, resp, 40)) return false;
@@ -6590,7 +6440,7 @@ bool MasterScheduler::sendDisplayModuleList(uint8_t display_addr, uint8_t start_
   }
   payload[count_pos] = entries;
   if (master_display_wifi.active(display_addr))
-    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_MODULE_LIST, payload, payload_len, 450UL);
+    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_MODULE_LIST, payload, payload_len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
   Frame resp;
   if (!request(display_addr, CMD_DISPLAY_MODULE_LIST, payload, payload_len, resp, 60)) return false;
   return resp.cmd == (CMD_DISPLAY_MODULE_LIST | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
@@ -6874,7 +6724,7 @@ bool MasterScheduler::sendDisplayModuleDetail(uint8_t display_addr, uint8_t targ
     }
   }
   if (master_display_wifi.active(display_addr))
-    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_MODULE_DETAIL, payload, payload_len, 450UL);
+    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_MODULE_DETAIL, payload, payload_len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
   Frame resp;
   if (!request(display_addr, CMD_DISPLAY_MODULE_DETAIL, payload, payload_len, resp, 60)) return false;
   return resp.cmd == (CMD_DISPLAY_MODULE_DETAIL | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
@@ -7017,14 +6867,9 @@ bool MasterScheduler::sendDisplayUniversalEntityPage(uint8_t display_addr, const
       const ModuleRecord* display = registry_.find(display_addr);
       const bool german = display && display->display_language == 1;
       char label[32];
-      if (!descriptor_key_value(buf, german ? "de" : "en", label, sizeof(label))) {
-        if (!descriptor_key_value(buf, german ? "en" : "de", label, sizeof(label))) {
-          char id_s[8], type_s[18], key_s[32], mode_s[8];
-          key_s[0] = 0;
-          sscanf(buf, "%7s %17s %31s %7s", id_s, type_s, key_s, mode_s);
-          snprintf(label, sizeof(label), "%s", key_s[0] ? key_s : "Entity");
-        }
-      }
+      ofe_entity::Definition definition;
+      ofe_entity::parse(ofe_entity::text(buf), definition);
+      ofe_entity::copy(ofe_entity::label(definition, german), label, sizeof(label));
       char unit[6];
       descriptor_key_value(buf, "unit", unit, sizeof(unit));
       const int16_t min_v = descriptor_i16_value(buf, "min", type_code == DISPLAY_UNI_NUMBER ? 0 : 0);
@@ -7102,7 +6947,7 @@ bool MasterScheduler::sendDisplayUniversalEntityPage(uint8_t display_addr, const
   payload[count_pos] = written;
 
   if (master_display_wifi.active(display_addr))
-    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, payload_len, 450UL);
+    return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, payload_len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
   Frame resp;
   if (!request(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, payload_len, resp, 60)) return false;
   return resp.cmd == (CMD_DISPLAY_DETAIL_PAGE | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
@@ -7548,10 +7393,7 @@ void MasterScheduler::setAfterrunPowerProfile(bool enabled, uint16_t power, bool
   if (power > max_power) power = max_power;
   extractor_.setAfterrunPowerProfile(enabled, power);
   extractor_.markOutputDirty();
-  if (persist) {
-    Preferences prefs;
-    MasterSettingsStore::saveAfterrunPower(prefs, enabled, power);
-  }
+  if (persist) scheduleControlSettingsPersist();
 }
 void MasterScheduler::setControlSettings(uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous, bool persist) {
   JbcModuleState state;

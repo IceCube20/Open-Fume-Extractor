@@ -41,6 +41,7 @@ constexpr const char* KEY_OUT_ADDR = "out_addr";
 constexpr const char* KEY_MAIN_IN_TYPE = "main_in_t";
 constexpr const char* KEY_MAIN_IN_ADDR = "main_in_a";
 constexpr const char* KEY_MAIN_IN_BIT = "main_in_b";
+constexpr const char* KEY_MAIN_IN_BLOB = "main_in_v1";
 constexpr const char* KEY_LEGACY_JBC_INPUT = "r_jbc";
 constexpr const char* KEY_CFG_SUCTION = "cfg_suction";
 constexpr const char* KEY_CFG_FLOW = "cfg_flow";
@@ -49,6 +50,7 @@ constexpr const char* KEY_CFG_DELAY_STAND = "cfg_dstand";
 constexpr const char* KEY_CFG_STAND = "cfg_stand";
 constexpr const char* KEY_CFG_AFTER_POWER_ENABLED = "cfg_arpen";
 constexpr const char* KEY_CFG_AFTER_POWER = "cfg_arpwr";
+constexpr const char* KEY_CFG_BLOB = "cfg_blob1";
 constexpr const char* KEY_LOGIC_ACTIVE = "logic_active";
 constexpr const char* KEY_LOGIC_LEGACY_JSON = "logic_json";
 constexpr const char* KEY_MODULE_SNAPSHOT_COUNT = "mod_cnt";
@@ -59,7 +61,7 @@ struct ControlSettings {
   uint16_t delay_work_sec = 10;
   uint16_t delay_stand_sec = 0;
   bool stand_intakes = true;
-  bool continuous = false;
+  bool continuous = false; // Runtime only; never serialized or restored.
   bool afterrun_power_enabled = false;
   uint16_t afterrun_power = 300;
 };
@@ -82,7 +84,7 @@ struct InputActionRuleSettings {
 
 inline String routeKey(uint8_t addr, uint8_t bit) {
   char key[12];
-  snprintf(key, sizeof(key), "r%c_%02X", bit == 0 ? '1' : '2', addr);
+  snprintf(key, sizeof(key), "r%u_%02X", (unsigned)(bit + 1), addr);
   return String(key);
 }
 
@@ -120,100 +122,24 @@ inline String logicSlotPartKey(uint8_t slot, uint8_t part) {
   return String(key);
 }
 
-inline ControlSettings loadControl(Preferences& prefs) {
-  ControlSettings out;
-  if (!prefs.begin(NS_CFG, false)) return out;
-  out.suction = prefs.getUChar(KEY_CFG_SUCTION, out.suction);
-  out.select_flow = prefs.getUShort(KEY_CFG_FLOW, out.select_flow);
-  out.delay_work_sec = prefs.getUShort(KEY_CFG_DELAY_WORK, out.delay_work_sec);
-  out.delay_stand_sec = prefs.getUShort(KEY_CFG_DELAY_STAND, out.delay_stand_sec);
-  out.stand_intakes = prefs.getUChar(KEY_CFG_STAND, out.stand_intakes ? 1 : 0) != 0;
-  out.afterrun_power_enabled = prefs.getUChar(KEY_CFG_AFTER_POWER_ENABLED, out.afterrun_power_enabled ? 1 : 0) != 0;
-  out.afterrun_power = prefs.getUShort(KEY_CFG_AFTER_POWER, out.afterrun_power);
-  prefs.end();
-  return out;
-}
+ControlSettings loadControl(Preferences& prefs);
+bool saveControl(Preferences& prefs, const ControlSettings& s);
+MainInputSettings loadMainInput(Preferences& prefs, uint8_t legacy_jbc_type, uint8_t none_type);
+bool saveMainInput(Preferences& prefs, uint8_t type, uint8_t addr, uint8_t bit);
+uint8_t loadPreferredOutput(Preferences& prefs);
+bool savePreferredOutput(Preferences& prefs, uint8_t addr);
+InputActionRuleSettings loadRuleOpen(Preferences& prefs, uint8_t index, uint8_t none_source, uint8_t none_target);
+bool saveRuleOpen(Preferences& prefs, uint8_t index, const InputActionRuleSettings& rule);
 
-inline bool saveControl(Preferences& prefs, const ControlSettings& s) {
-  if (!prefs.begin(NS_CFG, false)) return false;
-  bool ok = true;
-  ok = prefs.putUChar(KEY_CFG_SUCTION, s.suction) && ok;
-  ok = prefs.putUShort(KEY_CFG_FLOW, s.select_flow) && ok;
-  ok = prefs.putUShort(KEY_CFG_DELAY_WORK, s.delay_work_sec) && ok;
-  ok = prefs.putUShort(KEY_CFG_DELAY_STAND, s.delay_stand_sec) && ok;
-  ok = prefs.putUChar(KEY_CFG_STAND, s.stand_intakes ? 1 : 0) && ok;
-  ok = prefs.putUChar(KEY_CFG_AFTER_POWER_ENABLED, s.afterrun_power_enabled ? 1 : 0) && ok;
-  ok = prefs.putUShort(KEY_CFG_AFTER_POWER, s.afterrun_power) && ok;
-  prefs.end();
-  return ok;
-}
-
-inline bool saveAfterrunPower(Preferences& prefs, bool enabled, uint16_t power) {
-  if (!prefs.begin(NS_CFG, false)) return false;
-  bool ok = true;
-  ok = prefs.putUChar(KEY_CFG_AFTER_POWER_ENABLED, enabled ? 1 : 0) && ok;
-  ok = prefs.putUShort(KEY_CFG_AFTER_POWER, power) && ok;
-  prefs.end();
-  return ok;
-}
-
-inline MainInputSettings loadMainInput(Preferences& prefs, uint8_t legacy_jbc_type, uint8_t none_type) {
-  MainInputSettings out;
-  if (!prefs.begin(NS_CFG, false)) return out;
-  out.type = prefs.getUChar(KEY_MAIN_IN_TYPE, 0xFF);
-  if (out.type == 0xFF) out.type = prefs.getUChar(KEY_LEGACY_JBC_INPUT, 1) ? legacy_jbc_type : none_type;
-  out.addr = prefs.getUChar(KEY_MAIN_IN_ADDR, 0);
-  out.bit = prefs.getUChar(KEY_MAIN_IN_BIT, 0);
-  prefs.end();
-  return out;
-}
-
-inline bool saveMainInput(Preferences& prefs, uint8_t type, uint8_t addr, uint8_t bit) {
-  if (!prefs.begin(NS_CFG, false)) return false;
-  bool ok = true;
-  ok = prefs.putUChar(KEY_MAIN_IN_TYPE, type) && ok;
-  ok = prefs.putUChar(KEY_MAIN_IN_ADDR, addr) && ok;
-  ok = prefs.putUChar(KEY_MAIN_IN_BIT, bit) && ok;
-  prefs.end();
-  return ok;
-}
-
-inline uint8_t loadPreferredOutput(Preferences& prefs) {
-  if (!prefs.begin(NS_CFG, false)) return 0;
-  const uint8_t addr = prefs.getUChar(KEY_OUT_ADDR, 0);
-  prefs.end();
-  return addr;
-}
-
-inline bool savePreferredOutput(Preferences& prefs, uint8_t addr) {
-  if (!prefs.begin(NS_CFG, false)) return false;
-  const bool ok = prefs.putUChar(KEY_OUT_ADDR, addr);
-  prefs.end();
-  return ok;
-}
-
-inline InputActionRuleSettings loadRuleOpen(Preferences& prefs, uint8_t index, uint8_t none_source, uint8_t none_target) {
-  InputActionRuleSettings out;
-  out.enabled = prefs.getUChar(ruleKey(index, "en").c_str(), 0) != 0;
-  out.source_type = prefs.getUChar(ruleKey(index, "st").c_str(), none_source);
-  out.source_addr = prefs.getUChar(ruleKey(index, "sa").c_str(), 0);
-  out.source_bit = prefs.getUChar(ruleKey(index, "sb").c_str(), 0);
-  out.target_type = prefs.getUChar(ruleKey(index, "tt").c_str(), none_target);
-  out.target_addr = prefs.getUChar(ruleKey(index, "ta").c_str(), 0);
-  out.target_bit = prefs.getUChar(ruleKey(index, "tb").c_str(), 0);
-  return out;
-}
-
-inline bool saveRuleOpen(Preferences& prefs, uint8_t index, const InputActionRuleSettings& rule) {
-  bool ok = true;
-  ok = prefs.putUChar(ruleKey(index, "en").c_str(), rule.enabled ? 1 : 0) && ok;
-  ok = prefs.putUChar(ruleKey(index, "st").c_str(), rule.source_type) && ok;
-  ok = prefs.putUChar(ruleKey(index, "sa").c_str(), rule.source_addr) && ok;
-  ok = prefs.putUChar(ruleKey(index, "sb").c_str(), rule.source_bit) && ok;
-  ok = prefs.putUChar(ruleKey(index, "tt").c_str(), rule.target_type) && ok;
-  ok = prefs.putUChar(ruleKey(index, "ta").c_str(), rule.target_addr) && ok;
-  ok = prefs.putUChar(ruleKey(index, "tb").c_str(), rule.target_bit) && ok;
-  return ok;
-}
+// Open-handle writers skip unchanged values and verify successful persistence.
+// Callers own the handle and their existing task locks; these functions do not
+// wait for MQTT, the command queue or the OFE bus.
+bool putStringVerified(Preferences& prefs, const char* key, const String& value);
+bool putBoolVerified(Preferences& prefs, const char* key, bool value);
+bool putUCharVerified(Preferences& prefs, const char* key, uint8_t value);
+bool putUShortVerified(Preferences& prefs, const char* key, uint16_t value);
+bool saveStatusLed(Preferences& prefs, bool enabled, uint8_t brightness);
+bool savePowerSave(Preferences& prefs, bool enabled, uint16_t idle_minutes);
+bool normalizeMainInput(MainInputSettings& s);
 
 } // namespace MasterSettingsStore

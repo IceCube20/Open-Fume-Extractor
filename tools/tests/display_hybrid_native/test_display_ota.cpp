@@ -34,8 +34,9 @@ struct FakeEsp {
   void restart() { ++restarts; }
 } ESP;
 
-static bool fw_update_active=false;
-static uint32_t fw_update_started_ms=0,fw_update_last_ms=0,fw_update_offset=0,fw_update_size=0;
+static std::atomic<bool> fw_update_active{false};
+static uint32_t fw_update_last_ms=0;
+static std::atomic<uint32_t> fw_update_started_ms{0},fw_update_offset{0},fw_update_size{0};
 static std::atomic<uint32_t> fw_update_reboot_ms{0};
 static constexpr uint32_t FW_UPDATE_TIMEOUT_MS=30000, UPDATE_SIZE_UNKNOWN=UINT32_MAX;
 static constexpr size_t FW_UPDATE_WRITE_BUFFER_SIZE=4096;

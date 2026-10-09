@@ -1,5 +1,27 @@
 #pragma once
 
+#include "WebTypography.h"
+#include "EntityPresentation.h"
+
+static String entity_span_string(ofe_entity::Text value) {
+  String result;
+  if (value.size) result.concat(value.data, (unsigned int)value.size);
+  return result;
+}
+
+static String entity_display_string(const ofe_entity::Definition& def, const char* raw) {
+  if (ofe_entity::equal(def.type, "select")) {
+    uint8_t index = 0;
+    if (ofe_entity::selectIndex(def, ofe_entity::text(raw), index)) {
+      const ofe_entity::Text option = ofe_entity::listItem(ofe_entity::metadata(def.line, "options"), index);
+      if (!option.empty()) return entity_span_string(option);
+    }
+  }
+  char shown[64];
+  ofe_entity::displayText(def, ofe_entity::text(raw), shown, sizeof(shown));
+  return String(shown);
+}
+
 // Shared Web UI helpers, /state JSON and the main status page.
 // Included from the master sketch so the existing static globals remain in one
 // Arduino translation unit.
@@ -314,21 +336,9 @@ static String bytes_ascii(const uint8_t* data, uint8_t len) {
 }
 
 static String duration_text_minutes(uint32_t minutes) {
-  const uint32_t days = minutes / 1440UL;
-  minutes %= 1440UL;
-  const uint32_t hours = minutes / 60UL;
-  minutes %= 60UL;
-  String out;
-  if (days) out += String(days) + "d";
-  if (hours) {
-    if (out.length()) out += ' ';
-    out += String(hours) + "h";
-  }
-  if (minutes || !out.length()) {
-    if (out.length()) out += ' ';
-    out += String(minutes) + "m";
-  }
-  return out;
+  char value[40];
+  ofe_entity::durationText(minutes, value, sizeof(value));
+  return String(value);
 }
 
 static String duration_text_seconds(uint32_t seconds) {
@@ -514,7 +524,7 @@ static String html_escape(const String& in) {
 static void load_routing_config();
 static void load_control_settings();
 static uint16_t customPowerFromSelectFlow(uint16_t select_flow);
-static void apply_control_settings(uint8_t suction, uint16_t select_flow, uint16_t delay_work,
+static bool apply_control_settings(uint8_t suction, uint16_t select_flow, uint16_t delay_work,
                                    uint16_t delay_stand, bool stand_intakes, bool continuous,
                                    bool persist);
 static bool mqtt_apply_module_command(const String& leaf, const String& value);
@@ -539,119 +549,46 @@ static const char* module_comm_quality_text(const ModuleRecord& m) {
 }
 
 static String descriptor_meta_value(const char* line, const char* key) {
-  if (!line || !key || !*key) return String();
-  String needle = String(key) + "=";
-  const char* p = line;
-  while ((p = strstr(p, needle.c_str())) != nullptr) {
-    if (p == line || p[-1] == ' ' || p[-1] == '\t') {
-      p += needle.length();
-      const char* end = p;
-      while (*end) {
-        if ((*end == ' ' || *end == '\t')) {
-          const char* q = end + 1;
-          while (*q == ' ' || *q == '\t') ++q;
-          const char* r = q;
-          while ((*r >= 'A' && *r <= 'Z') || (*r >= 'a' && *r <= 'z') || (*r >= '0' && *r <= '9') || *r == '_') ++r;
-          if (r > q && *r == '=') break;
-        }
-        ++end;
-      }
-      char tmp[96];
-      size_t n = (size_t)(end - p);
-      if (n >= sizeof(tmp)) n = sizeof(tmp) - 1;
-      memcpy(tmp, p, n);
-      tmp[n] = 0;
-      String out(tmp);
-      out.trim();
-      return out;
-    }
-    p += needle.length();
-  }
-  return String();
+  return entity_span_string(ofe_entity::metadata(ofe_entity::text(line), key));
 }
 
-static bool descriptor_first_tokens(const char* line, uint8_t& id, String& type, String& key, String& mode) {
-  if (!line) return false;
-  while (*line == ' ' || *line == '\t') ++line;
-  if (*line < '0' || *line > '9') return false;
-  uint16_t v = 0;
-  while (*line >= '0' && *line <= '9') {
-    v = (uint16_t)(v * 10U + (uint8_t)(*line - '0'));
-    if (v > 255) return false;
-    ++line;
-  }
-  id = (uint8_t)v;
-  auto next_tok = [&](String& out) -> bool {
-    while (*line == ' ' || *line == '\t') ++line;
-    if (!*line) return false;
-    const char* start = line;
-    while (*line && *line != ' ' && *line != '\t') ++line;
-    char tmp[48];
-    size_t n = (size_t)(line - start);
-    if (n >= sizeof(tmp)) n = sizeof(tmp) - 1;
-    memcpy(tmp, start, n);
-    tmp[n] = 0;
-    out = String(tmp);
-    out.trim();
-    return out.length() > 0;
-  };
-  return next_tok(type) && next_tok(key) && next_tok(mode);
-}
 
 template <typename JsonBuffer>
 static void append_universal_entity_defs_json(JsonBuffer& json, const ModuleRecord& m) {
   json += ",\"universal_entity_defs\":[";
-  if (m.universal_descriptor_valid && m.universal_descriptor[0]) {
-    const char* p = m.universal_descriptor;
-    bool first = true;
-    while (p && *p) {
-      const char* line = p;
-      const char* next = strchr(p, '\n');
-      char buf[260];
-      size_t n = next ? (size_t)(next - line) : strlen(line);
-      if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-      memcpy(buf, line, n);
-      buf[n] = 0;
-      uint8_t id = 0;
-      String type, key, mode;
-      if (descriptor_first_tokens(buf, id, type, key, mode) && id >= 20) {
-        String source = descriptor_meta_value(buf, "source");
-        if (!source.length() || source.equalsIgnoreCase("profile")) {
-          String role = descriptor_meta_value(buf, "role");
-          String label = descriptor_meta_value(buf, strcmp(web_lang, "de") == 0 ? "de" : "en");
-          if (!label.length()) label = descriptor_meta_value(buf, "de");
-          if (!label.length()) label = descriptor_meta_value(buf, "en");
-          if (!label.length()) label = key;
-          String unit = descriptor_meta_value(buf, "unit");
-          String access = descriptor_meta_value(buf, "access");
-          String minv = descriptor_meta_value(buf, "min");
-          String maxv = descriptor_meta_value(buf, "max");
-          String step = descriptor_meta_value(buf, "step");
-          String idx = descriptor_meta_value(buf, "idx");
-          String group = descriptor_meta_value(buf, "group");
-          String ui = descriptor_meta_value(buf, "ui");
-          if (!first) json += ',';
-          first = false;
-          json += "{\"id\":"; json += id;
-          json += ",\"type\":\""; json += json_escape(type.c_str()); json += "\"";
-          json += ",\"key\":\""; json += json_escape(key.c_str()); json += "\"";
-          json += ",\"mode\":\""; json += json_escape(mode.c_str()); json += "\"";
-          json += ",\"label\":\""; json += json_escape(label.c_str()); json += "\"";
-          json += ",\"meta\":{\"source\":\"profile\"";
-          if (role.length()) { json += ",\"role\":\""; json += json_escape(role.c_str()); json += "\""; }
-          if (unit.length()) { json += ",\"unit\":\""; json += json_escape(unit.c_str()); json += "\""; }
-          if (access.length()) { json += ",\"access\":\""; json += json_escape(access.c_str()); json += "\""; }
-          if (minv.length()) { json += ",\"min\":\""; json += json_escape(minv.c_str()); json += "\""; }
-          if (maxv.length()) { json += ",\"max\":\""; json += json_escape(maxv.c_str()); json += "\""; }
-          if (step.length()) { json += ",\"step\":\""; json += json_escape(step.c_str()); json += "\""; }
-          if (idx.length()) { json += ",\"idx\":\""; json += json_escape(idx.c_str()); json += "\",\"profile_index\":\""; json += json_escape(idx.c_str()); json += "\""; }
-          if (group.length()) { json += ",\"group\":\""; json += json_escape(group.c_str()); json += "\""; }
-          if (ui.length()) { json += ",\"ui\":\""; json += json_escape(ui.c_str()); json += "\""; }
-          json += "}}";
-        }
-      }
-      p = next ? next + 1 : nullptr;
+  bool first = true;
+  const char* scan = m.universal_descriptor_valid ? m.universal_descriptor : nullptr;
+  while (scan && *scan) {
+    const char* next = strchr(scan, '\n');
+    ofe_entity::Definition def;
+    const ofe_entity::Text line{scan, next ? (size_t)(next - scan) : strlen(scan)};
+    scan = next ? next + 1 : nullptr;
+    if (!ofe_entity::parse(line, def) || def.id < 20) continue;
+    const ofe_entity::Text source = ofe_entity::metadata(line, "source");
+    if (!source.empty() && !ofe_entity::equal(source, "profile")) continue;
+    if (!first) json += ',';
+    first = false;
+    json += "{\"id\":"; json += def.id;
+    auto field = [&](const char* key, ofe_entity::Text value) {
+      const String owned = entity_span_string(value);
+      json += ",\""; json += key; json += "\":\""; json += json_escape(owned.c_str()); json += "\"";
+    };
+    field("type", def.type);
+    field("key", def.key);
+    field("mode", ofe_entity::access(def));
+    field("label", ofe_entity::label(def, strcmp(web_lang, "de") == 0));
+    json += ",\"meta\":{\"source\":\"profile\"";
+    static const char* const keys[] = {
+      "role", "unit", "access", "min", "max", "step", "idx", "group", "ui",
+      "en", "de", "options", "values", "scale", "sc", "time_base", "tb", "time_display", "tf"
+    };
+    for (const char* key : keys) {
+      const ofe_entity::Text value = ofe_entity::metadata(line, key);
+      if (!value.empty()) field(key, value);
     }
+    const ofe_entity::Text index = ofe_entity::metadata(line, "idx");
+    if (!index.empty()) field("profile_index", index);
+    json += "}}";
   }
   json += "]";
 }
@@ -1524,8 +1461,9 @@ static bool build_state_json(OfePsramTextBuffer& json, bool include_universal_de
     json += ",\"module_output_fault\":"; json += m.output_fault_mask;
     json += ",\"module_output_fault_text\":\""; json += json_escape(output_fault_text_for_module(m.output_fault_mask, m.type).c_str()); json += "\"";
     json += ",\"combined_fault_text\":\""; json += json_escape(output_fault_text_for_module(m.io_fault_mask | m.output_fault_mask, m.type).c_str()); json += "\"";
-    json += ",\"route_in1_output\":"; json += m.route_in1_output ? "true" : "false";
-    json += ",\"route_in2_output\":"; json += m.route_in2_output ? "true" : "false";
+    json += ",\"route_in1_output\":"; json += (m.route_input_output_mask & 1U) ? "true" : "false";
+    json += ",\"route_in2_output\":"; json += (m.route_input_output_mask & 2U) ? "true" : "false";
+    json += ",\"route_input_output_mask\":"; json += m.route_input_output_mask;
     json += ",\"weller_speed_percent\":"; json += m.weller_speed_percent;
     json += ",\"weller_filter_status\":"; json += m.weller_filter_status;
     json += ",\"weller_filter_runtime_minutes\":"; json += m.weller_filter_runtime_minutes;
@@ -1583,14 +1521,34 @@ static bool build_state_json(OfePsramTextBuffer& json, bool include_universal_de
       json += ",\"universal_entities\":[";
       for (uint8_t ue = 0; ue < m.universal_entity_count; ++ue) {
         const UniversalEntityState& e = m.universal_entities[ue];
+        const uint8_t data_len = e.len <= sizeof(e.data) ? e.len : sizeof(e.data);
+        char raw[sizeof(e.data) + 1];
+        ofe_entity::Definition definition;
+        const bool has_definition = m.universal_descriptor_valid &&
+            ofe_entity::find(m.universal_descriptor, e.id, definition);
+        ofe_entity::rawText(e.data, data_len, raw, sizeof(raw),
+            has_definition ? ofe_entity::valueEncoding(definition) : ofe_entity::Encoding::Auto);
         if (ue) json += ',';
         json += "{\"id\":"; json += e.id;
         json += ",\"len\":"; json += e.len;
         json += ",\"age_ms\":"; json += e.age_ms;
-        json += ",\"hex\":\""; json += bytes_hex(e.data, e.len); json += "\"";
-        json += ",\"ascii\":\""; json += json_escape(bytes_ascii(e.data, e.len).c_str()); json += "\"";
-        if (e.len == 1) { const bool vb = e.data[0] != 0 && e.data[0] != '0'; json += ",\"value_bool\":"; json += vb ? "true" : "false"; json += ",\"value\":"; json += vb ? 1 : 0; }
-        else if (e.len == 2) { json += ",\"value\":"; json += get_u16_le(e.data); }
+        json += ",\"hex\":\""; json += bytes_hex(e.data, data_len); json += "\"";
+        json += ",\"ascii\":\""; json += json_escape(raw); json += "\"";
+        if (has_definition && data_len) {
+          const String shown = entity_display_string(definition, raw);
+          if (shown != raw) { json += ",\"display_text\":\""; json += json_escape(shown.c_str()); json += "\""; }
+          if (ofe_entity::equal(definition.type, "select")) {
+            uint8_t selected = 0;
+            if (ofe_entity::selectIndex(definition, ofe_entity::text(raw), selected)) {
+              const String selected_value = entity_span_string(ofe_entity::selectValue(definition, selected));
+              json += ",\"selected_value\":\""; json += json_escape(selected_value.c_str()); json += "\"";
+            }
+          }
+        }
+        const bool boolean_entity = has_definition && (ofe_entity::equal(definition.type, "switch") ||
+            ofe_entity::equal(definition.type, "binary_sensor"));
+        if (e.len == 1 || boolean_entity) { const bool vb = ofe_entity::boolValue(ofe_entity::text(raw)); json += ",\"value_bool\":"; json += vb ? "true" : "false"; if (e.len == 1) { json += ",\"value\":"; json += vb ? 1 : 0; } }
+        if (e.len == 2) { json += ",\"value\":"; json += get_u16_le(e.data); }
         else if (e.len == 4) { json += ",\"value\":"; json += get_u32_le(e.data); }
         json += "}";
       }
@@ -1732,19 +1690,19 @@ static void web_handle_root() {
 <link rel="icon" type="image/png" href="/favicon.png"><link rel="apple-touch-icon" href="/logo.png">
 <style>
 :root{--bg:#0c0d0f;--card:#181b20;--card2:#20242a;--line:#303640;--text:#f3f5f7;--muted:#9ba5b1;--blue:#4a90d9;--green:#59c77a;--red:#a94646}*{box-sizing:border-box}
-body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
+body{margin:0;font-family:var(--ofe-font-ui);background:var(--bg);color:var(--text)}
 header{padding:12px 18px;min-height:66px;background:#17191d;border-bottom:1px solid #2a2e35;display:flex;align-items:center;justify-content:space-between;gap:16px;position:sticky;top:0;z-index:5}
 .brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}.brand-dev{min-height:28px;padding:4px 9px;font-size:11px;margin-left:4px}.brand-logo{width:38px;height:38px;border-radius:9px;object-fit:cover;box-shadow:0 0 0 1px #303640}.brand-text{line-height:1.05}.brand span{display:block;color:#929ba6;font-size:12px;font-weight:400;margin-top:4px}
 main{width:min(1100px,100%);margin:auto;padding:24px 18px 40px}.page-head{margin-bottom:18px}.eyebrow{color:var(--green);font-size:12px;font-weight:700;text-transform:uppercase}.page-head h1{font-size:25px;margin:5px 0}.page-head p{color:var(--muted);line-height:1.45;margin:0;max-width:720px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px}
 .tile{position:relative;overflow:hidden;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:14px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset}.grid>.tile:not(.row){background:var(--card2);border-color:#343b45}.grid>.tile:not(.row)::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:#4a90d9}.grid>.tile:nth-child(4n+2)::before{background:#59c77a}.grid>.tile:nth-child(4n+3)::before{background:#d3a84d}.grid>.tile:nth-child(4n+4)::before{background:#57b8c8}.k{color:var(--muted);font-size:12px}.v{font-size:24px;margin-top:5px}.mini{font-size:16px;line-height:1.35}#station{font-size:18px;line-height:1.25}
 .on{color:#79d279}.off{color:#999}.warn{color:#f4c25b}table{width:100%;min-width:1320px;table-layout:auto;border-collapse:collapse;background:#181a1d;border:1px solid #333;border-radius:6px;overflow:hidden}
-th,td{text-align:left;padding:9px 11px;border-bottom:1px solid #2d3034;font-size:14px;white-space:nowrap;vertical-align:middle}th{color:#bbb;background:#202329}tr:last-child td{border-bottom:0}td:nth-child(2),td:nth-child(4){white-space:normal;min-width:180px;line-height:1.35}td:nth-child(6){font-family:Consolas,monospace;min-width:150px}.label-edit{min-width:190px}
+th,td{text-align:left;padding:9px 11px;border-bottom:1px solid #2d3034;font-size:14px;white-space:nowrap;vertical-align:middle}th{color:#bbb;background:#202329}tr:last-child td{border-bottom:0}td:nth-child(2),td:nth-child(4){white-space:normal;min-width:180px;line-height:1.35}td:nth-child(6){font-family:var(--ofe-font-ui);min-width:150px}.label-edit{min-width:190px}
 th:nth-child(1){min-width:64px}th:nth-child(3){min-width:100px}th:nth-child(5){min-width:70px}th:nth-child(7){min-width:82px}th:nth-child(8){min-width:88px}th:nth-child(9){min-width:150px}th:nth-child(10){min-width:90px}th:nth-child(11){min-width:118px}
 label{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}input,select{width:100%;min-height:42px;background:#101216;color:var(--text);border:1px solid #414854;border-radius:7px;padding:10px 11px;font:inherit;outline:none}input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(74,144,217,.16)}input.is-dirty,select.is-dirty,textarea.is-dirty{border-color:#d3a84d;box-shadow:0 0 0 2px rgba(211,168,77,.14)}.label-edit{padding:8px;font-size:13px;min-height:36px}
 .bar{height:8px;background:#2b3037;border-radius:99px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,#58d37b,#93e6a8);width:0}.muted{color:#98a1ad}.row{margin-top:14px}
 .wifi-meter{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px}.wifi-bar{height:10px;background:#2b3037;border-radius:99px;overflow:hidden}.wifi-fill{height:100%;width:0;background:linear-gradient(90deg,#d85151,#f4c25b,#58d37b);border-radius:99px;transition:width .2s}.wifi-db{font-size:13px;color:#aab2bd;min-width:54px;text-align:right}.ssid{font-size:12px;color:#98a1ad;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.module-card{--accent:#4a90d9;min-height:250px;padding:0!important;border-color:#343b45!important;background:#15181d!important;box-shadow:0 10px 26px rgba(0,0,0,.18)!important}.module-card::before{display:none}.module-card>.module-head{height:136px;min-height:136px;max-height:136px;padding:12px 16px;border-bottom:1px solid #2b3139;background:#1c2026;box-shadow:inset 4px 0 0 var(--accent);display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:9px}.module-card .module-title{width:100%;font-size:15px;font-weight:800;color:#eef3f8;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.18;overflow-wrap:anywhere}.module-card .module-head-main{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;flex:1 1 auto}.module-card .module-type{margin-top:0;color:#aeb8c3;font-size:12px;font-weight:700;line-height:1.2;white-space:normal;overflow:visible}.module-card .module-address{margin-top:5px;color:#718090;font:600 11px/1.15 Consolas,monospace;white-space:nowrap}.module-card .module-identity{display:flex;align-items:center;gap:11px;min-width:0;flex:1 1 auto}.module-card .module-head-copy{min-width:0;flex:1 1 auto}.module-card .module-icon{width:42px;min-width:42px;height:42px;flex:0 0 42px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:#252b33;color:var(--accent);font-size:17px;font-weight:800}.module-card .module-icon .module-head-glyph{width:24px;height:24px;display:block;color:currentColor}.module-card>.metric-line,.module-card>.io-grid,.module-card>.devid,.module-card>input[type=range],.module-card>select,.module-card>button{margin-left:14px;margin-right:14px}.module-card>.metric-line{margin-top:14px}.module-card .metric-line>div{background:#101318;border-color:#282f38;padding:10px}.module-card .metric-line .v{font-size:18px;font-weight:700}.module-card .devid{background:#101318;border-color:#282f38}.module-card.jbc-card{--accent:#39c779}.module-card.fan-card{--accent:#4a90d9}.module-card.weller-card{--accent:#55b9ca}.module-card.display-card{--accent:#b58cff}.module-card.universal-card{--accent:#f1b84b}.module-card.universal-card.modbus-card{--accent:#e28b52}.module-card .module-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:14px}.module-card .module-meta-grid>div{background:#101318;border:1px solid #282f38;border-radius:7px;padding:10px}.module-card .module-meta-grid .v{font-size:16px;font-weight:700;margin-top:4px}.module-card .module-footer{margin:12px 0 0!important;padding:11px 14px;border-top:1px solid #282f38;color:#8e99a5;font-size:12px}.module-card .display-settings{padding:0 14px 14px}.module-card .display-settings label{margin-top:10px}.module-card .display-settings>.metric-line{margin-top:4px}.module-card .display-settings>.metric-line>div{padding:0;background:transparent;border:0}.module-card .display-settings button{width:100%;margin-top:10px}
+.module-card{--accent:#4a90d9;min-height:250px;padding:0!important;border-color:#343b45!important;background:#15181d!important;box-shadow:0 10px 26px rgba(0,0,0,.18)!important}.module-card::before{display:none}.module-card>.module-head{height:136px;min-height:136px;max-height:136px;padding:12px 16px;border-bottom:1px solid #2b3139;background:#1c2026;box-shadow:inset 4px 0 0 var(--accent);display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:9px}.module-card .module-title{width:100%;font-size:15px;font-weight:800;color:#eef3f8;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.18;overflow-wrap:anywhere}.module-card .module-head-main{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;flex:1 1 auto}.module-card .module-type{margin-top:0;color:#aeb8c3;font-size:12px;font-weight:700;line-height:1.2;white-space:normal;overflow:visible}.module-card .module-address{margin-top:5px;color:#718090;font:600 11px/1.15 var(--ofe-font-ui);white-space:nowrap}.module-card .module-identity{display:flex;align-items:center;gap:11px;min-width:0;flex:1 1 auto}.module-card .module-head-copy{min-width:0;flex:1 1 auto}.module-card .module-icon{width:42px;min-width:42px;height:42px;flex:0 0 42px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:#252b33;color:var(--accent);font-size:17px;font-weight:800}.module-card .module-icon .module-head-glyph{width:24px;height:24px;display:block;color:currentColor}.module-card>.metric-line,.module-card>.io-grid,.module-card>.devid,.module-card>input[type=range],.module-card>select,.module-card>button{margin-left:14px;margin-right:14px}.module-card>.metric-line{margin-top:14px}.module-card .metric-line>div{background:#101318;border-color:#282f38;padding:10px}.module-card .metric-line .v{font-size:18px;font-weight:700}.module-card .devid{background:#101318;border-color:#282f38}.module-card.jbc-card{--accent:#39c779}.module-card.fan-card{--accent:#4a90d9}.module-card.weller-card{--accent:#55b9ca}.module-card.display-card{--accent:#b58cff}.module-card.universal-card{--accent:#f1b84b}.module-card.universal-card.modbus-card{--accent:#e28b52}.module-card .module-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:14px}.module-card .module-meta-grid>div{background:#101318;border:1px solid #282f38;border-radius:7px;padding:10px}.module-card .module-meta-grid .v{font-size:16px;font-weight:700;margin-top:4px}.module-card .module-footer{margin:12px 0 0!important;padding:11px 14px;border-top:1px solid #282f38;color:#8e99a5;font-size:12px}.module-card .display-settings{padding:0 14px 14px}.module-card .display-settings label{margin-top:10px}.module-card .display-settings>.metric-line{margin-top:4px}.module-card .display-settings>.metric-line>div{padding:0;background:transparent;border:0}.module-card .display-settings button{width:100%;margin-top:10px}
 .module-card .module-statuses{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}.module-eco-badge,.master-eco-sprout{width:18px;height:18px;flex:0 0 18px;margin-left:-10px;margin-right:-8px;color:#62dc8e;display:inline-flex;align-items:center;justify-content:center}.master-eco-sprout[hidden]{display:none}.module-eco-badge svg,.master-eco-sprout svg{width:17px;height:17px;display:block;fill:currentColor}
 #details{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;align-items:start}
 #details .module-card{width:100%;min-width:0;min-height:0;border-radius:10px!important}
@@ -1754,7 +1712,7 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}input,se
 .module-card .metric-line .k{font-size:11px;color:#84909d;text-transform:uppercase}
 .module-card .metric-line .v{font-size:19px;line-height:1.2;margin-top:6px}
 .module-card>.devid{margin:14px 14px 0;padding:12px;border:0;border-radius:9px;background:#101318}
-.module-card>.devid .mini{font:600 13px/1.45 Consolas,monospace;overflow-wrap:anywhere;word-break:normal;color:#dfe7ef}
+.module-card>.devid .mini{font:600 13px/1.45 var(--ofe-font-ui);overflow-wrap:anywhere;word-break:normal;color:#dfe7ef}
 .module-card.jbc-card>.muted,.module-card.fan-card>.muted{margin:0!important;padding:10px 14px 0;font-size:12px;line-height:1.4}
 .module-card>.io-grid{margin:14px;padding:4px 0;border-top:1px solid #2a313a;border-bottom:1px solid #2a313a}
 .fan-card>.io-grid{grid-template-columns:auto auto minmax(100px,1fr) auto;column-gap:10px;row-gap:0}
@@ -1852,7 +1810,7 @@ button,.btn{min-height:40px;background:#326da5;color:#fff;border:1px solid #417f
 [id^="jbu_stationname_"]{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer}
 [id^="jbu_stationname_"]::after{content:"\270E";flex:0 0 auto;color:#58a6ff;font-size:15px;font-weight:400}
 [id^="jbu_stationname_"]:hover,[id^="jbu_stationname_"]:focus-visible{color:#fff;text-decoration:underline;text-underline-offset:3px;outline:none}
-.jbu-fact .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;font-weight:600;letter-spacing:.01em}
+.jbu-fact .mono{font-family:var(--ofe-font-ui);font-size:10px;font-weight:600;letter-spacing:.01em}
 .module-card.core-style .jbu-hero{padding-top:11px;padding-bottom:10px}
 .module-card.core-style .jbu-station-name{font-size:14px}
 .module-card.core-style .jbu-facts{margin-top:12px}
@@ -1950,7 +1908,7 @@ button,.btn{min-height:40px;background:#326da5;color:#fff;border:1px solid #417f
 .jbu-tech-grid>div{padding:5px 7px;border-bottom:1px solid #20262d;min-width:0}
 .jbu-tech-grid>div:nth-child(odd){border-right:1px solid #20262d}
 .jbu-tech-grid .k{font-size:8px;color:#616d79}
-.jbu-tech-grid strong{display:block;margin-top:1px;color:#9ba7b2;font:9px/1.25 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
+.jbu-tech-grid strong{display:block;margin-top:1px;color:#9ba7b2;font:9px/1.25 var(--ofe-font-ui);overflow-wrap:anywhere}
 @media(max-width:360px){.jbu-port-metrics{grid-template-columns:1fr}.jbu-state-grid{grid-template-columns:1fr}.jbu-facts{grid-template-columns:1fr}.jbu-fact.is-wide{grid-column:auto}}
 .role-lines{display:flex;flex-direction:column;gap:3px;min-width:220px}.role-lines span{display:inline-flex;align-items:center;color:#d7e5f5;font-size:13px}.status-hero{display:grid;grid-template-columns:1fr auto;align-items:center;gap:20px;border:1px solid #31516a;background:#16212a;border-radius:8px;padding:18px;margin-bottom:14px}.hero-state{font-size:27px;font-weight:700;margin-top:4px}.hero-meta{color:var(--muted);margin-top:6px}.hero-power{text-align:right;min-width:180px}.hero-power strong{display:block;font-size:30px;color:var(--green)}.alarm-panel{margin-bottom:14px}.alarm-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.alarm-title{font-size:17px;font-weight:700}.alarm-count{display:inline-flex;min-width:28px;height:24px;padding:0 8px;align-items:center;justify-content:center;border-radius:99px;background:#273039;color:#c9d3de;font-weight:700;font-size:12px}.alarm-count.active{background:#6d252b;color:#ffd9dd}.alarm-list{display:grid;gap:8px;margin-top:12px}.alarm-item{border-left:3px solid #ffb020;background:#211d16;padding:10px 12px}.alarm-item.critical{border-left-color:#ff5968;background:#25171a}.alarm-item.ok{border-left-color:#59c77a;background:#14231a}.alarm-item strong{display:block;margin-bottom:3px}.alarm-item span{color:var(--muted);font-size:13px}code{color:#ddd}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.table-wrap{overflow-x:auto;overflow-y:hidden;scrollbar-gutter:stable}.footer{display:flex;justify-content:space-between;color:#77818d;font-size:13px;margin-top:18px;padding-top:14px;border-top:1px solid #252a31}
 .rule{display:grid;grid-template-columns:46px 1fr 70px 1fr;gap:8px;align-items:end;margin:8px 0}.rule .muted{padding-bottom:9px}.rule select{min-width:0}
@@ -1992,11 +1950,11 @@ button,.btn{min-height:40px;background:#326da5;color:#fff;border:1px solid #417f
 .mb-row{border:1px solid #293b4b;border-radius:9px;background:#0a1017;padding:9px}
 .mb-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 .mb-row-title{display:flex;align-items:center;gap:7px;min-width:0}
-.mb-row-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#18324a;color:#a8d4ff;font:800 10px/1 Consolas,monospace}
+.mb-row-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#18324a;color:#a8d4ff;font:800 10px/1 var(--ofe-font-ui)}
 .mb-row-title strong{font-size:11px;color:#dce7f1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mb-remove{min-height:28px!important;padding:4px 8px!important;font-size:10px!important}
 .mb-row-grid{display:grid;grid-template-columns:1.4fr 1.15fr 1fr .9fr 1.1fr .8fr .8fr;gap:7px;align-items:end}
-.mb-reg-note{margin-top:7px;padding:6px 7px;border-radius:6px;background:#101a24;color:#8ea0b2;font:10px/1.35 Consolas,monospace}
+.mb-reg-note{margin-top:7px;padding:6px 7px;border-radius:6px;background:#101a24;color:#8ea0b2;font:10px/1.35 var(--ofe-font-ui)}
 .mb-reg-note.ok{color:#9fd5b0}.mb-reg-note.err{color:#ff9b9b;background:#251317}
 .mb-advanced{margin-top:8px;border-top:1px solid #22303c;padding-top:7px}
 .mb-advanced>summary{cursor:pointer;color:#8ea2b5;font-size:10px;font-weight:750}
@@ -2097,7 +2055,7 @@ body.mb-modal-open{overflow:hidden}
   border-radius:8px;
   background:#18324a;
   color:#acd8ff;
-  font:900 12px/1 Consolas,monospace
+  font:900 12px/1 var(--ofe-font-ui)
 }
 .mb-modal-title-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
 .mb-modal-title-copy strong{font-size:15px;color:#eef6fd;line-height:1.2}
@@ -2244,7 +2202,7 @@ body.mb-modal-open{overflow:hidden}
 .upb-row-title{display:flex;align-items:center;gap:8px;min-width:0}
 .upb-row-num{
   display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
-  border-radius:7px;background:#18324a;color:#a8d4ff;font:800 10px/1 Consolas,monospace
+  border-radius:7px;background:#18324a;color:#a8d4ff;font:800 10px/1 var(--ofe-font-ui)
 }
 .upb-row-title strong{font-size:12px;color:#dce7f1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .upb-remove{min-height:28px!important;padding:4px 8px!important;font-size:10px!important;margin:0!important}
@@ -2255,7 +2213,7 @@ body.mb-modal-open{overflow:hidden}
 }
 .upb-rule-note{
   margin-top:8px;padding:7px 9px;border-radius:7px;background:#101a24;color:#9fc4df;
-  font:10px/1.4 Consolas,monospace;overflow-wrap:anywhere
+  font:10px/1.4 var(--ofe-font-ui);overflow-wrap:anywhere
 }
 .upb-advanced{margin-top:9px;border-top:1px solid #22303c;padding-top:8px}
 .upb-advanced>summary{cursor:pointer;color:#91a9bc;font-size:10px;font-weight:800}
@@ -2282,7 +2240,7 @@ body.mb-modal-open{overflow:hidden}
 .upb-preview>summary{padding:9px 11px;cursor:pointer;color:#91aac0;font-size:10px;font-weight:800}
 .upb-preview textarea{
   width:100%;min-height:230px;box-sizing:border-box;margin:0;border:0;border-top:1px solid #25394b;
-  border-radius:0;background:#070c11;color:#b8c7d5;font:11px/1.45 Consolas,monospace;resize:vertical
+  border-radius:0;background:#070c11;color:#b8c7d5;font:11px/1.45 var(--ofe-font-ui);resize:vertical
 }
 .upb-limit-note{margin-top:9px;color:#728393;font-size:10px;line-height:1.4}
 .upb-type-extra[hidden]{display:none!important}
@@ -2340,7 +2298,7 @@ body.mb-modal-open{overflow:hidden}
 @media(max-width:850px){.fanio-editor-grid{grid-template-columns:1fr}.fanio-editor-panel.is-wide{grid-column:auto}.fanio-field-grid{grid-template-columns:1fr 1fr}.fanio-channel,.fanio-channel.is-output{grid-template-columns:1fr 1fr}.fanio-channel-remove{grid-column:2;justify-self:end}.fanio-editor-launch{align-items:flex-start;flex-direction:column}.fanio-editor-launch button{width:100%}}
 @media(max-width:520px){.fanio-editor-modal{padding:0}.fanio-editor-shell{height:100vh;border:0}.fanio-field-grid,.fanio-channel,.fanio-channel.is-output{grid-template-columns:1fr}.fanio-channel-remove{grid-column:1}.fanio-editor-foot{align-items:stretch;flex-direction:column}.fanio-editor-actions{display:grid;grid-template-columns:1fr 1fr}}
 
-</style></head><body><header><div class="brand"><img class="brand-logo" src="/logo.png" alt=""><div class="brand-text">Open Fume Extractor<span>by IceCube20</span></div><button class="secondary dev-toggle brand-dev" id="dev_btn" onclick="toggleDevMode()">Developer mode</button></div><nav class="nav"><select id="lang_sel" data-no-dirty="1" onchange="setLang(this.value)"><option value="de">Deutsch</option><option value="en">English</option></select><a class="btn active" href="/">Status</a><a class="btn secondary" href="/config" data-i18n="wifi">Network Setup</a><a class="btn secondary" href="/update" data-i18n="updates">Updates</a><a class="btn secondary" href="/diagnostics" data-i18n="diagnostics">Bus Diagnose</a><a class="btn secondary" href="/logic">Logik Designer</a><button class="secondary" onclick="load(true)" data-i18n="refresh">Refresh</button><button class="danger" onclick="restartMaster()" data-i18n="restart">Restart</button></nav></header><main>
+</style>)HTML" OFE_WEB_TYPOGRAPHY_STYLE R"HTML(</head><body><header><div class="brand"><img class="brand-logo" src="/logo.png" alt=""><div class="brand-text">Open Fume Extractor<span>by IceCube20</span></div><button class="secondary dev-toggle brand-dev" id="dev_btn" onclick="toggleDevMode()">Developer mode</button></div><nav class="nav"><select id="lang_sel" data-no-dirty="1" onchange="setLang(this.value)"><option value="de">Deutsch</option><option value="en">English</option></select><a class="btn active" href="/">Status</a><a class="btn secondary" href="/config" data-i18n="wifi">Network Setup</a><a class="btn secondary" href="/update" data-i18n="updates">Updates</a><a class="btn secondary" href="/diagnostics" data-i18n="diagnostics">Bus Diagnose</a><a class="btn secondary" href="/logic">Logik Designer</a><button class="secondary" onclick="load(true)" data-i18n="refresh">Refresh</button><button class="danger" onclick="restartMaster()" data-i18n="restart">Restart</button></nav></header><main>
 )HTML";
   static const char html2[] PROGMEM = R"HTML(
 <div class="page-head"><div class="eyebrow" data-i18n="system">System</div><h1 data-i18n="status_overview">Statusübersicht</h1><p data-i18n="status_intro">Live-Status, Module und Steuerung des Open Fume Extractor.</p></div>
@@ -3954,7 +3912,6 @@ function syncWellerFilterCard(m){
     actions.style.display='flex';actions.style.flexDirection='column';actions.style.alignItems='stretch';actions.style.gap='9px';
     if(button){
       button.textContent=t('fan_reset_filter_runtime');button.style.width='100%';button.style.minWidth='0';button.style.whiteSpace='normal';button.style.order='1';
-      if(!button.dataset.fanioStyle){let reference=document.querySelector('.fan-card .filter-actions button'),style=reference&&getComputedStyle(reference);button.style.minHeight=style?style.minHeight:'40px';button.style.padding=style?style.padding:'9px 14px';button.style.fontFamily=style?style.fontFamily:'Arial, Helvetica, sans-serif';button.style.fontSize=style?style.fontSize:'13.3333px';button.style.fontWeight=style?style.fontWeight:'700';button.style.lineHeight=style?style.lineHeight:'normal';button.dataset.fanioStyle='1'}
     }
     if(select){
       let interval=actions.querySelector('.weller-filter-interval');
@@ -3982,7 +3939,7 @@ function universalBuiltinDebugDefs(){let lines=`11 text line_tx wo group=debug u
 12 switch trace_enable rw group=debug ui=debug en=Local trace de=Lokaler Trace`;return universalParseDescriptorRaw(lines,false)}
 function universalLines(text){return String(text||'').replaceAll(String.fromCharCode(13),'').split(String.fromCharCode(10))}
 function universalNormalizeDescriptorText(text){let out=[];universalLines(text).forEach(line=>{let raw=String(line||''),trimmed=raw.trim();let m=trimmed.match(/^line_end\s*=\s*(\d+\s+\S+\s+\S+\s+\S+.*)$/);if(m){out.push('line_end=NONE');out.push(m[1]);return}if(/^line_end\s*=\s*$/.test(trimmed)){out.push('line_end=NONE');return}out.push(raw)});return out.join(String.fromCharCode(10))}
-function universalParseDescriptorRaw(text,assignProfile){text=universalNormalizeDescriptorText(text);let out=[],profileOrd=0,metaRe=new RegExp('(\\w+)=([\\s\\S]*?)(?=\\s+\\w+=|$)','g');universalLines(text).forEach(line=>{line=line.trim();if(!line||line[0]=='#'||line.toLowerCase()=='entities:')return;let parts=line.split(' ').filter(Boolean);if(parts.length<4)return;let idText=parts[0].replace(/^p/i,''),id=Number(idText);if(!Number.isFinite(id))return;let e={id,type:parts[1].toLowerCase(),key:parts[2],mode:parts[3].toLowerCase(),meta:{}};let rest=line.slice(line.indexOf(parts[3])+parts[3].length).trim(),x;while((x=metaRe.exec(rest))){e.meta[x[1].toLowerCase()]=fixText(x[2].trim())}let isProfile=(e.meta.source||'').toLowerCase()=='profile'||e.id>=20||((e.meta.ui||e.meta.group||'')=='control'&&e.id>=20);if(assignProfile&&isProfile&&!e.meta.profile_index)e.meta.profile_index=e.meta.idx||String(++profileOrd);if(e.meta.idx&&!e.meta.profile_index)e.meta.profile_index=e.meta.idx;e.label=(uiLang=='de'&&(e.meta.de||'').length)?e.meta.de:(e.meta.en||e.key);out.push(e)});return out}
+function universalParseDescriptorRaw(text,assignProfile){text=universalNormalizeDescriptorText(text);let out=[],profileOrd=0,metaRe=new RegExp('(\\w+)=([\\s\\S]*?)(?=\\s+\\w+=|$)','g');universalLines(text).forEach(line=>{line=line.trim();if(!line||line[0]=='#'||line.toLowerCase()=='entities:')return;let parts=line.split(/\s+/).filter(Boolean);if(parts.length<4)return;let idText=parts[0].replace(/^p/i,''),id=Number(idText);if(!Number.isFinite(id))return;let e={id,type:parts[1].toLowerCase(),key:parts[2],mode:parts[3].toLowerCase(),meta:{}};let rest=line.slice(line.indexOf(parts[3])+parts[3].length).trim(),x;while((x=metaRe.exec(rest))){e.meta[x[1].toLowerCase()]=fixText(x[2].trim())}let isProfile=(e.meta.source||'').toLowerCase()=='profile'||e.id>=20||((e.meta.ui||e.meta.group||'')=='control'&&e.id>=20);if(assignProfile&&isProfile&&!e.meta.profile_index)e.meta.profile_index=e.meta.idx||String(++profileOrd);if(e.meta.idx&&!e.meta.profile_index)e.meta.profile_index=e.meta.idx;e.label=uiLang=='de'?(e.meta.de||e.meta.en||e.key):(e.meta.en||e.meta.de||e.key);out.push(e)});return out}
 function universalParseDescriptor(text){let out=universalParseDescriptorRaw(text,true),ids=new Set(out.map(e=>e.id));universalBuiltinDebugDefs().forEach(e=>{if(!ids.has(e.id))out.push(e)});return out}
 function universalNormalizeDef(e){
   e=e||{}; e.meta=e.meta||{};
@@ -4011,10 +3968,10 @@ function universalWritable(d){let m=universalAccessMode(d);if(m)return m==='wo'|
 function universalNumberMeta(d){let min=Number(d.meta.min??0),max=Number(d.meta.max??100),step=Number(d.meta.step??1);if(!Number.isFinite(min))min=0;if(!Number.isFinite(max))max=100;if(!Number.isFinite(step)||step<=0)step=1;return {min,max,step}}
 function universalSelectPairs(d){let opts=universalList(d.meta.options),vals=universalList(d.meta.values);if(!opts.length&&vals.length)opts=vals.slice();if(!vals.length)vals=opts.slice();return opts.map((label,i)=>({label,value:vals[i]!==undefined?vals[i]:label}))}
 function universalAsciiNumber(st){let hex=String(st&&st.hex||'');if(!hex||hex.length%2)return '';let chars='';for(let i=0;i<hex.length;i+=2){let b=parseInt(hex.slice(i,i+2),16);if(!Number.isFinite(b)||b<32||b>=127)return '';chars+=String.fromCharCode(b)}chars=fixText(chars).trim();return /^[-+]?\d+(?:[.,]\d+)?$/.test(chars)?chars.replace(',','.'):''}
-function universalRawValue(def,st){if(!st)return '';if(def.type=='switch'||def.type=='binary_sensor')return st.value_bool?'1':'0';if(def.type=='text'||def.type=='select'||def.type=='button')return (st.ascii&&st.ascii!='-')?fixText(st.ascii):'';if(def.type=='number'){let a=universalAsciiNumber(st);if(a!=='')return a}if(st.value!==undefined)return String(st.value);if(st.ascii&&st.ascii!='-')return fixText(st.ascii);return ''}
+function universalRawValue(def,st){if(!st)return '';if(def.type=='switch'||def.type=='binary_sensor')return st.value_bool?'1':'0';if(def.type=='select'&&typeof st.selected_value==='string')return st.selected_value;if(['text','select','button'].includes(def.type))return st.ascii?fixText(st.ascii):'';if(st.ascii&&st.ascii!='-'){let raw=fixText(st.ascii).trim();if(def.type=='number')return /^[-+]?\d+(?:[.,]\d+)?$/.test(raw)?raw.replace(',','.'):raw;return raw}if(st.value!==undefined)return String(st.value);return ''}
 function universalSelectLabel(def,value){let pairs=universalSelectPairs(def),sv=String(value??'');let p=pairs.find(x=>String(x.value)===sv)||pairs.find(x=>String(x.label)===sv);return p?p.label:sv}
 function universalEntityRef(d){let pi=d.meta.profile_index||d.meta.idx||d.meta.profile_entity;if(pi)return 'entity.'+pi+' / #'+d.id;return '#'+d.id}
-function universalEntityValue(def,st){if(!st)return '-';let unit=def.meta.unit&&def.meta.unit!='-'?' '+def.meta.unit:'';if(def.type=='binary_sensor'||def.type=='switch')return st.value_bool?t('on'):t('off');if(def.type=='select')return universalSelectLabel(def,universalRawValue(def,st))||'-';if(def.type=='text'||def.type=='button')return st.ascii&&st.ascii!='-'?fixText(st.ascii):'-';if(def.type=='number'){let raw=universalRawValue(def,st);return raw!==''?raw+unit:(st.hex||'-')}if(st.value!==undefined)return st.value+unit;if(st.ascii&&st.ascii!='-')return fixText(st.ascii);return st.hex||'-'}
+function universalEntityValue(def,st){if(!st)return '-';if(def.type=='binary_sensor'||def.type=='switch')return st.value_bool?t('on'):t('off');let raw=typeof st.display_text==='string'?st.display_text:universalRawValue(def,st);if(def.type=='select'&&typeof st.display_text!=='string')raw=universalSelectLabel(def,raw);if(!raw)return st.hex||'-';let numeric=/^[-+]?\d+(?:[.,]\d+)?$/.test(raw),unit=def.meta.unit&&def.meta.unit!='-'?' '+def.meta.unit:'';return raw+((def.type=='number'||def.type=='sensor')&&numeric?unit:'')}
 function universalEntityControls(m,d){
   let writable=universalWritable(d),addr=m.addr,id=d.id;if(!writable)return '';let type=d.type;
   if(type=='number'){let nm=universalNumberMeta(d);return `<div class="universal-slider"><input id="uni_ent_in_${addr}_${id}" type="range" min="${nm.min}" max="${nm.max}" step="${nm.step}" value="${nm.min}" oninput="universalNumberPreview(${addr},${id},this.value)" onchange="universalEntitySendValue(${addr},${id},this.value)"></div>`}
@@ -4624,13 +4581,14 @@ async function scan(){await fetch('/scan',{method:'POST',cache:'no-store'});setT
 async function addressBus(){await fetch('/scan?address=1',{method:'POST',cache:'no-store'});setTimeout(load,900)}
 async function saveLabel(el){if(!el||el.dataset.saving==='1')return;let v=el.value.trim();if(v===el.dataset.saved)return;el.dataset.saving='1';try{let body=new URLSearchParams();body.set('uid',el.dataset.uid||'');body.set('addr',el.dataset.addr||'0');body.set('label',v);let r=await fetch('/module/label',{method:'POST',body});if(!r.ok)throw await r.text();el.dataset.saved=v;clearFieldDirty(el);setTimeout(load,300)}catch(e){alert('Label failed: '+e)}finally{el.dataset.saving='0'}}
 async function saveIoAlias(el){if(!el||el.dataset.saving==='1')return;let v=el.value.trim();if(v===el.dataset.saved)return;el.dataset.saving='1';try{let body=new URLSearchParams();body.set('uid',el.dataset.uid||'');body.set('addr',el.dataset.addr||'0');body.set('key',el.dataset.key||'');body.set('alias',v);let r=await fetch('/module/io_alias',{method:'POST',body});if(!r.ok)throw await r.text();el.dataset.saved=v;clearFieldDirty(el);detailsSig='';routingSig='';setTimeout(load,250)}catch(e){alert('Alias failed: '+e)}finally{el.dataset.saving='0'}}
-async function saveMainInput(){let e=document.getElementById('main_input_sel'),v=dec(e.value);let r=await fetch(`/routing/main?st=${v.t}&sa=${v.a}&sb=${v.b}`,{method:'POST',cache:'no-store'});if(r.ok)clearFieldDirty(e);setTimeout(load,250)}async function saveOutput(){let e=document.getElementById('output_sel');let r=await fetch('/output/select?addr='+e.value,{method:'POST',cache:'no-store'});if(r.ok)clearFieldDirty(e);setTimeout(load,300)}
+async function routingSaveOk(r){if(r.ok)return true;alert((uiLang=='de'?'Speichern fehlgeschlagen: ':'Save failed: ')+await r.text());return false}
+async function saveMainInput(){let e=document.getElementById('main_input_sel'),v=dec(e.value);let r=await fetch(`/routing/main?st=${v.t}&sa=${v.a}&sb=${v.b}`,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;clearFieldDirty(e);setTimeout(load,250)}async function saveOutput(){let e=document.getElementById('output_sel');let r=await fetch('/output/select?addr='+e.value,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;clearFieldDirty(e);setTimeout(load,300)}
 async function rebootModule(button,addr){let row=button&&button.closest?button.closest('tr'):null,input=row?row.querySelector('.label-edit'):null,name=input?input.value.trim():'';if(!name&&row&&row.cells&&row.cells[2])name=row.cells[2].textContent.trim();let target=hx(addr)+(name?' '+name:'');if(!confirm(t('reboot_module')+' '+target))return;let r=await fetch('/module/reboot?addr='+addr,{method:'POST',cache:'no-store'});if(!r.ok)alert(await r.text());setTimeout(load,1200)}
 async function restartMaster(){if(!confirm(t('restart_confirm')))return;await fetch('/restart',{method:'POST',cache:'no-store'});setTimeout(()=>{location.reload()},3500)}
-async function routeSet(kind,addr,bit,value){let url='/routing/set?value='+(value?1:0);if(kind=='jbc')url+='&jbc=1';else url+='&addr='+addr+'&bit='+bit;await fetch(url,{method:'POST',cache:'no-store'});setTimeout(load,150)}
-async function ruleChanged(i){let se=document.getElementById('rule_s_'+i),te=document.getElementById('rule_t_'+i),s=dec(se.value),t=dec(te.value);let r=await fetch(`/routing/rule?idx=${i}&st=${s.t}&sa=${s.a}&sb=${s.b}&tt=${t.t}&ta=${t.a}&tb=${t.b}`,{method:'POST',cache:'no-store'});if(r.ok){clearFieldDirty(se);clearFieldDirty(te)}setTimeout(load,150)}
-async function addRule(){let d=window.lastState||{},rules=d.input_rules||[],i=rules.findIndex(r=>!r.enabled);if(i<0){alert('Max rules reached');return}let src=dec((document.getElementById('main_input_sel')||{}).value||'0,0,0'),out=Number((document.getElementById('output_sel')||{}).value||0);let tt=out?2:1,ta=out,tb=0;await fetch(`/routing/rule?idx=${i}&st=${src.t}&sa=${src.a}&sb=${src.b}&tt=${tt}&ta=${ta}&tb=${tb}`,{method:'POST',cache:'no-store'});routingSig='';setTimeout(load,150)}
-async function deleteRule(i){await fetch(`/routing/rule?idx=${i}&st=0&sa=0&sb=0&tt=0&ta=0&tb=0`,{method:'POST',cache:'no-store'});routingSig='';setTimeout(load,150)}async function ioSet(addr,bitNo,value){if(document.activeElement)document.activeElement.blur();let ws=document.getElementById('wsl_'+addr);if(ws){let current=Number(ws.value);if(!Number.isFinite(current)||current<30||current>100){let m=((window.lastState&&window.lastState.modules)||[]).find(x=>Number(x.addr)==Number(addr));current=Math.max(30,Math.min(100,Number((m&&m.weller_speed_percent)||30)))}wellerPending[addr]=current;wellerHoldUntil[addr]=Date.now()+2500}await fetch('/io/set?addr='+addr+'&bit='+bitNo+'&value='+(value?1:0),{method:'POST',cache:'no-store'});setTimeout(load,250)}async function wellerFanToggle(addr,value){if(document.activeElement)document.activeElement.blur();let sl=document.getElementById('wsl_'+addr);let speed=Math.max(30,Math.min(100,Number(sl.value||wellerPending[addr]||30)));wellerPending[addr]=speed;wellerHoldUntil[addr]=Date.now()+3000;if(value)await fetch('/weller/set?addr='+addr+'&speed='+speed,{method:'POST',cache:'no-store'});await fetch('/io/set?addr='+addr+'&bit=0&value='+(value?1:0),{method:'POST',cache:'no-store'});setTimeout(load,250)}
+async function routeSet(kind,addr,bit,value){let url='/routing/set?value='+(value?1:0);if(kind=='jbc')url+='&jbc=1';else url+='&addr='+addr+'&bit='+bit;let r=await fetch(url,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;setTimeout(load,150)}
+async function ruleChanged(i){let se=document.getElementById('rule_s_'+i),te=document.getElementById('rule_t_'+i),s=dec(se.value),t=dec(te.value);let r=await fetch(`/routing/rule?idx=${i}&st=${s.t}&sa=${s.a}&sb=${s.b}&tt=${t.t}&ta=${t.a}&tb=${t.b}`,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;clearFieldDirty(se);clearFieldDirty(te);setTimeout(load,150)}
+async function addRule(){let d=window.lastState||{},rules=d.input_rules||[],i=rules.findIndex(r=>!r.enabled);if(i<0){alert('Max rules reached');return}let src=dec((document.getElementById('main_input_sel')||{}).value||'0,0,0'),out=Number((document.getElementById('output_sel')||{}).value||0);let tt=out?2:1,ta=out,tb=0;let r=await fetch(`/routing/rule?idx=${i}&st=${src.t}&sa=${src.a}&sb=${src.b}&tt=${tt}&ta=${ta}&tb=${tb}`,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;routingSig='';setTimeout(load,150)}
+async function deleteRule(i){let r=await fetch(`/routing/rule?idx=${i}&st=0&sa=0&sb=0&tt=0&ta=0&tb=0`,{method:'POST',cache:'no-store'});if(!await routingSaveOk(r))return;routingSig='';setTimeout(load,150)}async function ioSet(addr,bitNo,value){if(document.activeElement)document.activeElement.blur();let ws=document.getElementById('wsl_'+addr);if(ws){let current=Number(ws.value);if(!Number.isFinite(current)||current<30||current>100){let m=((window.lastState&&window.lastState.modules)||[]).find(x=>Number(x.addr)==Number(addr));current=Math.max(30,Math.min(100,Number((m&&m.weller_speed_percent)||30)))}wellerPending[addr]=current;wellerHoldUntil[addr]=Date.now()+2500}await fetch('/io/set?addr='+addr+'&bit='+bitNo+'&value='+(value?1:0),{method:'POST',cache:'no-store'});setTimeout(load,250)}async function wellerFanToggle(addr,value){if(document.activeElement)document.activeElement.blur();let sl=document.getElementById('wsl_'+addr);let speed=Math.max(30,Math.min(100,Number(sl.value||wellerPending[addr]||30)));wellerPending[addr]=speed;wellerHoldUntil[addr]=Date.now()+3000;if(value)await fetch('/weller/set?addr='+addr+'&speed='+speed,{method:'POST',cache:'no-store'});await fetch('/io/set?addr='+addr+'&bit=0&value='+(value?1:0),{method:'POST',cache:'no-store'});setTimeout(load,250)}
 async function fanOutputSet(addr,enable,power){if(document.activeElement)document.activeElement.blur();let sl=document.getElementById('io_power_'+addr),lo=Math.max(1,Number(sl&&sl.min||10)),hi=Math.min(100,Number(sl&&sl.max||100));if(hi<lo)hi=lo;let pct=power==null?Number(sl&&sl.value||lo):Number(power||lo);if(enable!==false)pct=Math.max(lo,Math.min(hi,pct));moduleOutputPending[addr]=pct;moduleOutputHoldUntil[addr]=Date.now()+3000;let url='/output/module?addr='+addr+'&power='+Math.round(pct);if(enable!==null&&enable!==undefined)url+='&enable='+(enable?1:0);let r=await fetch(url,{method:'POST',cache:'no-store'});if(!r.ok)alert(await r.text());else clearFieldDirty(sl);setTimeout(load,250)}
 async function fanioResetRuntime(addr){if(!confirm(uiLang=='de'?'Filterbetriebszeit wirklich auf 0 zurücksetzen?':'Reset filter operating time to 0?'))return;await fanioCal(addr,7)}
 async function fanioCal(addr,action,value){

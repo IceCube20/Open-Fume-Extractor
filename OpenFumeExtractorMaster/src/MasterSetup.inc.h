@@ -79,6 +79,7 @@ static void master_setup() {
   });
   scheduler.setMasterInfo(MASTER_FW_MAJOR, MASTER_FW_MINOR, MASTER_FW_PATCH, MASTER_FW_NAME, MASTER_FW_SUFFIX);
 #if WEB_ENABLE
+  recover_interrupted_backup_restore();
   load_control_settings();
   const uint8_t preferred_output_addr = MasterSettingsStore::loadPreferredOutput(master_prefs);
   scheduler.setPreferredOutputAddr(preferred_output_addr);

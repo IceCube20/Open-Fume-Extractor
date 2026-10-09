@@ -266,6 +266,37 @@ struct BusStats {
   uint32_t short_frames = 0;
 };
 
+// A length-rejected whole frame is never accepted, even if segment CRCs pass.
+// These diagnostic headers must not be used for response matching.
+struct LengthErrorSnapshot {
+  uint16_t actual_length = 0;
+  uint16_t expected_length = 0;
+  uint8_t header[6] = {};
+  bool first_crc_checked = false;
+  bool first_crc_valid = false;
+  uint16_t remaining_length = 0;
+  bool second_header_present = false;
+  uint8_t second_header[6] = {};
+  uint16_t second_expected_length = 0;
+  bool second_crc_checked = false;
+  bool second_crc_valid = false;
+};
+
+// VERSION rejection also happens before CRC; its raw header is unverified.
+struct VersionErrorSnapshot {
+  uint16_t actual_length = 0;
+  uint8_t header[6] = {};
+};
+
+struct PhysicalFrameSnapshot {
+  uint8_t dst = ADDR_INVALID;
+  uint8_t src = ADDR_INVALID;
+  uint8_t seq = 0;
+  uint8_t cmd = 0;
+  uint8_t len = 0;
+  bool filtered = false;
+};
+
 uint16_t crc16_modbus(const uint8_t* data, size_t len);
 uint64_t esp_uid64();
 
@@ -281,6 +312,8 @@ public:
   void reset();
   void resetStats();
   const BusStats& stats() const { return stats_; }
+  const LengthErrorSnapshot& lastLengthError() const { return last_length_error_; }
+  const VersionErrorSnapshot& lastVersionError() const { return last_version_error_; }
   void countTxFrame() { stats_.tx_frames++; }
   void countOverflow() { stats_.overflow_errors++; }
   bool input(uint8_t byte, Frame& out);
@@ -293,6 +326,8 @@ private:
   bool in_frame_ = false;
   bool escaped_ = false;
   BusStats stats_;
+  LengthErrorSnapshot last_length_error_;
+  VersionErrorSnapshot last_version_error_;
 };
 
 class Link {
@@ -313,15 +348,18 @@ public:
   }
   bool poll(Frame& out);
   const BusStats& stats() const { return parser_.stats(); }
-  void resetStats() { parser_.resetStats(); }
+  const LengthErrorSnapshot& lastLengthError() const { return parser_.lastLengthError(); }
+  const VersionErrorSnapshot& lastVersionError() const { return parser_.lastVersionError(); }
+  const PhysicalFrameSnapshot& lastPhysicalFrame() const { return last_physical_frame_; }
+  void resetStats() { parser_.resetStats(); last_physical_frame_ = PhysicalFrameSnapshot(); }
 
   void setActivityCallback(ActivityCallback cb) { activity_cb_ = cb; }
 
 private:
-  void writeEscaped(uint8_t byte);
 
   Stream& stream_;
   Parser parser_;
+  PhysicalFrameSnapshot last_physical_frame_;
   ActivityCallback activity_cb_ = nullptr;
   void* context_ = nullptr;
   SendRoute send_route_ = nullptr;

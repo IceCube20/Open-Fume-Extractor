@@ -5,6 +5,7 @@
 #include <Update.h>
 #include <stdarg.h>
 #include "src/ProfileEntityFwd.h"
+#include "src/OfeStateTransaction.h"
 #ifndef OFE_STATUS_LED_ENABLE
 #define OFE_STATUS_LED_ENABLE 1
 #endif
@@ -63,7 +64,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 71
+#define OFE_MODULE_FW_PATCH 73
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -2157,13 +2158,27 @@ static uint8_t profile_max_entity_index(const String& cfg) {
 
 static bool apply_profile_text(const String& cfg, bool persist) {
   if (!cfg.length()) {
+    if (persist && prefs.isKey("profile_text") && !prefs.remove("profile_text")) return false;
     profile_clear_entities();
     saved_profile_text = "";
-    if (persist) prefs.remove("profile_text");
     descriptor_dirty = true;
     return true;
   }
   if (cfg.length() > PROFILE_TEXT_MAX) return false;
+
+  const ofe_profile::StateRegion regions[] = {
+    ofe_profile::region(profile_entities), ofe_profile::region(profile_entity_count),
+    ofe_profile::region(profile_readback_entity_id), ofe_profile::region(profile_name),
+    ofe_profile::region(station_name), ofe_profile::region(frame_name),
+    ofe_profile::region(protocol_name), ofe_profile::region(checksum_name),
+    ofe_profile::region(local_baud), ofe_profile::region(local_serial_config),
+    ofe_profile::region(line_end_name), ofe_profile::region(binary_frame_name),
+    ofe_profile::region(binary_start_hex), ofe_profile::region(binary_rx_length),
+    ofe_profile::region(binary_length_offset), ofe_profile::region(binary_length_adjust),
+    ofe_profile::region(binary_start_bytes), ofe_profile::region(binary_start_len),
+  };
+  ofe_profile::StateTransaction transaction(regions, sizeof(regions) / sizeof(regions[0]));
+  if (!transaction.valid()) return false;
 
   String v = config_value(cfg, "profile");
   if (!v.length()) v = config_value(cfg, "name");
@@ -2405,12 +2420,13 @@ static bool apply_profile_text(const String& cfg, bool persist) {
     if (profile_entity_count >= PROFILE_ENTITY_MAX) break;
   }
 
-  saved_profile_text = cfg;
   local_serial_config = serial_config_from_frame(frame_name);
   if (persist) {
-    prefs.putString("profile_text", cfg);
+    if (prefs.putString("profile_text", cfg) != cfg.length()) return false;
     save_profile_config();
   }
+  saved_profile_text = cfg;
+  transaction.commit();
   descriptor_dirty = true;
   restart_local_uart();
   return true;
@@ -2742,18 +2758,20 @@ static void profile_repeat_tick() {
     if (!e.used || !profile_entity_writable(e) ||
         (!str_eq_ci(e.type, "switch") && !str_eq_ci(e.type, "binary_sensor"))) continue;
     if (!profile_entity_readable(e) && !e.command_shadow_valid) continue;
-    const uint16_t interval = e.bool_value ? e.repeat_on_ms : e.repeat_off_ms;
+    // A readable RW entity can still report ON after the failsafe sent OFF.
+    const bool repeat_on = e.bool_value && !(output_failsafe_active && profile_output_entity(e));
+    const uint16_t interval = repeat_on ? e.repeat_on_ms : e.repeat_off_ms;
     if (!interval) continue;
     if (e.last_repeat_ms && (uint32_t)(now - e.last_repeat_ms) < interval) continue;
     String cmd;
-    if (e.bool_value && e.set_on[0]) cmd = e.set_on;
-    else if (!e.bool_value && e.set_off[0]) cmd = e.set_off;
-    else if (e.set_cmd[0]) cmd = apply_value_template(e.set_cmd, e.bool_value ? "1" : "0", e.bool_value ? e.value_on : e.value_off);
+    if (repeat_on && e.set_on[0]) cmd = e.set_on;
+    else if (!repeat_on && e.set_off[0]) cmd = e.set_off;
+    else if (e.set_cmd[0]) cmd = apply_value_template(e.set_cmd, repeat_on ? "1" : "0", repeat_on ? e.value_on : e.value_off);
     if (!cmd.length()) continue;
     e.last_repeat_ms = now;
     if (is_binary_protocol()) {
       uint8_t binary_cmd[96]; uint8_t binary_len = 0;
-      const int32_t repeat_value = e.bool_value ? e.value_on : e.value_off;
+      const int32_t repeat_value = repeat_on ? e.value_on : e.value_off;
       if (!binary_build_template(cmd.c_str(), repeat_value, binary_cmd, sizeof(binary_cmd), binary_len)) continue;
       local_send_line(binary_cmd, binary_len);
     } else {

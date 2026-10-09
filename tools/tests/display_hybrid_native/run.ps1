@@ -29,7 +29,13 @@ if ($LASTEXITCODE -ne 0) { throw 'LVGL pool test build failed' }
 if ($LASTEXITCODE -ne 0) { throw 'LVGL pool tests failed' }
 
 $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-foreach ($resolution in @('320x480', '800x480')) {
+& $python "$PSScriptRoot\extract_refactor.py" "$build\generated_refactor.inc.h"
+if ($LASTEXITCODE -ne 0) { throw 'Refactor function extraction failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$build" "$PSScriptRoot\test_refactor.cpp" "/Fo$build\" "/Fe$build\test_refactor.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Refactor native build failed' }
+& "$build\test_refactor.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Refactor regressions failed' }
+foreach ($resolution in @('320x480', '800x480', 'ST7796_320x480')) {
   & $python "$PSScriptRoot\extract_ota.py" $resolution "$build\generated_display_ota.inc.h"
   if ($LASTEXITCODE -ne 0) { throw 'OTA handler extraction failed' }
   & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_display_ota.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_display_ota.exe"

@@ -79,6 +79,12 @@ Historical counters can include an intentional disconnect. Current online state,
 consecutive live misses and continuously increasing counters are more important
 than a non-zero historical total.
 
+Firmware-transfer timeouts and restart-wait timeouts are shown separately from
+normal polling timeouts. The normal timeout percentage excludes these maintenance
+requests. After a successful update, the target has up to 15 seconds to reconnect;
+a valid INFO response ends this window early. Other modules remain monitored.
+Raw CRC, LEN, ESC and protocol errors are still recorded during updates.
+
 ## MQTT and Home Assistant
 
 The master publishes itself and each module as separate Home Assistant devices.
@@ -93,4 +99,3 @@ The JSON backup contains network credentials, web login, MQTT credentials and CA
 certificate, routing, extraction settings and logic definitions. Treat it as a
 sensitive file. A backup is only applied during an explicit restore; it is not
 automatically reloaded on every normal boot.
-

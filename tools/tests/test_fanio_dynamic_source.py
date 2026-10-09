@@ -102,6 +102,21 @@ class FanIoDynamicSourceTest(unittest.TestCase):
             line = next(line for line in source.splitlines() if "// afterrun" in line)
             self.assertRegex(line, r"OFE_LED_BLINK,\s+500,")
 
+    def test_direct_input_routes_cover_all_fanio_channels(self):
+        root = ROOT / "OpenFumeExtractorMaster/src"
+        registry = (root / "ModuleRegistry.h").read_text(encoding="utf-8")
+        scheduler = (root / "MasterScheduler.cpp").read_text(encoding="utf-8")
+        settings = (root / "MasterSettingsStore.h").read_text(encoding="utf-8")
+        self.assertIn("uint16_t route_input_output_mask = 0", registry)
+        self.assertIn("? 8 : 2", scheduler)
+        self.assertIn("? 8 : 2", self.master_controls)
+        self.assertIn("rec.io_input_mask & rec.route_input_output_mask", scheduler)
+        self.assertIn("rec.online && (rec.caps & CAP_INPUT_KEYS)", scheduler)
+        self.assertIn('"r%u_%02X"', settings)
+        self.assertIn("(unsigned)(bit + 1)", settings)
+        self.assertIn('route_input_output_mask', self.master_status)
+        self.assertIn('return String("IN") + String(bit + 1)', self.master_mqtt)
+
 
 if __name__ == "__main__":
     unittest.main()

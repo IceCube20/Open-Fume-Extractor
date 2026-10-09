@@ -279,6 +279,8 @@ struct ModuleRecord {
   uint64_t uid = 0;
   uint32_t caps = 0;
   uint32_t last_seen_ms = 0;
+  bool firmware_recovery_pending = false;
+  uint32_t firmware_recovery_started_ms = 0;
   uint16_t timeout_count = 0;
   uint8_t consecutive_timeouts = 0;
   uint32_t miss_count = 0;
@@ -473,8 +475,7 @@ struct ModuleRecord {
   uint16_t output_power = 0;
   uint16_t output_rpm = 0;
   uint16_t output_fault_mask = 0;
-  bool route_in1_output = false;
-  bool route_in2_output = false;
+  uint16_t route_input_output_mask = 0;
   uint8_t weller_speed_percent = 0;
   uint8_t weller_filter_status = 0;
   uint16_t weller_filter_runtime_minutes = 0;

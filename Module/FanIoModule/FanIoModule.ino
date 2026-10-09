@@ -132,7 +132,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 73
+#define OFE_MODULE_FW_PATCH 75
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -422,8 +422,11 @@ static void remember_output_power(uint16_t power) {
 static void poll_output_power_save() {
   if (!manual_output_power_dirty) return;
   if ((int32_t)(millis() - manual_output_power_save_due_ms) < 0) return;
-  prefs.putUShort("power", manual_output_power);
-  manual_output_power_dirty = false;
+  if (prefs.putUShort("power", manual_output_power) == sizeof(manual_output_power)) {
+    manual_output_power_dirty = false;
+  } else {
+    manual_output_power_save_due_ms = millis() + 60000UL;
+  }
 }
 
 static bool fan_pwm_frequency_valid(uint32_t hz) {
@@ -1662,6 +1665,10 @@ static void handle_frame(const Frame& req) {
       break;
 
     case CMD_FACTORY_RESET:
+      manual_output_power = DEFAULT_OUTPUT_POWER;
+      manual_output_power_dirty = false;
+      manual_output_power_save_due_ms = 0;
+      output_power = manual_output_power;
       prefs.clear();
       module_addr = 0x20;
       module_label[0] = 0;

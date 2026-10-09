@@ -196,7 +196,7 @@ static String build_config_backup_json() {
   json += "\n    }\n  }\n}\n";
   return json;
 }
-static bool apply_config_backup_json(const String& backup, String& error) {
+static bool apply_config_backup_json_impl(const String& backup, String& error, bool validate_only = false) {
   String net = json_section(backup, "network"), mqtt = json_section(backup, "mqtt"), master = json_section(backup, "master");
   if (!net.length() && !mqtt.length() && !master.length()) { error = "backup JSON has no network, mqtt or master section"; return false; }
   String ssid = json_get_string_field(net, "ssid", String(wifi_ssid)); ssid.trim();
@@ -232,7 +232,37 @@ static bool apply_config_backup_json(const String& backup, String& error) {
   if (mqtt_tls_arg && mqtt_ca_arg.length() && (mqtt_ca_arg.indexOf("-----BEGIN CERTIFICATE-----") < 0 || mqtt_ca_arg.indexOf("-----END CERTIFICATE-----") < 0)) { error = "invalid MQTT CA certificate PEM"; return false; }
   uint32_t mqtt_port_arg32 = json_get_u32_field(mqtt, "port", mqtt_tls_arg ? 8883 : 1883);
   if (!mqtt_port_arg32 || mqtt_port_arg32 > 65535UL) mqtt_port_arg32 = mqtt_tls_arg ? 8883 : 1883;
+  String backup_logic_json = json_get_string_field(master, "logic_json", String(""));
+  String backup_logic_slots = json_section(master, "logic_slots");
+  uint32_t restored_slots = 0;
+  if (backup_logic_slots.length()) {
+    for (uint8_t i = 0; i < LOGIC_DEF_MAX; ++i) {
+      const String key = String("slot") + String(i);
+      const String slot_json = json_get_string_field(backup_logic_slots, key.c_str(), String(""));
+      if (!slot_json.length()) continue;
+      LogicCompiledDefinition compiled;
+      const bool valid = logic_compile_json(slot_json, i, compiled);
+      if (valid) logic_def_release(compiled);
+      if (!valid) { error = String("invalid logic slot ") + String(i); return false; }
+      restored_slots |= 1UL << i;
+    }
+  } else if (backup_logic_json.length()) {
+    LogicCompiledDefinition compiled;
+    const bool valid = logic_compile_json(backup_logic_json, 0, compiled);
+    if (valid) logic_def_release(compiled);
+    if (!valid) { error = "invalid legacy logic slot"; return false; }
+  }
   const String display_root = json_get_string_field(net, "display_pairing_root", String(""));
+  if (display_root.length()) {
+    String decoded_root;
+    if (!hex_to_string(display_root, decoded_root) || decoded_root.length() != 16) {
+      error = "invalid display pairing key"; return false;
+    }
+    bool nonzero = false;
+    for (size_t i = 0; i < decoded_root.length(); ++i) nonzero |= decoded_root[i] != 0;
+    if (!nonzero) { error = "invalid display pairing key"; return false; }
+  }
+  if (validate_only) return true;
   if (display_root.length() && !master_display_wifi.restoreRoot(display_root.c_str())) {
     error = "invalid display pairing key or failed to persist it"; return false;
   }
@@ -252,14 +282,18 @@ static bool apply_config_backup_json(const String& backup, String& error) {
       return false;
     }
     String lang = json_get_string_field(master, "language", String(web_lang)); lang = (lang == "en") ? "en" : "de"; lang.toCharArray(web_lang, sizeof(web_lang));
-    apply_control_settings((uint8_t)json_get_u32_field(master, "suction", scheduler.controlSettings().suction_level),
+    if (!apply_control_settings((uint8_t)json_get_u32_field(master, "suction", scheduler.controlSettings().suction_level),
       (uint16_t)json_get_u32_field(master, "select_flow", scheduler.controlSettings().select_flow),
       (uint16_t)json_get_u32_field(master, "delay_work", scheduler.controlSettings().delay_work_sec),
       (uint16_t)json_get_u32_field(master, "delay_stand", scheduler.controlSettings().delay_stand_sec),
-      json_get_bool_field(master, "stand_intakes", scheduler.controlSettings().stand_intakes != 0), false, true);
+      json_get_bool_field(master, "stand_intakes", scheduler.controlSettings().stand_intakes != 0), false, true)) {
+      error = "failed to apply master control settings"; return false;
+    }
     const bool backup_afterrun_power_enabled = json_get_bool_field(master, "afterrun_power_enabled", scheduler.afterrunPowerProfileEnabled());
     const uint16_t backup_afterrun_power = (uint16_t)json_get_u32_field(master, "afterrun_power", scheduler.afterrunPower());
-    master_cmd_set_afterrun_power_profile(backup_afterrun_power_enabled, backup_afterrun_power, false);
+    if (!master_cmd_set_afterrun_power_profile(backup_afterrun_power_enabled, backup_afterrun_power, false)) {
+      error = "failed to apply afterrun settings"; return false;
+    }
     MasterSettingsStore::ControlSettings restored_control;
     restored_control.suction = scheduler.controlSettings().suction_level;
     restored_control.select_flow = scheduler.controlSettings().select_flow;
@@ -276,30 +310,144 @@ static bool apply_config_backup_json(const String& backup, String& error) {
     if (!MasterSettingsStore::savePreferredOutput(master_prefs,
       (uint8_t)json_get_u32_or_string_field(master, "output_addr", scheduler.preferredOutputAddr()))) { error = "failed to write main output settings"; return false; }
 
-    master_prefs.begin(MasterSettingsStore::NS_CFG, false);
-    master_prefs.putString(MasterSettingsStore::KEY_LANG, lang);
-    String backup_logic_json = json_get_string_field(master, "logic_json", String(""));
-    String backup_logic_slots = json_section(master, "logic_slots");
+    if (!master_prefs.begin(MasterSettingsStore::NS_CFG, false)) {
+      error = "failed to open master settings";
+      return false;
+    }
+    if (master_prefs.putString(MasterSettingsStore::KEY_LANG, lang) != lang.length()) {
+      master_prefs.end();
+      error = "failed to write language";
+      return false;
+    }
     if (backup_logic_slots.length()) {
-      for (uint8_t i = 0; i < LOGIC_DEF_MAX; ++i) remove_logic_slot_storage_open(i);
       for (uint8_t i = 0; i < LOGIC_DEF_MAX; ++i) {
+        if (!(restored_slots & (1UL << i))) continue;
         String key = String("slot") + String(i);
         String slot_json = json_get_string_field(backup_logic_slots, key.c_str(), String(""));
-        if (slot_json.length() && slot_json.indexOf("\"nodes\"") >= 0 && slot_json.indexOf("\"links\"") >= 0) {
-          if (!logic_save_fs(i, slot_json)) logic_save_legacy_nvs_open(i, slot_json);
+        const bool saved = logic_fs_ready ? logic_save_fs(i, slot_json) : logic_save_legacy_nvs_open(i, slot_json);
+        String verified = saved ? (logic_fs_ready ? logic_load_fs(i) : logic_load_legacy_nvs_open(i)) : String("");
+        verified.trim();
+        slot_json.trim();
+        if (!saved || verified != slot_json) {
+          master_prefs.end();
+          error = String("failed to restore logic slot ") + String(i);
+          return false;
+        }
+      }
+      // Remove slots missing from the backup only after all supplied slots are stored.
+      for (uint8_t i = 0; i < LOGIC_DEF_MAX; ++i) {
+        if (restored_slots & (1UL << i)) continue;
+        remove_logic_slot_storage_open(i);
+        if ((logic_fs_ready && LittleFS.exists(logic_slot_path(i))) || logic_load_legacy_nvs_open(i).length()) {
+          master_prefs.end();
+          error = String("failed to remove logic slot ") + String(i);
+          return false;
         }
       }
       uint8_t restored_active = (uint8_t)json_get_u32_field(master, "logic_active", 0);
-      master_prefs.putUChar(MasterSettingsStore::KEY_LOGIC_ACTIVE, restored_active < LOGIC_DEF_MAX ? restored_active : 0);
-    } else if (backup_logic_json.length() && backup_logic_json.indexOf("\"nodes\"") >= 0 && backup_logic_json.indexOf("\"links\"") >= 0) {
-      remove_logic_slot_storage_open(0);
-      if (!logic_save_fs(0, backup_logic_json)) logic_save_legacy_nvs_open(0, backup_logic_json);
-      master_prefs.putUChar(MasterSettingsStore::KEY_LOGIC_ACTIVE, 0);
+      if (master_prefs.putUChar(MasterSettingsStore::KEY_LOGIC_ACTIVE,
+          restored_active < LOGIC_DEF_MAX ? restored_active : 0) != sizeof(uint8_t)) {
+        master_prefs.end();
+        error = "failed to select restored logic slot";
+        return false;
+      }
+    } else if (backup_logic_json.length()) {
+      const bool saved = logic_fs_ready ? logic_save_fs(0, backup_logic_json) : logic_save_legacy_nvs_open(0, backup_logic_json);
+      String verified = saved ? (logic_fs_ready ? logic_load_fs(0) : logic_load_legacy_nvs_open(0)) : String("");
+      verified.trim();
+      backup_logic_json.trim();
+      if (!saved || verified != backup_logic_json ||
+          master_prefs.putUChar(MasterSettingsStore::KEY_LOGIC_ACTIVE, 0) != sizeof(uint8_t)) {
+        master_prefs.end();
+        error = "failed to restore legacy logic slot";
+        return false;
+      }
     }
     master_prefs.end();
     logic_cache_reload_all();
   }
   return true;
+}
+static constexpr const char* BACKUP_RESTORE_UNDO_PATH = "/restore.undo";
+
+static bool backup_restore_write_undo(const String& snapshot) {
+  if (!logic_fs_ready || LittleFS.exists(BACKUP_RESTORE_UNDO_PATH)) return false;
+  const char* staged = "/restore.undo.tmp";
+  LittleFS.remove(staged);
+  File file = LittleFS.open(staged, "w");
+  if (!file) return false;
+  const size_t written = file.write(reinterpret_cast<const uint8_t*>(snapshot.c_str()), snapshot.length());
+  file.flush();
+  file.close();
+  if (written != snapshot.length()) { LittleFS.remove(staged); return false; }
+  File verify = LittleFS.open(staged, "r");
+  bool valid = verify && verify.size() == snapshot.length();
+  uint8_t chunk[128];
+  for (size_t offset = 0; valid && offset < snapshot.length(); offset += sizeof(chunk)) {
+    const size_t count = min(sizeof(chunk), snapshot.length() - offset);
+    valid = verify.read(chunk, count) == count &&
+      memcmp(chunk, snapshot.c_str() + offset, count) == 0;
+  }
+  if (verify) verify.close();
+  if (!valid || !LittleFS.rename(staged, BACKUP_RESTORE_UNDO_PATH)) {
+    LittleFS.remove(staged);
+    return false;
+  }
+  return true;
+}
+
+static bool apply_config_backup_json(const String& backup, String& error) {
+  if (!logic_fs_ready) { error = "LittleFS unavailable; backup restore cannot be rolled back"; return false; }
+  if (!apply_config_backup_json_impl(backup, error, true)) return false;
+  const String snapshot = build_config_backup_json();
+  if (!snapshot.length() || snapshot.length() > 262144U || !backup_restore_write_undo(snapshot)) {
+    error = "failed to secure previous settings before restore";
+    return false;
+  }
+  if (apply_config_backup_json_impl(backup, error)) {
+    if (LittleFS.remove(BACKUP_RESTORE_UNDO_PATH)) return true;
+    error = "settings applied but restore commit failed; rollback pending at next boot";
+    return false;
+  }
+  const String failure = error;
+  String rollback_error;
+  if (apply_config_backup_json_impl(snapshot, rollback_error)) {
+    if (LittleFS.remove(BACKUP_RESTORE_UNDO_PATH)) {
+      error = failure + "; previous settings restored";
+    } else {
+      error = failure + "; previous settings restored, but undo journal could not be cleared";
+    }
+  } else {
+    error = failure + "; rollback pending at next boot: " + rollback_error;
+  }
+  return false;
+}
+
+static void recover_interrupted_backup_restore() {
+  if (!logic_fs_ready || !LittleFS.exists(BACKUP_RESTORE_UNDO_PATH)) return;
+  File file = LittleFS.open(BACKUP_RESTORE_UNDO_PATH, "r");
+  if (!file || file.size() > 262144U) {
+    if (file) file.close();
+    Serial.println(F("[RESTORE] undo journal unavailable; leaving it in place"));
+    return;
+  }
+  const size_t expected_size = file.size();
+  const String snapshot = file.readString();
+  file.close();
+  String error;
+  if (snapshot.length() != expected_size || !apply_config_backup_json_impl(snapshot, error, true)) {
+    Serial.println(F("[RESTORE] undo journal invalid; leaving it in place"));
+    return;
+  }
+  if (apply_config_backup_json_impl(snapshot, error)) {
+    if (LittleFS.remove(BACKUP_RESTORE_UNDO_PATH))
+      Serial.println(F("[RESTORE] interrupted import rolled back"));
+    else
+      Serial.println(F("[RESTORE] rollback applied, but undo journal could not be cleared"));
+  } else {
+    Serial.print(F("[RESTORE] rollback failed; will retry on next boot: "));
+    Serial.println(error);
+  }
 }
 static void web_handle_config_export() {
   heap_diag_set_context(HEAP_DIAG_CTX_WEB, "backup_export");
@@ -648,7 +796,7 @@ static void web_handle_config() {
   html += F("' placeholder='homeassistant'></div></div><label><input type='checkbox' id='mqtt_ha' name='mqtt_ha' value='1' onchange='syncMqttChecks()' style='width:auto;min-height:0;margin-right:8px'");
   if (mqtt_ha_discovery) html += F(" checked");
   html += F(">"); html += web_text("Home Assistant Discovery vorbereiten", "Prepare Home Assistant discovery");
-  html += F("</label><label>MQTT TLS CA Zertifikat / CA certificate (PEM)</label><textarea name='mqtt_ca' rows='8' style='font-family:ui-monospace,Consolas,monospace' placeholder='-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----'>");
+  html += F("</label><label>MQTT TLS CA Zertifikat / CA certificate (PEM)</label><textarea name='mqtt_ca' rows='8' style='font-family:var(--ofe-font-ui)' placeholder='-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----'>");
   html += html_escape(mqtt_ca_cert);
   html += F("</textarea><p class='muted' style='font-size:12px;margin-top:5px'>");
   html += web_text("Wenn dieses Feld leer ist, nutzt TLS weiterhin den Kompatibilitätsmodus ohne Zertifikatsprüfung.", "When this field is empty, TLS continues in compatibility mode without certificate verification.");

@@ -291,7 +291,7 @@ static void load_input_action_rules() {
   }
 }
 
-static void save_input_action_rule(uint8_t index, const MasterScheduler::InputActionRule& rule) {
+static bool save_input_action_rule(uint8_t index, const MasterScheduler::InputActionRule& rule) {
   MasterSettingsStore::InputActionRuleSettings stored;
   stored.enabled = rule.enabled;
   stored.source_type = rule.source_type;
@@ -300,7 +300,7 @@ static void save_input_action_rule(uint8_t index, const MasterScheduler::InputAc
   stored.target_type = rule.target_type;
   stored.target_addr = rule.target_addr;
   stored.target_bit = rule.target_bit;
-  MasterSettingsStore::saveRuleOpen(master_prefs, index, stored);
+  return MasterSettingsStore::saveRuleOpen(master_prefs, index, stored);
 }
 
 static void load_control_settings() {
@@ -309,7 +309,7 @@ static void load_control_settings() {
   scheduler.setAfterrunPowerProfile(s.afterrun_power_enabled, s.afterrun_power, false);
 }
 
-static void apply_control_settings(uint8_t suction, uint16_t select_flow, uint16_t delay_work,
+static bool apply_control_settings(uint8_t suction, uint16_t select_flow, uint16_t delay_work,
                                    uint16_t delay_stand, bool stand_intakes, bool continuous,
                                    bool persist) {
   if (suction > 3) suction = 3;
@@ -318,7 +318,7 @@ static void apply_control_settings(uint8_t suction, uint16_t select_flow, uint16
   if (delay_work > 3600) delay_work = 3600;
   if (delay_stand > 3600) delay_stand = 3600;
 
-  master_cmd_apply_control_settings(
+  return master_cmd_apply_control_settings(
     suction, select_flow, delay_work, delay_stand,
     stand_intakes, continuous, persist);
 }
@@ -331,8 +331,9 @@ static void load_routing_config() {
   for (uint8_t i = 0; i < registry.count(); ++i) {
     ModuleRecord& m = registry.at(i);
     if (!(m.caps & CAP_INPUT_KEYS)) continue;
-    scheduler.setIoInputRoute(m.addr, 0, master_prefs.getUChar(route_key(m.addr, 0).c_str(), 0) != 0);
-    scheduler.setIoInputRoute(m.addr, 1, master_prefs.getUChar(route_key(m.addr, 1).c_str(), 0) != 0);
+    const uint8_t channels = (m.type == MODULE_FAN_IO || m.type == MODULE_FAN_IO_PRO) ? 8 : 2;
+    for (uint8_t bit = 0; bit < channels; ++bit)
+      scheduler.setIoInputRoute(m.addr, bit, master_prefs.getUChar(route_key(m.addr, bit).c_str(), 0) != 0);
   }
   master_prefs.end();
 }
@@ -352,6 +353,9 @@ static bool persist_control_settings_now() {
 }
 static void web_handle_jbc_settings() {
   const JbcModuleState& cs = scheduler.controlSettings();
+  const JbcModuleState previous = cs;
+  const bool previous_afterrun_enabled = scheduler.afterrunPowerProfileEnabled();
+  const uint16_t previous_afterrun_power = scheduler.afterrunPower();
   const uint8_t suction = (uint8_t)web_arg_u16("suction", cs.suction_level, 3);
   uint16_t custom_percent = web_arg_u16("select", customPowerFromSelectFlow(cs.select_flow), 100);
   const uint16_t output_min_pct = scheduler.activeOutputMinSelectFlow() / 10U;
@@ -370,9 +374,20 @@ static void web_handle_jbc_settings() {
   if (afterrun_power_pct < afterrun_min_pct) afterrun_power_pct = afterrun_min_pct;
   if (afterrun_power_pct > afterrun_max_pct) afterrun_power_pct = afterrun_max_pct;
 
-  apply_control_settings(suction, select_flow, delay_work, delay_stand, stand_intakes, continuous, false);
-  master_cmd_set_afterrun_power_profile(afterrun_power_enabled, afterrun_power_pct * 10U, false);
+  if (!apply_control_settings(suction, select_flow, delay_work, delay_stand, stand_intakes, continuous, false)) {
+    web.send(503, "text/plain; charset=utf-8", "failed to apply control settings");
+    return;
+  }
+  if (!master_cmd_set_afterrun_power_profile(afterrun_power_enabled, afterrun_power_pct * 10U, false)) {
+    apply_control_settings(previous.suction_level, previous.select_flow, previous.delay_work_sec,
+                           previous.delay_stand_sec, previous.stand_intakes != 0, previous.continuous != 0, false);
+    web.send(503, "text/plain; charset=utf-8", "failed to apply afterrun settings");
+    return;
+  }
   if (!persist_control_settings_now()) {
+    master_cmd_set_afterrun_power_profile(previous_afterrun_enabled, previous_afterrun_power, false);
+    apply_control_settings(previous.suction_level, previous.select_flow, previous.delay_work_sec,
+                           previous.delay_stand_sec, previous.stand_intakes != 0, previous.continuous != 0, false);
     web.send(507, "text/plain; charset=utf-8", "NVS full or settings write failed");
     return;
   }
@@ -843,8 +858,17 @@ static void web_handle_main_input_select() {
   const uint8_t source_type = web.hasArg("st") ? (uint8_t)strtoul(web.arg("st").c_str(), nullptr, 0) : MasterScheduler::INPUT_SRC_NONE;
   const uint8_t source_addr = web.hasArg("sa") ? (uint8_t)strtoul(web.arg("sa").c_str(), nullptr, 0) : 0;
   const uint8_t source_bit = web.hasArg("sb") ? (uint8_t)strtoul(web.arg("sb").c_str(), nullptr, 0) : 0;
-  if (!master_cmd_set_main_input(source_type, source_addr, source_bit)) {
+  const uint8_t previous_type = scheduler.mainInputSourceType();
+  const uint8_t previous_addr = scheduler.mainInputSourceAddr();
+  const uint8_t previous_bit = scheduler.mainInputSourceBit();
+  if (!master_cmd_set_main_input(source_type, source_addr, source_bit, false)) {
     web.send(400, "text/plain; charset=utf-8", "bad main input");
+    return;
+  }
+  Preferences prefs;
+  if (!MasterSettingsStore::saveMainInput(prefs, source_type, source_addr, source_bit)) {
+    master_cmd_set_main_input(previous_type, previous_addr, previous_bit, false);
+    web.send(507, "text/plain; charset=utf-8", "failed to persist main input");
     return;
   }
   web.send(200, "text/plain; charset=utf-8", "ok");
@@ -856,17 +880,35 @@ static void web_handle_output_select() {
     web.send(400, "text/plain; charset=utf-8", "bad addr");
     return;
   }
-  master_cmd_set_preferred_output(addr);
+  const uint8_t previous_addr = scheduler.preferredOutputAddr();
+  if (!master_cmd_set_preferred_output(addr, false)) {
+    web.send(503, "text/plain; charset=utf-8", "failed to select main output");
+    return;
+  }
+  Preferences prefs;
+  if (!MasterSettingsStore::savePreferredOutput(prefs, addr)) {
+    master_cmd_set_preferred_output(previous_addr, false);
+    web.send(507, "text/plain; charset=utf-8", "failed to persist main output");
+    return;
+  }
   web.send(200, "text/plain; charset=utf-8", "ok");
 }
 
 static void web_handle_routing_set() {
   const bool enabled = web.hasArg("value") && web.arg("value") != "0";
   if (web.hasArg("jbc")) {
-    master_cmd_set_jbc_input_enabled(enabled);
-    master_prefs.begin(MasterSettingsStore::NS_CFG, false);
-    master_prefs.putUChar(MasterSettingsStore::KEY_LEGACY_JBC_INPUT, enabled ? 1 : 0);
-    master_prefs.end();
+    const bool previous_enabled = scheduler.jbcInputEnabled();
+    if (!master_cmd_set_jbc_input_enabled(enabled)) {
+      web.send(503, "text/plain; charset=utf-8", "failed to set JBC route");
+      return;
+    }
+    const bool opened = master_prefs.begin(MasterSettingsStore::NS_CFG, false);
+    const bool saved = opened && MasterSettingsStore::putUCharVerified(master_prefs, MasterSettingsStore::KEY_LEGACY_JBC_INPUT, enabled ? 1 : 0);
+    if (opened) master_prefs.end();
+    if (!saved) {
+      master_cmd_set_jbc_input_enabled(previous_enabled);
+      web.send(507, "text/plain; charset=utf-8", "failed to persist JBC route"); return;
+    }
     web.send(200, "text/plain; charset=utf-8", "ok");
     return;
   }
@@ -874,15 +916,27 @@ static void web_handle_routing_set() {
     web.send(400, "text/plain; charset=utf-8", "missing route");
     return;
   }
-  const uint8_t addr = (uint8_t)strtoul(web.arg("addr").c_str(), nullptr, 0);
-  const uint8_t bit = (uint8_t)strtoul(web.arg("bit").c_str(), nullptr, 0);
-  if (bit > 7 || !master_cmd_set_io_input_route(addr, bit, enabled)) {
+  const unsigned long parsed_addr = strtoul(web.arg("addr").c_str(), nullptr, 0);
+  const unsigned long parsed_bit = strtoul(web.arg("bit").c_str(), nullptr, 0);
+  if (parsed_addr > 255 || parsed_bit > 7) {
     web.send(400, "text/plain; charset=utf-8", "bad route");
     return;
   }
-  master_prefs.begin(MasterSettingsStore::NS_CFG, false);
-  master_prefs.putUChar(route_key(addr, bit).c_str(), enabled ? 1 : 0);
-  master_prefs.end();
+  const uint8_t addr = (uint8_t)parsed_addr;
+  const uint8_t bit = (uint8_t)parsed_bit;
+  const ModuleRecord* rec = registry.find(addr);
+  const bool previous_enabled = rec && (rec->route_input_output_mask & (uint16_t)(1U << bit));
+  if (!master_cmd_set_io_input_route(addr, bit, enabled)) {
+    web.send(400, "text/plain; charset=utf-8", "bad route");
+    return;
+  }
+  const bool opened = master_prefs.begin(MasterSettingsStore::NS_CFG, false);
+  const bool saved = opened && MasterSettingsStore::putUCharVerified(master_prefs, route_key(addr, bit).c_str(), enabled ? 1 : 0);
+  if (opened) master_prefs.end();
+  if (!saved) {
+    master_cmd_set_io_input_route(addr, bit, previous_enabled);
+    web.send(507, "text/plain; charset=utf-8", "failed to persist input route"); return;
+  }
   web.send(200, "text/plain; charset=utf-8", "ok");
 }
 
@@ -891,11 +945,12 @@ static void web_handle_routing_rule() {
     web.send(400, "text/plain; charset=utf-8", "missing rule index");
     return;
   }
-  const uint8_t index = (uint8_t)strtoul(web.arg("idx").c_str(), nullptr, 0);
-  if (index >= MasterScheduler::MAX_INPUT_RULES) {
+  const unsigned long parsed_index = strtoul(web.arg("idx").c_str(), nullptr, 0);
+  if (parsed_index >= MasterScheduler::MAX_INPUT_RULES) {
     web.send(400, "text/plain; charset=utf-8", "bad rule index");
     return;
   }
+  const uint8_t index = (uint8_t)parsed_index;
 
   MasterScheduler::InputActionRule rule;
   rule.source_type = web.hasArg("st") ? (uint8_t)strtoul(web.arg("st").c_str(), nullptr, 0) : MasterScheduler::INPUT_SRC_NONE;
@@ -905,14 +960,19 @@ static void web_handle_routing_rule() {
   rule.target_addr = web.hasArg("ta") ? (uint8_t)strtoul(web.arg("ta").c_str(), nullptr, 0) : 0;
   rule.target_bit = web.hasArg("tb") ? (uint8_t)strtoul(web.arg("tb").c_str(), nullptr, 0) : 0;
   rule.enabled = rule.source_type != MasterScheduler::INPUT_SRC_NONE && rule.target_type != MasterScheduler::INPUT_TGT_NONE;
+  const MasterScheduler::InputActionRule previous_rule = scheduler.inputRule(index);
 
   if (!master_cmd_set_input_rule(index, rule)) {
     web.send(400, "text/plain; charset=utf-8", "bad rule");
     return;
   }
-  master_prefs.begin(MasterSettingsStore::NS_CFG, false);
-  save_input_action_rule(index, rule);
-  master_prefs.end();
+  const bool opened = master_prefs.begin(MasterSettingsStore::NS_CFG, false);
+  const bool saved = opened && save_input_action_rule(index, rule);
+  if (opened) master_prefs.end();
+  if (!saved) {
+    master_cmd_set_input_rule(index, previous_rule);
+    web.send(507, "text/plain; charset=utf-8", "failed to persist input rule"); return;
+  }
   web.send(200, "text/plain; charset=utf-8", "ok");
 }
 

@@ -38,6 +38,7 @@ struct LogicRtNode {
   uint32_t delay2_ms = 0;
   LogicRtState state;
   uint8_t type = LOGIC_NODE_UNKNOWN;
+  uint8_t first_incoming = 0xFF;
   bool reset_dominant = false;
   bool value = false;
 };
@@ -46,6 +47,7 @@ struct LogicRtLink {
   uint8_t from = 0;
   uint8_t to = 0;
   uint8_t port = 0;
+  uint8_t next_incoming = 0xFF;
 };
 
 struct LogicCompiledDefinition {
@@ -140,12 +142,33 @@ static bool logic_save_legacy_nvs(uint8_t slot, const String& stored) {
 
 static bool logic_save_fs(uint8_t slot, const String& stored) {
   if (!logic_fs_ready || slot >= LOGIC_DEF_MAX) return false;
-  LittleFS.mkdir("/logic");
-  File f = LittleFS.open(logic_slot_path(slot), "w");
+  if (!LittleFS.exists("/logic") && !LittleFS.mkdir("/logic")) return false;
+  const String path = logic_slot_path(slot);
+  const String staged_path = path + ".tmp";
+  LittleFS.remove(staged_path);
+  File f = LittleFS.open(staged_path, "w");
   if (!f) return false;
-  const size_t written = f.print(stored);
+  const size_t written = f.write(reinterpret_cast<const uint8_t*>(stored.c_str()), stored.length());
+  f.flush();
   f.close();
-  return written == stored.length();
+  if (written != stored.length()) {
+    LittleFS.remove(staged_path);
+    return false;
+  }
+  File verify = LittleFS.open(staged_path, "r");
+  bool verified = verify && verify.size() == stored.length();
+  uint8_t chunk[128];
+  for (size_t offset = 0; verified && offset < stored.length(); offset += sizeof(chunk)) {
+    const size_t count = min(sizeof(chunk), stored.length() - offset);
+    verified = verify.read(chunk, count) == count &&
+      memcmp(chunk, stored.c_str() + offset, count) == 0;
+  }
+  if (verify) verify.close();
+  if (!verified || !LittleFS.rename(staged_path, path)) {
+    LittleFS.remove(staged_path);
+    return false;
+  }
+  return true;
 }
 
 static String logic_load_fs(uint8_t slot) {
@@ -226,14 +249,55 @@ static int logic_find_matching(const String& src, int start, char open_ch, char 
   return -1;
 }
 
-static bool logic_next_object(const String& src, int& pos, String& obj) {
-  int start = src.indexOf('{', pos);
-  if (start < 0) return false;
-  int end = logic_find_matching(src, start, '{', '}');
-  if (end < 0) return false;
-  obj = src.substring(start, end + 1);
+static bool logic_array_bounds(const String& json, const char* name, int& start, int& end) {
+  int object_depth = 0, array_depth = 0;
+  for (int i = 0; i < (int)json.length();) {
+    const char c = json[i];
+    if (c == '"') {
+      const int key_start = ++i;
+      bool escaped = false;
+      for (; i < (int)json.length(); ++i) {
+        if (escaped) escaped = false;
+        else if (json[i] == '\\') escaped = true;
+        else if (json[i] == '"') break;
+      }
+      if (i >= (int)json.length()) return false;
+      if (object_depth == 1 && array_depth == 0 &&
+          json.substring(key_start, i) == name) {
+        int value = i + 1;
+        while (value < (int)json.length() && isspace((unsigned char)json[value])) ++value;
+        if (value >= (int)json.length() || json[value++] != ':') return false;
+        while (value < (int)json.length() && isspace((unsigned char)json[value])) ++value;
+        if (value >= (int)json.length() || json[value] != '[') return false;
+        start = value;
+        end = logic_find_matching(json, start, '[', ']');
+        return end >= 0;
+      }
+    } else if (c == '{') ++object_depth;
+    else if (c == '}') --object_depth;
+    else if (c == '[') ++array_depth;
+    else if (c == ']') --array_depth;
+    ++i;
+  }
+  return false;
+}
+
+// Returns 1 for an object, 0 at the end, or -1 for malformed array contents.
+static int logic_next_object(const String& src, int& pos, String& obj) {
+  while (pos < (int)src.length() && isspace((unsigned char)src[pos])) ++pos;
+  if (pos == (int)src.length()) return 0;
+  if (src[pos] != '{') return -1;
+  const int end = logic_find_matching(src, pos, '{', '}');
+  if (end < 0) return -1;
+  obj = src.substring(pos, end + 1);
   pos = end + 1;
-  return true;
+  while (pos < (int)src.length() && isspace((unsigned char)src[pos])) ++pos;
+  if (pos < (int)src.length()) {
+    if (src[pos++] != ',') return -1;
+    while (pos < (int)src.length() && isspace((unsigned char)src[pos])) ++pos;
+    if (pos == (int)src.length()) return -1;
+  }
+  return 1;
 }
 
 static uint8_t logic_node_type_from_string(const String& type) {
@@ -271,16 +335,34 @@ static void logic_def_release(LogicCompiledDefinition& def) {
 }
 
 static bool logic_rt_lock(TickType_t timeout = portMAX_DELAY) {
-  if (!logic_rt_mutex) logic_rt_mutex = xSemaphoreCreateMutex();
-  return !logic_rt_mutex || xSemaphoreTake(logic_rt_mutex, timeout) == pdTRUE;
+  return logic_rt_mutex && xSemaphoreTake(logic_rt_mutex, timeout) == pdTRUE;
 }
 
 static void logic_rt_unlock() {
   if (logic_rt_mutex) xSemaphoreGive(logic_rt_mutex);
 }
 
+static void logic_index_links(LogicCompiledDefinition& def) {
+  for (uint8_t i = 0; i < def.node_count; ++i) def.nodes[i].first_incoming = 0xFF;
+  for (uint8_t i = 0; i < def.link_count; ++i) {
+    LogicRtLink& link = def.links[i];
+    link.next_incoming = def.nodes[link.to].first_incoming;
+    def.nodes[link.to].first_incoming = i;
+  }
+}
+
 static bool logic_compile_json(const String& json, uint8_t slot, LogicCompiledDefinition& out) {
   out = LogicCompiledDefinition();
+  int root_start = 0;
+  while (root_start < (int)json.length() && isspace((unsigned char)json[root_start])) ++root_start;
+  if (root_start >= (int)json.length() || json[root_start] != '{') return false;
+  const int root_end = logic_find_matching(json, root_start, '{', '}');
+  if (root_end < 0) return false;
+  for (int i = root_end + 1; i < (int)json.length(); ++i)
+    if (!isspace((unsigned char)json[i])) return false;
+  int nodes_start = -1, nodes_end = -1, links_start = -1, links_end = -1;
+  if (!logic_array_bounds(json, "nodes", nodes_start, nodes_end) ||
+      !logic_array_bounds(json, "links", links_start, links_end)) return false;
   out.used = true;
   out.enabled = json_get_bool_field(json, "enabled", false);
   logic_str_copy(out.name, sizeof(out.name), logic_json_name(json, slot));
@@ -294,17 +376,18 @@ static bool logic_compile_json(const String& json, uint8_t slot, LogicCompiledDe
   memset(out.nodes, 0, sizeof(LogicRtNode) * LOGIC_RT_MAX_NODES);
   memset(out.links, 0, sizeof(LogicRtLink) * LOGIC_RT_MAX_LINKS);
 
-  int key = json.indexOf("\"nodes\"");
-  int arr = key >= 0 ? json.indexOf('[', key) : -1;
-  int end = arr >= 0 ? logic_find_matching(json, arr, '[', ']') : -1;
-  if (arr >= 0 && end >= 0) {
-    const String part = json.substring(arr + 1, end);
+  {
+    const String part = json.substring(nodes_start + 1, nodes_end);
     int pos = 0;
     String obj;
-    while (out.node_count < LOGIC_RT_MAX_NODES && logic_next_object(part, pos, obj)) {
+    for (;;) {
+      const int item = logic_next_object(part, pos, obj);
+      if (item == 0) break;
+      if (item < 0 || out.node_count >= LOGIC_RT_MAX_NODES) { logic_def_release(out); return false; }
       LogicRtNode& n = out.nodes[out.node_count];
       const String id = json_get_string_field(obj, "id", String(""));
       const String type = json_get_string_field(obj, "type", String(""));
+      if (!id.length() || id.length() >= sizeof(n.id)) { logic_def_release(out); return false; }
       logic_str_copy(n.id, sizeof(n.id), id);
       logic_str_copy(n.signal, sizeof(n.signal), json_get_string_field(obj, "signal", String("")));
       n.delay_ms = json_get_u32_field(obj, "delay", 0);
@@ -312,30 +395,35 @@ static bool logic_compile_json(const String& json, uint8_t slot, LogicCompiledDe
       n.type = logic_node_type_from_string(type);
       n.reset_dominant = json_get_string_field(obj, "latchMode", String("sr")) == "rs";
       n.value = false;
-      if (n.id[0] && type.length()) ++out.node_count;
-      else memset(&n, 0, sizeof(n));
+      if (!n.id[0] || n.type == LOGIC_NODE_UNKNOWN ||
+          logic_find_node(out.nodes, out.node_count, n.id) >= 0) {
+        logic_def_release(out);
+        return false;
+      }
+      ++out.node_count;
     }
   }
 
-  key = json.indexOf("\"links\"");
-  arr = key >= 0 ? json.indexOf('[', key) : -1;
-  end = arr >= 0 ? logic_find_matching(json, arr, '[', ']') : -1;
-  if (arr >= 0 && end >= 0) {
-    const String part = json.substring(arr + 1, end);
+  {
+    const String part = json.substring(links_start + 1, links_end);
     int pos = 0;
     String obj;
-    while (out.link_count < LOGIC_RT_MAX_LINKS && logic_next_object(part, pos, obj)) {
+    for (;;) {
+      const int item = logic_next_object(part, pos, obj);
+      if (item == 0) break;
+      if (item < 0 || out.link_count >= LOGIC_RT_MAX_LINKS) { logic_def_release(out); return false; }
       const String from_id = json_get_string_field(obj, "from", String(""));
       const String to_id = json_get_string_field(obj, "to", String(""));
       const int8_t from = logic_find_node(out.nodes, out.node_count, from_id.c_str());
       const int8_t to = logic_find_node(out.nodes, out.node_count, to_id.c_str());
-      if (from < 0 || to < 0) continue;
+      if (from < 0 || to < 0) { logic_def_release(out); return false; }
       LogicRtLink& l = out.links[out.link_count++];
       l.from = (uint8_t)from;
       l.to = (uint8_t)to;
       l.port = (uint8_t)json_get_u32_field(obj, "port", 0);
     }
   }
+  logic_index_links(out);
   return true;
 }
 
@@ -386,6 +474,12 @@ static void logic_cache_reload_all() {
   heap_diag_set_context(HEAP_DIAG_CTX_LOOP, "logic_cache");
   heap_diag_sample("logic_cache_begin");
   if (!logic_rt_mutex) logic_rt_mutex = xSemaphoreCreateMutex();
+  if (!logic_rt_mutex) {
+    logic_rt_cache_ready = false;
+    Serial.println("[LOGIC] mutex allocation failed; runtime disabled");
+    heap_diag_clear_context(HEAP_DIAG_CTX_LOOP);
+    return;
+  }
   logic_cache_clear_all();
   uint8_t loaded = 0;
   for (uint8_t slot = 0; slot < LOGIC_DEF_MAX; ++slot) {
@@ -464,8 +558,7 @@ static bool save_logic_slot_json(uint8_t slot, const String& value) {
   LogicCompiledDefinition compiled;
   if (!logic_compile_json(stored, slot, compiled)) return false;
 
-  bool ok = logic_save_fs(slot, stored);
-  if (!ok) ok = logic_save_legacy_nvs(slot, stored);
+  const bool ok = logic_fs_ready ? logic_save_fs(slot, stored) : logic_save_legacy_nvs(slot, stored);
   if (!ok) {
     logic_def_release(compiled);
     return false;
@@ -715,25 +808,23 @@ static bool logic_signal_active(const char* signal) {
   return false;
 }
 
-static bool logic_port_value(const LogicCompiledDefinition& def, uint8_t node_index, uint8_t port) {
-  for (uint8_t i = 0; i < def.link_count; ++i) {
-    const LogicRtLink& link = def.links[i];
-    if (link.to == node_index && link.port == port && link.from < def.node_count && def.nodes[link.from].value) return true;
-  }
-  return false;
-}
-
-static uint8_t logic_linked_count(const LogicCompiledDefinition& def, uint8_t node_index, uint8_t* true_count) {
+struct LogicRtInputs {
   uint8_t total = 0;
   uint8_t on = 0;
-  for (uint8_t i = 0; i < def.link_count; ++i) {
+  uint8_t ports = 0;
+};
+
+static LogicRtInputs logic_node_inputs(const LogicCompiledDefinition& def, uint8_t node_index) {
+  LogicRtInputs inputs;
+  for (uint8_t i = def.nodes[node_index].first_incoming; i != 0xFF; i = def.links[i].next_incoming) {
     const LogicRtLink& link = def.links[i];
-    if (link.to != node_index || link.from >= def.node_count) continue;
-    ++total;
-    if (def.nodes[link.from].value) ++on;
+    ++inputs.total;
+    if (def.nodes[link.from].value) {
+      ++inputs.on;
+      if (link.port < 3) inputs.ports |= (uint8_t)(1U << link.port);
+    }
   }
-  if (true_count) *true_count = on;
-  return total;
+  return inputs;
 }
 
 static void logic_collect_output(LogicRtOutput* outputs, uint8_t& output_count, const char* signal, bool active) {
@@ -924,20 +1015,41 @@ static bool logic_apply_output_signal(const char* signal, bool active) {
   return true;
 }
 
+static void logic_advance_clock(LogicRtState& state, uint32_t dt_ms, uint32_t on_ms, uint32_t off_ms) {
+  // Whole cycles do not change the phase. At most two boundaries remain,
+  // including very short clocks and asymmetric on/off durations.
+  const uint64_t period = (uint64_t)on_ms + off_ms;
+  uint64_t elapsed = (uint64_t)state.timer_ms + dt_ms;
+  if (elapsed >= period) elapsed %= period;
+  for (uint8_t i = 0; i < 2; ++i) {
+    const uint32_t phase = state.mem ? on_ms : off_ms;
+    if (elapsed < phase) break;
+    elapsed -= phase;
+    state.mem = !state.mem;
+  }
+  state.timer_ms = (uint32_t)elapsed;
+}
+
 static void logic_eval_definition(LogicCompiledDefinition& def, uint32_t dt_ms, LogicRtOutput* outputs, uint8_t& output_count) {
   if (!def.used || !def.enabled || !def.nodes || !def.node_count) return;
+  bool sampled_inputs[LOGIC_RT_MAX_NODES] = {};
+  for (uint8_t i = 0; i < def.node_count; ++i) {
+    if (def.nodes[i].type == LOGIC_NODE_INPUT) sampled_inputs[i] = logic_signal_active(def.nodes[i].signal);
+  }
+  // Keep the existing pass order, including feedback and stateful blocks.
   for (uint8_t pass = 0; pass < 8; ++pass) {
     for (uint8_t i = 0; i < def.node_count; ++i) {
       LogicRtNode& n = def.nodes[i];
       LogicRtState& st = n.state;
       bool v = false;
-      uint8_t linked_on = 0;
-      const uint8_t linked_total = logic_linked_count(def, i, &linked_on);
-      const bool p0 = logic_port_value(def, i, 0);
-      const bool p1 = logic_port_value(def, i, 1);
-      const bool p2 = logic_port_value(def, i, 2);
+      const LogicRtInputs inputs = logic_node_inputs(def, i);
+      const uint8_t linked_total = inputs.total;
+      const uint8_t linked_on = inputs.on;
+      const bool p0 = (inputs.ports & 1U) != 0;
+      const bool p1 = (inputs.ports & 2U) != 0;
+      const bool p2 = (inputs.ports & 4U) != 0;
       switch (n.type) {
-        case LOGIC_NODE_INPUT: v = logic_signal_active(n.signal); break;
+        case LOGIC_NODE_INPUT: v = sampled_inputs[i]; break;
         case LOGIC_NODE_AND: v = linked_total && linked_on == linked_total; break;
         case LOGIC_NODE_OR: v = linked_on > 0; break;
         case LOGIC_NODE_NOT: v = linked_total ? !p0 : false; break;
@@ -1001,14 +1113,7 @@ static void logic_eval_definition(LogicCompiledDefinition& def, uint32_t dt_ms, 
                 st.mem = true;
                 st.timer_ms = 0;
               } else {
-                const uint32_t sum = st.timer_ms + dt_ms;
-                st.timer_ms = (sum < st.timer_ms || sum > 0x7FFFFFFFUL) ? 0x7FFFFFFFUL : sum;
-                for (uint8_t guard = 0; guard < 8; ++guard) {
-                  const uint32_t phase_ms = st.mem ? on_ms : off_ms;
-                  if (st.timer_ms < phase_ms) break;
-                  st.timer_ms -= phase_ms;
-                  st.mem = !st.mem;
-                }
+                logic_advance_clock(st, dt_ms, on_ms, off_ms);
               }
               st.last = true;
             }
@@ -1034,7 +1139,6 @@ static void logic_runtime_tick() {
   const uint32_t start_us = micros();
   const uint32_t elapsed_ms = logic_rt_last_tick_ms ? (uint32_t)(now - logic_rt_last_tick_ms) : 0;
   const uint32_t dt_ms = elapsed_ms > 500UL ? 500UL : elapsed_ms;
-  logic_rt_last_tick_ms = now;
   logic_rt_last_run_ms = now;
 
   static LogicRtOutput outputs[LOGIC_RT_MAX_OUTPUTS];
@@ -1045,6 +1149,7 @@ static void logic_runtime_tick() {
   uint8_t tracked_count = 0;
 
   if (!logic_rt_lock(pdMS_TO_TICKS(20))) return;
+  logic_rt_last_tick_ms = now;
   const uint32_t mask = logic_rt_used_mask;
   for (uint8_t slot = 0; slot < LOGIC_DEF_MAX; ++slot) {
     if (mask & (1UL << slot)) logic_eval_definition(logic_rt_defs[slot], dt_ms, outputs, output_count);
@@ -1155,7 +1260,7 @@ function setupLogicLangSync(){let s=document.getElementById('lang_sel');if(s&&!s
 function labelType(k){return ({input:t('Input','Input'),output:t('Output','Output'),and:t('UND','AND'),or:t('ODER','OR'),not:t('NICHT','NOT'),toggle:t('Toggle','Toggle'),sr:t('SR-Latch','SR latch'),ton:'TON',tof:'TOF',pulse:'R_TRIG',clock:t('Takt','Clock')})[k]||k}
 function latchMode(n){return n&&n.type==='sr'&&n.latchMode==='rs'?'rs':'sr'}
 function nodeTypeLabel(n){return n&&n.type==='sr'?(latchMode(n)==='rs'?t('RS-Latch','RS latch'):t('SR-Latch','SR latch')):labelType(n?n.type:'')}
-function logicSymbolSvg(k,mode='sr'){let base=(txt,size=9.5)=>`<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="16" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="Arial,sans-serif" font-size="${size}" font-weight="800">${txt}</text></svg>`;if(k==='and')return base('&amp;',13);if(k==='or')return base('≥1',9.5);if(k==='not')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4.5" width="20" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="14" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="Arial,sans-serif" font-size="12" font-weight="800">1</text><line x1="24" y1="16" x2="25.2" y2="16" stroke="currentColor" stroke-width="1.7"/><circle cx="27.6" cy="16" r="2.35" fill="#10161d" stroke="currentColor" stroke-width="1.7"/></svg>`;if(k==='toggle')return base('T',12);if(k==='sr')return base(mode==='rs'?'RS':'SR',9.5);if(k==='ton')return base('TON',7.8);if(k==='tof')return base('TOF',7.8);if(k==='pulse')return base('R_TRIG',5.7);if(k==='clock')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 20v-8h5v8h6v-8h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;if(k==='input')return base('IN',9);if(k==='output')return base('OUT',7.5);return base('?',12)}
+function logicSymbolSvg(k,mode='sr'){let base=(txt,size=9.5)=>`<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="16" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="inherit" font-size="${size}" font-weight="800">${txt}</text></svg>`;if(k==='and')return base('&amp;',13);if(k==='or')return base('≥1',9.5);if(k==='not')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4.5" width="20" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><text x="14" y="16.5" text-anchor="middle" dominant-baseline="middle" fill="currentColor" font-family="inherit" font-size="12" font-weight="800">1</text><line x1="24" y1="16" x2="25.2" y2="16" stroke="currentColor" stroke-width="1.7"/><circle cx="27.6" cy="16" r="2.35" fill="#10161d" stroke="currentColor" stroke-width="1.7"/></svg>`;if(k==='toggle')return base('T',12);if(k==='sr')return base(mode==='rs'?'RS':'SR',9.5);if(k==='ton')return base('TON',7.8);if(k==='tof')return base('TOF',7.8);if(k==='pulse')return base('R_TRIG',5.7);if(k==='clock')return `<svg class="logic-symbol-svg" viewBox="0 0 32 32" aria-hidden="true"><rect x="4.5" y="4.5" width="23" height="23" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 20v-8h5v8h6v-8h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;if(k==='input')return base('IN',9);if(k==='output')return base('OUT',7.5);return base('?',12)}
 function syncLogicSymbols(){document.querySelectorAll('[data-logic-icon]').forEach(e=>{e.innerHTML=logicSymbolSvg(e.dataset.logicIcon)})}
 function defaultGraphName(){return t('Absaugung Logik','Extractor logic')}
 function emptyGraph(name=defaultGraphName()){return {schema:1,name,enabled:true,nodes:[],links:[]}}function editGraphEnabled(){let e=document.getElementById('logic_enabled');graph.enabled=!!(e&&e.checked)}

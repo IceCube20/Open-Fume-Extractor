@@ -5,6 +5,7 @@
 #include "bus/Rs485PeripheralBus.h"
 #include "ModuleRegistry.h"
 #include "ExtractorLogic.h"
+#include "RequestWaitProbe.h"
 
 #ifndef JBC_MODULE_ADDR
 #define JBC_MODULE_ADDR 0x10
@@ -32,6 +33,30 @@
 
 #ifndef JBC_USB_FAST_POLL_TIMEOUT_MS
 #define JBC_USB_FAST_POLL_TIMEOUT_MS 75
+#endif
+
+#ifndef JBC_BUS_STATE_TIMEOUT_MS
+#define JBC_BUS_STATE_TIMEOUT_MS 120
+#endif
+
+#ifndef JBC_USB_STATE_TIMEOUT_MS
+#define JBC_USB_STATE_TIMEOUT_MS 70
+#endif
+
+#ifndef MODULE_STATUS_TIMEOUT_MS
+#define MODULE_STATUS_TIMEOUT_MS 80
+#endif
+
+#ifndef MODULE_IO_TIMEOUT_MS
+#define MODULE_IO_TIMEOUT_MS 70
+#endif
+
+#ifndef MODULE_TELEMETRY_TIMEOUT_MS
+#define MODULE_TELEMETRY_TIMEOUT_MS 70
+#endif
+
+#ifndef DISPLAY_WIFI_ASYNC_TIMEOUT_MS
+#define DISPLAY_WIFI_ASYNC_TIMEOUT_MS 1000UL
 #endif
 
 #ifndef JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS
@@ -92,15 +117,21 @@ public:
     uint32_t requests = 0;
     uint32_t responses = 0;
     uint32_t timeouts = 0;
+    uint32_t update_requests = 0;
+    uint32_t update_timeouts = 0;
+    uint32_t recovery_requests = 0;
+    uint32_t recovery_timeouts = 0;
     uint32_t late_responses = 0;
     uint32_t bad_seq = 0;
     uint32_t bad_cmd = 0;
     // Timeout classes make sporadic bus misses actionable instead of one
-    // opaque total. They count raw request timeouts since master boot.
+    // opaque total. Firmware transfer/recovery timeouts have separate counters.
     uint32_t timeout_fast = 0;
     uint32_t timeout_state = 0;
     uint32_t timeout_telemetry = 0;
     uint32_t timeout_io = 0;
+    uint32_t timeout_get_io = 0;
+    uint32_t timeout_set_io = 0;
     uint32_t timeout_universal = 0;
     uint32_t timeout_display_status = 0;
     uint32_t timeout_display_cache = 0;
@@ -129,6 +160,16 @@ public:
     uint32_t last_timeout_ms = 0;
     uint8_t last_timeout_seq = 0xFF;
     uint8_t last_timeout_cmd = 0;
+    uint32_t last_maintenance_timeout_ms = 0;
+    uint8_t last_maintenance_timeout_seq = 0xFF;
+    uint8_t last_maintenance_timeout_cmd = 0;
+    bool last_timeout_probe_valid = false;
+    uint32_t last_timeout_budget_ms = 0;
+    RequestWaitObservation last_timeout_probe;
+    jbc_rs485::LengthErrorSnapshot last_timeout_length_error;
+    jbc_rs485::VersionErrorSnapshot last_timeout_version_error;
+    jbc_rs485::PhysicalFrameSnapshot last_timeout_physical_frame;
+    RequestUnmatchedFrame last_timeout_unmatched_frame;
   };
 
   struct TraceStats {
@@ -138,6 +179,8 @@ public:
     uint32_t requests = 0;
     uint32_t responses = 0;
     uint32_t timeouts = 0;
+    uint32_t update_timeouts = 0;
+    uint32_t recovery_timeouts = 0;
     uint32_t dropped_events = 0;
     uint32_t bad_seq = 0;
     uint32_t bad_cmd = 0;
@@ -349,6 +392,10 @@ public:
   bool traceEventAt(uint16_t index, TraceEvent& out) const;
 
 private:
+  enum class RequestDiagnosticsKind : uint8_t { Normal, Update, Recovery };
+  RequestDiagnosticsKind requestDiagnosticsKind(uint8_t dst, uint8_t cmd);
+  bool recordMaintenanceTimeout(uint8_t dst, uint8_t cmd, uint8_t seq,
+                                uint32_t timeout_ms, RequestDiagnosticsKind kind);
   bool request(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, jbc_rs485::Frame& resp, uint32_t timeout_ms, bool physical = false);
   bool startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, uint32_t timeout_ms);
   bool handleAsyncDisplayFrame(const jbc_rs485::Frame& frame);
@@ -518,6 +565,7 @@ private:
   bool control_persist_dirty_ = false;
   uint16_t pending_extractor_actions_ = 0;
   uint8_t next_jbc_poll_index_ = 0;
+  uint8_t next_disconnected_jbc_poll_index_ = 0;
   uint8_t next_jbc_state_index_ = 0;
   uint8_t pending_jbc_state_addr_ = 0;
   uint8_t pending_jbc_usb_state_addr_ = 0;

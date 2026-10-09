@@ -306,7 +306,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 4
-#define OFE_MODULE_FW_PATCH 5
+#define OFE_MODULE_FW_PATCH 8
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -334,9 +334,9 @@ static bool module_light_sleep_armed = false;
 static const uint8_t DEFAULT_MODULE_ADDR = 0x40;
 static uint8_t module_addr = DEFAULT_MODULE_ADDR;
 static char module_label[24] = {0};
-static bool fw_update_active = false;
+static std::atomic<bool> fw_update_active{false};
 static uint32_t fw_update_last_ms = 0;
-static uint32_t fw_update_started_ms = 0;
+static std::atomic<uint32_t> fw_update_started_ms{0};
 static const uint32_t FW_UPDATE_TIMEOUT_MS = 30000UL;
 static const uint32_t MASTER_LINK_TIMEOUT_MS = 5000UL;
 
@@ -456,8 +456,8 @@ static void fw_update_check_timeout() {
     fw_update_abort_local();
   }
 }
-static uint32_t fw_update_offset = 0;
-static uint32_t fw_update_size = 0;
+static std::atomic<uint32_t> fw_update_offset{0};
+static std::atomic<uint32_t> fw_update_size{0};
 #ifndef FW_UPDATE_WRITE_BUFFER_SIZE
 #define FW_UPDATE_WRITE_BUFFER_SIZE 4096
 #endif
@@ -1953,7 +1953,8 @@ static uint32_t backlight_duty_from_percent(uint8_t pct) {
 static void apply_backlight() {
   if (display_brightness_pct < 10) display_brightness_pct = 10;
   if (display_brightness_pct > 100) display_brightness_pct = 100;
-  write_backlight_duty(backlight_duty_from_percent(display_brightness_pct));
+  const uint8_t effective_pct = screensaver_active && display_brightness_pct > 30 ? 30 : display_brightness_pct;
+  write_backlight_duty(backlight_duty_from_percent(effective_pct));
 }
 
 static void backlight_on() {
@@ -1967,10 +1968,10 @@ static void set_brightness(uint8_t pct, bool save) {
   if (pct < 10) pct = 10;
   if (pct > 100) pct = 100;
   display_brightness_pct = pct;
-  apply_backlight();
   if (running_in_rs485_task()) {
     ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
   } else {
+    apply_backlight();
     lv_update_display_settings_widgets(true);
   }
   if (save) {
@@ -4518,8 +4519,7 @@ static void screensaver_enter() {
   screensaver_update_values();
   screensaver_refresh_pending.store(false, std::memory_order_relaxed);
   screensaver_last_update_ms = millis();
-  const uint8_t dim_pct = display_brightness_pct < 30 ? display_brightness_pct : 30;
-  write_backlight_duty(backlight_duty_from_percent(dim_pct));
+  apply_backlight();
   lv_screen_load(ui_screensaver_screen);
 }
 
@@ -8425,10 +8425,12 @@ static void lvgl_force_refresh_once() {
 }
 
 static String fw_update_speed_text() {
-  if (!fw_update_started_ms || !fw_update_offset) return String("-");
-  const uint32_t elapsed_ms = millis() - fw_update_started_ms;
+  const uint32_t started = fw_update_started_ms.load();
+  const uint32_t offset = fw_update_offset.load();
+  if (!started || !offset) return String("-");
+  const uint32_t elapsed_ms = millis() - started;
   if (elapsed_ms < 250) return String("-");
-  const uint32_t bytes_per_s = (uint32_t)(((uint64_t)fw_update_offset * 1000ULL) / elapsed_ms);
+  const uint32_t bytes_per_s = (uint32_t)(((uint64_t)offset * 1000ULL) / elapsed_ms);
   if (bytes_per_s >= 1024UL * 1024UL) {
     return String(bytes_per_s / (1024UL * 1024UL)) + "." + String((bytes_per_s / (1024UL * 102UL)) % 10) + " MB/s";
   }
@@ -8437,8 +8439,9 @@ static String fw_update_speed_text() {
 
 static uint8_t fw_update_local_percent(uint8_t fallback_percent) {
   if (fallback_percent >= 100) return 100;
-  if (!fw_update_size) return fallback_percent;
-  uint32_t pct = ((uint64_t)fw_update_offset * 100ULL) / fw_update_size;
+  const uint32_t size = fw_update_size.load();
+  if (!size) return fallback_percent;
+  uint32_t pct = ((uint64_t)fw_update_offset.load() * 100ULL) / size;
   if (fw_update_active && pct > 99) pct = 99;
   if (pct > 100) pct = 100;
   return (uint8_t)pct;
@@ -8670,7 +8673,10 @@ static void apply_deferred_ui_updates() {
   if (flags & UI_DEFER_BUS_UPDATE) refresh_bus_update_inline_ui();
   if (flags & UI_DEFER_MODULE_LIST) lv_update_module_list();
   if (flags & UI_DEFER_MODULE_DETAIL) lv_update_module_detail();
-  if (flags & UI_DEFER_DISPLAY_SETTINGS) lv_update_display_settings_widgets(true);
+  if (flags & UI_DEFER_DISPLAY_SETTINGS) {
+    apply_backlight();
+    lv_update_display_settings_widgets(true);
+  }
   if (flags & UI_DEFER_APP_VALUES) {
     if (screensaver_active) screensaver_request_refresh();
     else lv_update_app_values();
@@ -9180,7 +9186,7 @@ static void parse_display_extension(const Frame& req) {
     m.fw_minor = req.payload[p++];
     m.fw_patch = req.payload[p++];
     uint8_t suffix_len = req.payload[p++];
-    if (p + suffix_len > req.len) return;
+    if (p + suffix_len + 56 > req.len) return;
     uint8_t suffix_copy = suffix_len;
     if (suffix_copy > sizeof(m.fw_suffix) - 1) suffix_copy = sizeof(m.fw_suffix) - 1;
     if (suffix_copy) memcpy(m.fw_suffix, req.payload + p, suffix_copy);
@@ -9584,7 +9590,7 @@ static void handle_fw_begin(const Frame& req) {
     fw_update_started_ms = 0;
     return;
   }
-  if (!Update.begin(fw_update_size ? fw_update_size : UPDATE_SIZE_UNKNOWN)) {
+  if (!Update.begin(fw_update_size ? fw_update_size.load() : UPDATE_SIZE_UNKNOWN)) {
     display_wifi.finishUpdate();
     fw_update_active = false;
     send_status_response(req, STATUS_BUSY);
@@ -9592,8 +9598,8 @@ static void handle_fw_begin(const Frame& req) {
     fw_update_started_ms = 0;
     return;
   }
-  fw_update_active = true;
   fw_update_touch();
+  fw_update_active = true;
   fw_update_offset = 0;
   fw_update_buffer_reset();
   fw_update_started_ms = millis();
@@ -9693,7 +9699,7 @@ static void handle_fw_end(const Frame& req) {
   if (ok && wifi_update) fw_update_reboot_ms.store(millis());
   else display_wifi.finishUpdate();
   if (!ok) Update.abort();
-  if (ok && fw_update_size) fw_update_offset = fw_update_size;
+  if (ok && fw_update_size) fw_update_offset = fw_update_size.load();
   send_status_response(req, ok ? STATUS_OK : STATUS_BUSY);
   draw_update_progress_throttled(module_addr, ok ? 100 : 0, ok ? "Update complete - rebooting" : "Update failed", true);
   if (ok && !wifi_update) {
@@ -10320,7 +10326,7 @@ static bool parse_display_module_detail_record(const Frame& req, uint16_t p, Dis
   m.fw_minor = req.payload[p++];
   m.fw_patch = req.payload[p++];
   uint8_t suffix_len = req.payload[p++];
-  if (p + suffix_len > req.len) return false;
+  if (p + suffix_len + 56 > req.len) return false;
   uint8_t suffix_copy = suffix_len;
   if (suffix_copy > sizeof(m.fw_suffix) - 1) suffix_copy = sizeof(m.fw_suffix) - 1;
   if (suffix_copy) memcpy(m.fw_suffix, req.payload + p, suffix_copy);
@@ -10917,6 +10923,8 @@ static void rs485_task(void* pv) {
   uint32_t last_periodic_ms = 0;
   for (;;) {
     const bool had_frames = poll_rs485();
+    // The transport task owns Update and its timeout/abort state.
+    fw_update_check_timeout();
     const uint32_t now = millis();
     if (had_frames || (uint32_t)(now - last_periodic_ms) >= DISPLAY_RS485_PERIODIC_MS) {
       poll_pending_discover_response();
@@ -11237,8 +11245,8 @@ void loop() {
     poll_rs485();
     poll_pending_discover_response();
     announce_join();
+    fw_update_check_timeout();
   }
-  fw_update_check_timeout();
   bus_update_check_ui_timeout();
   if (language_rebuild_pending && lvgl_ready && !fw_update_active) {
     language_rebuild_pending = false;

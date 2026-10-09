@@ -10,6 +10,9 @@ MQTT = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(
 WEB = (ROOT / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(
     encoding="utf-8"
 )
+TYPOGRAPHY = (ROOT / "OpenFumeExtractorMaster/src/WebTypography.h").read_text(
+    encoding="utf-8"
+)
 
 
 class WellerMqttFilterTests(unittest.TestCase):
@@ -72,8 +75,10 @@ class WellerMqttFilterTests(unittest.TestCase):
         self.assertIn("actions.style.flexDirection='column'", WEB)
         self.assertIn("button.style.width='100%'", WEB)
         self.assertIn("button.style.order='1'", WEB)
-        self.assertIn("document.querySelector('.fan-card .filter-actions button')", WEB)
-        self.assertIn("button.style.fontSize=style?style.fontSize", WEB)
+        self.assertIn(".module-card .filter-actions button", TYPOGRAPHY)
+        self.assertIn("font-size:13px;font-weight:700;line-height:1.25", TYPOGRAPHY)
+        self.assertNotIn("button.dataset.fanioStyle", WEB)
+        self.assertNotIn("button.style.fontFamily", WEB)
         self.assertIn("interval.style.order='2'", WEB)
         self.assertIn("interval.appendChild(select)", WEB)
         self.assertIn("groups[0].appendChild(swFact)", WEB)

@@ -61,7 +61,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 79
+#define OFE_MODULE_FW_PATCH 81
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -281,6 +281,8 @@ static uint16_t fan_rpm = 0;
 static uint16_t filter_runtime_minutes = 0;
 static uint16_t programmed_filter_minutes = 0;
 static uint8_t filter_status_code = 0;
+static uint32_t last_filter_status_ms = 0;
+static const uint32_t WELLER_FILTER_MAX_AGE_MS = 12000UL;
 static uint16_t weller_version = 0;
 static uint8_t work_light_state = 0;
 static uint16_t io_output_mask = 0;
@@ -680,7 +682,9 @@ static void publish_weller_frame(char typ, uint16_t val) {
       programmed_filter_minutes = val * 10U;
       break;
     case 'L':
-      filter_status_code = (uint8_t)(val > 255 ? 255 : val);
+      // Only a current, recognized L reply establishes a filter condition.
+      filter_status_code = (val == 1 || val == 10 || val == 100) ? (uint8_t)val : 0;
+      last_filter_status_ms = millis();
       fault_mask &= (uint16_t)~0x0006U;
       if (val == 10) fault_mask |= 0x0002U;
       if (val == 100) fault_mask |= 0x0004U;
@@ -964,8 +968,16 @@ static void handle_caps(const Frame& req) {
 
 static void update_weller_faults() {
   const uint32_t now = millis();
-  if (!last_weller_rx_ms || (uint32_t)(now - last_weller_rx_ms) > 5000UL) fault_mask |= WELLER_FAULT_BUS;
+  const bool weller_online = last_weller_rx_ms && (uint32_t)(now - last_weller_rx_ms) <= 5000UL;
+  if (!weller_online) fault_mask |= WELLER_FAULT_BUS;
   else fault_mask &= (uint16_t)~WELLER_FAULT_BUS;
+
+  // An OFE master restart must not resurrect a warning cached while Weller
+  // was powered off. Other UART replies do not refresh the L-status lifetime.
+  if (!weller_online || (uint32_t)(now - last_filter_status_ms) > WELLER_FILTER_MAX_AGE_MS) {
+    filter_status_code = 0;
+    fault_mask &= (uint16_t)~0x0006U;
+  }
 
   const bool fan_requested = output_enabled || (io_output_mask & 0x0001U);
   if (!fan_requested) {
@@ -1022,6 +1034,7 @@ static void append_system_telemetry(uint8_t* payload, uint8_t& o) {
 }
 
 static void handle_telemetry(const Frame& req) {
+  update_weller_faults();
   Frame resp;
   resp.dst = req.src;
   resp.src = module_addr;
@@ -1435,5 +1448,4 @@ void loop() {
   // Placed after runtime measurement so loop_max_ms reports only real work.
   delay(1);
 }
-
 

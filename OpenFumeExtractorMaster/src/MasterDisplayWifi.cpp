@@ -196,6 +196,13 @@ bool MasterDisplayWifi::route(const Frame& frame) {
   return send(*p,DATA,&frame);
 }
 bool MasterDisplayWifi::receive(Frame& frame) {
+  const uint32_t expiry_now=millis();
+  for (auto& peer:peers_) {
+    if (peer.connected && (uint32_t)(expiry_now-peer.seen)>=5000UL) {
+      peer.connected=false;
+      publish(peer);
+    }
+  }
   if (!ready_ || WiFi.status()!=WL_CONNECTED) return false;
   if (fd_<0) {
     if (socket_retry_ms_ && (uint32_t)(millis()-socket_retry_ms_)<3000) return false;

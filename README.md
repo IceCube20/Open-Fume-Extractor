@@ -18,6 +18,8 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
+- [2.0.30 RC release notes](docs/RELEASE-2.0.30RC.md)
+
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [Master setup and configuration](docs/MASTER.md)
 - [Module setup and configuration](docs/MODULES.md)

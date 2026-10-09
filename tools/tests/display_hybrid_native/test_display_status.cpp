@@ -81,19 +81,22 @@ int main() {
   auto& rec=registry_.rec;
   now_ms=12000;
   for (int i=0;i<10;++i) record_timeout(0x40,CMD_DISPLAY_STATUS);
-  assert(!rec.online && rec.miss_count==10 && rec.timeout_count==0); // WLAN startup
+  assert(!rec.online && rec.miss_count==0 && rec.consecutive_timeouts==0 && rec.timeout_count==0); // WLAN startup
   rec={}; rec.online=true; rec.last_seen_ms=100;
   for (int i=0;i<5;++i) { now_ms=1000+i*200; record_timeout(0x40,CMD_DISPLAY_STATUS); }
   assert(rec.online && rec.timeout_count==0 && rec.miss_count==5); // handover
   now_ms=8099; record_timeout(0x40,CMD_DISPLAY_STATUS); assert(rec.online);
   now_ms=8100; record_timeout(0x40,CMD_DISPLAY_STATUS);
   assert(!rec.online && rec.timeout_count==1); // real loss still detected, even after the fifth miss
+  const uint32_t missed_before_offline=rec.miss_count;
+  const uint8_t streak_before_offline=rec.consecutive_timeouts;
   for (int i=0;i<5;++i) record_timeout(0x40,CMD_DISPLAY_STATUS);
-  assert(rec.timeout_count==1);
+  assert(rec.timeout_count==1 && rec.miss_count==missed_before_offline &&
+         rec.consecutive_timeouts==streak_before_offline);
   rec.online=true; rec.last_seen_ms=now_ms; rec.consecutive_timeouts=0;
   now_ms+=8000;
   for (int i=0;i<5;++i) record_timeout(0x40,CMD_DISPLAY_STATUS);
-  assert(rec.timeout_count==2);
+  assert(rec.timeout_count==2 && rec.miss_count==missed_before_offline+5);
   rec={}; rec.type=MODULE_FAN_IO; rec.online=true; now_ms=100;
   for (int i=0;i<4;++i) record_timeout(0x40,CMD_FAST_POLL);
   assert(rec.online); record_timeout(0x40,CMD_FAST_POLL);

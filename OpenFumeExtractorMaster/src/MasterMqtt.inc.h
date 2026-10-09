@@ -9,6 +9,8 @@ static uint8_t mqtt_state_module_count = 0;
 static uint8_t mqtt_state_module_cursor = 0;
 static uint32_t mqtt_state_module_last_ms = 0;
 static bool mqtt_state_module_cycle_pending = false;
+// Availability belongs to the connected session, even after config changes.
+static String mqtt_session_topic_root;
 
 // MQTT/Home Assistant integration. Included from the master sketch so it can
 // use the sketch-local static configuration while the main file stays readable.
@@ -992,9 +994,9 @@ static uint8_t mqtt_fanio_filter_mode(const ModuleRecord& m) {
 }
 
 static String mqtt_io_input_label(const ModuleRecord& m, uint8_t bit) {
-  const char* alias = bit ? m.io_in2_alias : m.io_in1_alias;
+  const char* alias = bit == 0 ? m.io_in1_alias : (bit == 1 ? m.io_in2_alias : nullptr);
   if (alias && alias[0]) return String(alias);
-  return String(bit ? "IN2" : "IN1");
+  return String("IN") + String(bit + 1);
 }
 
 static bool mqtt_universal_role_matches(const MqttUniversalEntityDef& def, const char* a, const char* b = nullptr) {
@@ -1340,84 +1342,21 @@ static bool mqtt_ascii_ci_eq(const String& a, const char* b) {
   return a.equalsIgnoreCase(String(b));
 }
 
-static String mqtt_universal_clean_text(String text) {
-  text.replace("_", " ");
-  text.trim();
-  return text;
-}
-
-static bool mqtt_descriptor_meta_key_char(char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-         (c >= '0' && c <= '9') || c == '_';
-}
-
-static const char* mqtt_descriptor_next_meta(const char* start, const char* end) {
-  if (!start || !end) return end;
-  for (const char* p = start; p < end; ++p) {
-    if (*p != ' ') continue;
-    const char* q = p + 1;
-    if (q >= end || !(((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') || *q == '_'))) continue;
-    while (q < end && mqtt_descriptor_meta_key_char(*q)) ++q;
-    if (q < end && *q == '=') return p;
-  }
-  return end;
-}
 
 static String mqtt_descriptor_meta(const char* line, const char* key) {
-  if (!line || !key || !key[0]) return String();
-  String needle = String(key) + "=";
-  const char* start = nullptr;
-  const size_t needle_len = needle.length();
-  if (strncmp(line, needle.c_str(), needle_len) == 0) {
-    start = line + needle_len;
-  } else {
-    String token = String(" ") + needle;
-    const char* hit = strstr(line, token.c_str());
-    if (!hit) return String();
-    start = hit + token.length();
-  }
-  const char* line_end = line + strlen(line);
-  const char* end = mqtt_descriptor_next_meta(start, line_end);
-  String out;
-  while (start < end) out += *start++;
-  out.trim();
-  return out;
-}
-
-static String mqtt_span_string(const char* start, const char* end) {
-  String out;
-  while (start && end && start < end) out += *start++;
-  return out;
+  return entity_span_string(ofe_entity::metadata(ofe_entity::text(line), key));
 }
 
 static bool mqtt_parse_universal_descriptor_line(const char* line, MqttUniversalEntityDef& out) {
   out = MqttUniversalEntityDef();
-  if (!line) return false;
-  while (*line == ' ' || *line == '\t' || *line == '\r') ++line;
-  if (*line < '0' || *line > '9') return false;
-  char* end = nullptr;
-  unsigned long id = strtoul(line, &end, 10);
-  if (!end || end == line || id > 255) return false;
-  while (*end == ' ' || *end == '\t') ++end;
-  const char* type_start = end;
-  while (*end && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n') ++end;
-  String type = mqtt_span_string(type_start, end);
-  while (*end == ' ' || *end == '\t') ++end;
-  const char* key_start = end;
-  while (*end && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n') ++end;
-  String key = mqtt_span_string(key_start, end);
-  while (*end == ' ' || *end == '\t') ++end;
-  const char* mode_start = end;
-  while (*end && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n') ++end;
-  String mode = mqtt_span_string(mode_start, end);
-  out.valid = id >= 20;
-  out.id = (uint8_t)id;
-  out.type = type;
-  out.key = key;
-  out.mode = mode;
-  String de = mqtt_descriptor_meta(line, "de");
-  String en = mqtt_descriptor_meta(line, "en");
-  out.label = mqtt_universal_clean_text(de.length() ? de : (en.length() ? en : key));
+  ofe_entity::Definition def;
+  if (!ofe_entity::parse(ofe_entity::text(line), def) || def.id < 20) return false;
+  out.valid = true;
+  out.id = def.id;
+  out.type = entity_span_string(def.type); out.type.toLowerCase();
+  out.key = entity_span_string(def.key);
+  out.mode = entity_span_string(ofe_entity::access(def));
+  out.label = entity_span_string(ofe_entity::label(def, strcmp(web_lang, "de") == 0));
   out.unit = mqtt_descriptor_meta(line, "unit");
   out.min_value = mqtt_descriptor_meta(line, "min");
   out.max_value = mqtt_descriptor_meta(line, "max");
@@ -1425,14 +1364,13 @@ static bool mqtt_parse_universal_descriptor_line(const char* line, MqttUniversal
   out.options = mqtt_descriptor_meta(line, "options");
   out.values = mqtt_descriptor_meta(line, "values");
   out.role = mqtt_descriptor_meta(line, "role");
-  out.access = mqtt_descriptor_meta(line, "access");
+  out.access = out.mode;
   out.time_base = mqtt_descriptor_meta(line, "time_base");
   if (!out.time_base.length()) out.time_base = mqtt_descriptor_meta(line, "tb");
   out.time_display = mqtt_descriptor_meta(line, "time_display");
   if (!out.time_display.length()) out.time_display = mqtt_descriptor_meta(line, "tf");
-  out.time_base.trim(); out.time_base.toLowerCase();
-  out.time_display.trim(); out.time_display.toLowerCase();
-  return out.valid;
+  out.time_base.toLowerCase(); out.time_display.toLowerCase();
+  return true;
 }
 
 static String mqtt_universal_entity_access(const MqttUniversalEntityDef& def) {
@@ -1455,23 +1393,10 @@ static bool mqtt_universal_entity_writable(const MqttUniversalEntityDef& def) {
   return mode == "wo" || mode == "rw";
 }
 
-static String mqtt_universal_entity_value(const UniversalEntityState& e) {
-  if (!e.len) return String();
-  bool printable = true;
-  for (uint8_t i = 0; i < e.len; ++i) {
-    const uint8_t c = e.data[i];
-    if (c < 32 || c > 126) { printable = false; break; }
-  }
-  if (printable) {
-    String out;
-    for (uint8_t i = 0; i < e.len; ++i) out += (char)e.data[i];
-    out.trim();
-    return out;
-  }
-  uint32_t v = 0;
-  const uint8_t n = e.len > 4 ? 4 : e.len;
-  for (uint8_t i = 0; i < n; ++i) v |= ((uint32_t)e.data[i]) << (8U * i);
-  return String(v);
+static String mqtt_universal_entity_value(const UniversalEntityState& e, ofe_entity::Encoding encoding = ofe_entity::Encoding::Auto) {
+  char raw[sizeof(e.data) + 1];
+  ofe_entity::rawText(e.data, e.len <= sizeof(e.data) ? e.len : sizeof(e.data), raw, sizeof(raw), encoding);
+  return String(raw);
 }
 
 static bool mqtt_universal_descriptor_def_for_entity(const ModuleRecord& m, uint8_t entity_id, MqttUniversalEntityDef& out) {
@@ -1491,32 +1416,7 @@ static bool mqtt_universal_descriptor_def_for_entity(const ModuleRecord& m, uint
 }
 
 static String mqtt_universal_list_token(const String& list, uint8_t index) {
-  uint8_t pos = 0;
-  uint8_t cur = 0;
-  while (pos <= list.length()) {
-    int next = list.indexOf('|', pos);
-    String item = next >= 0 ? list.substring(pos, next) : list.substring(pos);
-    item.trim();
-    if (cur == index) return item;
-    if (next < 0) break;
-    pos = (uint8_t)(next + 1);
-    ++cur;
-  }
-  return String();
-}
-
-static String mqtt_universal_select_label(const MqttUniversalEntityDef& def, const String& raw) {
-  if (!def.options.length()) return raw;
-  const String values = def.values.length() ? def.values : def.options;
-  for (uint8_t i = 0; i < 32; ++i) {
-    String label = mqtt_universal_list_token(def.options, i);
-    String value = mqtt_universal_list_token(values, i);
-    if (!label.length() && !value.length()) break;
-    if (!value.length()) value = label;
-    if (raw == value || raw == label) return label.length() ? label : raw;
-    if (raw.length() > value.length() && raw.substring(raw.length() - value.length()) == value) return label.length() ? label : raw;
-  }
-  return raw;
+  return entity_span_string(ofe_entity::listItem(ofe_entity::text(list.c_str()), index));
 }
 
 static String mqtt_universal_select_command_value(const MqttUniversalEntityDef& def, const String& selected) {
@@ -1531,38 +1431,12 @@ static String mqtt_universal_select_command_value(const MqttUniversalEntityDef& 
   return selected;
 }
 
-static bool mqtt_universal_duration_minutes(const MqttUniversalEntityDef& def, const String& raw, uint32_t& minutes) {
-  if (!mqtt_ascii_ci_eq(def.time_display, "dhm") || !def.time_base.length() || mqtt_ascii_ci_eq(def.time_base, "none")) return false;
-  const char* begin = raw.c_str();
-  char* end = nullptr;
-  unsigned long long value = strtoull(begin, &end, 10);
-  if (!end || end == begin) return false;
-  while (*end == ' ' || *end == '\t') ++end;
-  if (*end) return false;
-  unsigned long long total = value;
-  if (mqtt_ascii_ci_eq(def.time_base, "s") || mqtt_ascii_ci_eq(def.time_base, "sec") || mqtt_ascii_ci_eq(def.time_base, "seconds")) total = (value + 30ULL) / 60ULL;
-  else if (mqtt_ascii_ci_eq(def.time_base, "h") || mqtt_ascii_ci_eq(def.time_base, "hour") || mqtt_ascii_ci_eq(def.time_base, "hours")) total = value * 60ULL;
-  else if (mqtt_ascii_ci_eq(def.time_base, "d") || mqtt_ascii_ci_eq(def.time_base, "day") || mqtt_ascii_ci_eq(def.time_base, "days")) total = value * 1440ULL;
-  else if (!(mqtt_ascii_ci_eq(def.time_base, "m") || mqtt_ascii_ci_eq(def.time_base, "min") || mqtt_ascii_ci_eq(def.time_base, "minutes"))) return false;
-  if (total > 0xFFFFFFFFULL) total = 0xFFFFFFFFULL;
-  minutes = (uint32_t)total;
-  return true;
-}
-
 static String mqtt_universal_entity_value_for_def(const ModuleRecord& m, const UniversalEntityState& e) {
-  MqttUniversalEntityDef def;
-  const bool has_def = mqtt_universal_descriptor_def_for_entity(m, e.id, def);
-  String raw = mqtt_universal_entity_value(e);
-  raw.trim();
+  ofe_entity::Definition def;
+  const bool has_def = m.universal_descriptor_valid && ofe_entity::find(m.universal_descriptor, e.id, def);
+  const String raw = mqtt_universal_entity_value(e, has_def ? ofe_entity::valueEncoding(def) : ofe_entity::Encoding::Auto);
   if (!has_def) return raw;
-  uint32_t duration_minutes = 0;
-  if (mqtt_universal_duration_minutes(def, raw, duration_minutes)) return duration_text_minutes(duration_minutes);
-  if (mqtt_ascii_ci_eq(def.type, "switch") || mqtt_ascii_ci_eq(def.type, "binary_sensor")) {
-    const bool on = raw == "1" || raw == "ON" || raw == "on" || raw == "true" || raw == "100";
-    return on ? String("1") : String("0");
-  }
-  if (mqtt_ascii_ci_eq(def.type, "select")) return mqtt_universal_select_label(def, raw);
-  return raw;
+  return entity_display_string(def, raw.c_str());
 }
 
 static const UniversalEntityState* mqtt_universal_state_by_id(const ModuleRecord& m, uint8_t id) {
@@ -1901,9 +1775,16 @@ static void mqtt_publish_module_offline(uint8_t addr) {
 
 static void mqtt_publish_all_availability_offline() {
   if (!mqtt_client.connected()) return;
-  mqtt_client.publish(mqtt_topic_path("status").c_str(), "offline", true);
+  const String root = mqtt_session_topic_root.length() ? mqtt_session_topic_root : mqtt_topic_path("");
+  mqtt_client.publish((root + "status").c_str(), "offline", true);
   for (uint8_t i = 0; i < registry.count(); ++i) {
-    mqtt_publish_module_offline(registry.at(i).addr);
+    const uint8_t addr = registry.at(i).addr;
+    char path[40], json[80];
+    snprintf(path, sizeof(path), "module/%02X/status", addr);
+    mqtt_client.publish((root + path).c_str(), "offline", true);
+    snprintf(path, sizeof(path), "module/%02X/state", addr);
+    snprintf(json, sizeof(json), "{\"addr\":%u,\"online\":false}", (unsigned)addr);
+    mqtt_client.publish((root + path).c_str(), json, true);
   }
   mqtt_client.loop();
 }
@@ -2482,7 +2363,7 @@ static void mqtt_apply_command(const String& leaf, const String& value) {
   } else {
     return;
   }
-  apply_control_settings(suction, select_flow, delay_work, delay_stand, stand_intakes, continuous, true);
+  if (!apply_control_settings(suction, select_flow, delay_work, delay_stand, stand_intakes, continuous, true)) return;
   master_cmd_persist_control_settings();
   mqtt_last_publish_ms = 0;
 }
@@ -2561,6 +2442,7 @@ static bool mqtt_connect_if_needed() {
   else ok = mqtt_client.connect(client_id, will_topic.c_str(), 0, true, "offline");
   mqtt_last_state = mqtt_client.state();
   if (ok) {
+    mqtt_session_topic_root = will_topic.substring(0, will_topic.length() - 6);
     mqtt_client.publish(will_topic.c_str(), "online", true);
     mqtt_client.subscribe(mqtt_topic_path("cmd/#").c_str());
     mqtt_was_connected = true;
