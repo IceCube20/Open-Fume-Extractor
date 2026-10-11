@@ -80,6 +80,65 @@ static std::vector<uint8_t> referenceEncoding(const Frame& input) {
 
 static bool acceptNetwork(void*, const Frame&) { return true; }
 
+struct GuardContext {
+  MemoryStream* stream;
+  Link* link;
+  unsigned calls = 0;
+  unsigned expected_writes = 0;
+  bool nested_network = false;
+};
+
+static void beforePhysicalSend(void* context) {
+  auto& guard = *static_cast<GuardContext*>(context);
+  assert(guard.stream->bulk_calls == guard.expected_writes);
+  ++guard.calls;
+  if (guard.nested_network) {
+    Frame frame;
+    guard.link->send(frame);
+    assert(guard.link->lastTxWasNetwork());
+  }
+}
+
+static bool rejectNetwork(void*, const Frame&) { return false; }
+
+static void testPhysicalSendGuard() {
+  MemoryStream stream;
+  Link link(stream);
+  GuardContext guard{&stream, &link};
+  RoutingContext route;
+  link.setPhysicalSendGuard(&guard, beforePhysicalSend);
+  link.setTransportHooks(&route, acceptNetwork, pollNetwork, dropPhysical);
+  Frame input;
+  input.len = 0;
+  link.send(input);
+  assert(guard.calls == 0 && stream.bulk_calls == 0 && link.lastTxWasNetwork());
+  Frame received;
+  assert(link.poll(received) && received.src == 0x40);
+  assert(!route.network_pending);
+
+  guard.nested_network = true;
+  link.sendPhysical(input);
+  assert(guard.calls == 1 && stream.bulk_calls == 1 && !link.lastTxWasNetwork());
+  guard.nested_network = false;
+  guard.expected_writes = 1;
+  link.setTransportHooks(&route, rejectNetwork, nullptr, nullptr);
+  link.send(input);
+  assert(guard.calls == 2 && stream.bulk_calls == 2 && !link.lastTxWasNetwork());
+  guard.expected_writes = 2;
+  link.sendWakePreamble(4);
+  assert(guard.calls == 3 && stream.byte_calls == 4);
+
+  input.len = MAX_PAYLOAD + 1;
+  link.send(input);
+  link.sendPhysical(input);
+  assert(guard.calls == 3 && stream.bulk_calls == 2);
+  assert(link.stats().overflow_errors == 2);
+  link.setPhysicalSendGuard(nullptr, nullptr);
+  input.len = 0;
+  link.send(input);
+  assert(guard.calls == 3 && stream.bulk_calls == 3);
+}
+
 static void testEncoder() {
   std::mt19937 random(29);
   bool escaped_crc_seen = false;
@@ -195,6 +254,7 @@ static void testJoinedContents() {
 }
 
 int main() {
+  testPhysicalSendGuard();
   testEncoder();
   testJoinedContents();
   Parser parser;
@@ -304,5 +364,5 @@ int main() {
   assert(link.lastPhysicalFrame().src == ADDR_INVALID);
   assert(!link.lastPhysicalFrame().filtered);
 
-  std::puts("PASS: 10000 differential bulk encodings, strict joined-content rejection/CRC diagnostics, LEN/VERSION snapshots and WLAN separation");
+  std::puts("PASS: physical send guard/WLAN fallback, 10000 differential bulk encodings, strict joined-content rejection/CRC diagnostics, LEN/VERSION snapshots and WLAN separation");
 }

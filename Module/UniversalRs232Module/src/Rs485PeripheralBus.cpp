@@ -185,6 +185,9 @@ void Link::sendPhysical(const Frame& frame) {
     parser_.countOverflow();
     return;
   }
+  // Guard only the physical path, including a failed network-route fallback.
+  if (physical_send_guard_) physical_send_guard_(physical_guard_context_);
+  tx_network_ = false;
   uint8_t raw[2 * (MAX_PAYLOAD + 8) + 2];
   size_t n = 0;
   raw[n++] = PROTOCOL_VERSION;
@@ -221,6 +224,7 @@ void Link::sendPhysical(const Frame& frame) {
 }
 
 void Link::sendWakePreamble(uint8_t bytes) {
+  if (physical_send_guard_) physical_send_guard_(physical_guard_context_);
   tx_network_ = false;
   if (bytes < 4) bytes = 4;
   while (bytes--) stream_.write((uint8_t)0x55);

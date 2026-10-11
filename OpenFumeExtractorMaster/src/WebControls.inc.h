@@ -509,8 +509,15 @@ static void web_handle_weller_set() {
     return;
   }
   if (web.hasArg("filter_minutes")) {
-    uint32_t minutes = strtoul(web.arg("filter_minutes").c_str(), nullptr, 10);
-    if (minutes < 60UL) minutes = 60UL;
+    String value = web.arg("filter_minutes");
+    value.trim();
+    char* end = nullptr;
+    uint32_t minutes = strtoul(value.c_str(), &end, 10);
+    if (!value.length() || value.length() > 5 || value[0] < '0' || value[0] > '9' || !end || *end) {
+      web.send(400, "text/plain; charset=utf-8", "invalid filter minutes");
+      return;
+    }
+    if (minutes != 0 && minutes < 60UL) minutes = 60UL;
     if (minutes > 9990UL) minutes = 9990UL;
     if (!master_cmd_set_weller_filter_runtime(addr, (uint16_t)minutes)) {
       web.send(500, "text/plain; charset=utf-8", "filter runtime set failed");
@@ -737,7 +744,10 @@ static void web_handle_universal_entity() {
     }
   } else {
     String value = web.hasArg("value") ? web.arg("value") : String("");
-    if (value.length() > sizeof(payload)) value = value.substring(0, sizeof(payload));
+    if (value.length() > sizeof(payload)) {
+      web.send(413, "text/plain; charset=utf-8", "payload too large");
+      return;
+    }
     len = (uint8_t)value.length();
     for (uint8_t i = 0; i < len; ++i) payload[i] = (uint8_t)value[i];
   }

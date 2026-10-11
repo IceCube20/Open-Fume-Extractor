@@ -86,6 +86,10 @@ struct Client {
   }
   void loop() {}
 } mqtt_client;
+static bool mqtt_publish_measured(const char* topic,const char* payload,bool retained) {
+  return mqtt_client.publish(topic,payload,retained);
+}
+static void mqtt_client_loop_measured() {mqtt_client.loop();}
 #include "generated_mqtt_offline.inc.h"
 }
 

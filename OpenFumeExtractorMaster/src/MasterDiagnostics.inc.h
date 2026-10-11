@@ -1,4 +1,5 @@
 #pragma once
+#include "MqttPerformance.h"
 
 // CPU load and developer heap diagnostics helpers.
 static uint32_t loop_window_ms = 0;
@@ -62,6 +63,49 @@ enum HeapDiagContextSlot : uint8_t {
 };
 
 static bool developer_mode_enabled = false;
+static portMUX_TYPE mqtt_perf_mux = portMUX_INITIALIZER_UNLOCKED;
+static MqttPerfWindow mqtt_perf_window;
+
+static void mqtt_perf_tick() {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&mqtt_perf_mux);
+  mqtt_perf_window.tick(now, developer_mode_enabled && mqtt_enabled);
+  portEXIT_CRITICAL(&mqtt_perf_mux);
+}
+
+static void mqtt_perf_record(MqttPerfPhase phase, uint32_t elapsed_us, uint32_t bytes = 0, bool success = true) {
+  portENTER_CRITICAL(&mqtt_perf_mux);
+  mqtt_perf_window.record(phase, elapsed_us, bytes, success);
+  portEXIT_CRITICAL(&mqtt_perf_mux);
+}
+
+static MqttPerfSnapshot mqtt_perf_snapshot() {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&mqtt_perf_mux);
+  const MqttPerfSnapshot snapshot = developer_mode_enabled && mqtt_enabled ? mqtt_perf_window.snapshot(now) : MqttPerfSnapshot{};
+  portEXIT_CRITICAL(&mqtt_perf_mux);
+  return snapshot;
+}
+
+class MqttPerfScope {
+public:
+  explicit MqttPerfScope(MqttPerfPhase phase)
+    : phase_(phase), active_(developer_mode_enabled && mqtt_enabled), start_us_(active_ ? micros() : 0) {}
+  ~MqttPerfScope() { finish(); }
+  void finish() {
+    if (!active_) return;
+    const uint32_t elapsed_us = (uint32_t)(micros() - start_us_);
+    active_ = false;
+    mqtt_perf_record(phase_, elapsed_us);
+  }
+  MqttPerfScope(const MqttPerfScope&) = delete;
+  MqttPerfScope& operator=(const MqttPerfScope&) = delete;
+private:
+  MqttPerfPhase phase_;
+  bool active_;
+  uint32_t start_us_;
+};
+
 static portMUX_TYPE heap_diag_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t heap_diag_started_ms = 0;
 static uint32_t heap_diag_samples = 0;

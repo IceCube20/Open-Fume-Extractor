@@ -41,12 +41,12 @@ int main() {
   now_ms += 5001;
   // First telemetry poll after an OFE master reboot, Weller itself still off.
   handle_telemetry(request);
-  check(bus.last.payload[3] == 0 && (fault_mask & 6) == 0 && (fault_mask & WELLER_FAULT_BUS),
-        "powered-off Weller does not resurrect cached filter warning on master reboot");
+  check(bus.last.payload[3] == 10 && (fault_mask & 6) == 0 && (fault_mask & WELLER_FAULT_BUS),
+        "powered-off Weller keeps its last reading without resurrecting active faults on master reboot");
   check(u16(bus.last.payload + 4) == 60 && u16(bus.last.payload + 6) == 9600, "expiry does not reset real counters");
   publish_weller_frame('S', 60);
   handle_telemetry(request);
-  check(bus.last.payload[3] == 0 && !(fault_mask & WELLER_FAULT_BUS), "other fresh replies cannot revalidate old filter status");
+  check(bus.last.payload[3] == 10 && (fault_mask & 6) == 0 && !(fault_mask & WELLER_FAULT_BUS), "other fresh replies preserve cached text but cannot revalidate filter faults");
   publish_weller_frame('L', 1);
   handle_telemetry(request);
   check(bus.last.payload[3] == 1 && (fault_mask & 6) == 0, "fresh good L reply restores very good immediately");
@@ -56,11 +56,11 @@ int main() {
   now_ms += WELLER_FILTER_MAX_AGE_MS + 1;
   publish_weller_frame('S', 60); // UART alive, but no new filter reply.
   handle_telemetry(request);
-  check(bus.last.payload[3] == 0 && (fault_mask & 6) == 0 && !(fault_mask & WELLER_FAULT_BUS),
-        "filter freshness is independent of speed and other UART replies");
+  check(bus.last.payload[3] == 100 && (fault_mask & 6) == 0 && !(fault_mask & WELLER_FAULT_BUS),
+        "filter display survives expiry independently of live fault flags");
   publish_weller_frame('L', 300);
   handle_telemetry(request);
-  check(bus.last.payload[3] == 0 && (fault_mask & 6) == 0, "unsupported filter status remains unknown");
+  check(bus.last.payload[3] == 100 && (fault_mask & 6) == 0, "unsupported filter replies do not erase the last recognized reading");
   fault_mask |= 0x8000;
   publish_weller_frame('L', 10);
   now_ms += 5001;
@@ -73,9 +73,12 @@ int main() {
   check(bus.last.payload[3] == 10, "freshness works across millis overflow");
   now_ms += 5001;
   handle_telemetry(request);
-  check(bus.last.payload[3] == 0 && !(fault_mask & 6), "expiration works across millis overflow");
+  check(bus.last.payload[3] == 10 && !(fault_mask & 6), "cached display and fault expiration work across millis overflow");
   publish_weller_frame('L', 1);
   handle_telemetry(request);
   check(bus.last.payload[3] == 1, "reconnect restores current filter state");
-  std::cout << "PASS: production Weller filter publishing, fault expiry and telemetry; master restart/offline/reconnect/wraparound\n";
+  now_ms += 5001;
+  handle_telemetry(request);
+  check(bus.last.payload[3] == 1 && (fault_mask & WELLER_FAULT_BUS), "very good remains visible after disconnect as well");
+  std::cout << "PASS: production Weller last-known filter display, fault expiry and telemetry; master restart/offline/reconnect/wraparound\n";
 }

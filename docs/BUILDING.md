@@ -10,8 +10,8 @@ deliberately excluded.
 - Arduino-ESP32 3.3.12 for the master and standard targets (older tested images used 3.3.11)
 - Arduino-ESP32 3.2.0 plus the pinned high-performance SDK for the 800x480 display
 - Adafruit NeoPixel 1.15.5
-- LVGL 9.5.0
-- GFX Library for Arduino 1.6.7
+- LVGL 9.6.0 for the current display builds
+- GFX Library for Arduino 1.6.9 for the current display builds
 - PubSubClient3 3.3.0
 
 Install the libraries through Arduino Library Manager where available. The JBC
@@ -67,3 +67,7 @@ enabled developer update path.
 Source-level and native tests are stored below `Module/*/tests` and
 `tools/tests`. Run the applicable Python, PowerShell or native test harness after
 changing protocol parsing, display transport, persistence or firmware signing.
+
+The native Home Assistant integration and its tests are in `HomeAssistant/`.
+Its Python tests use `aiohttp`, `voluptuous` and `jinja2`; the native test runner
+also verifies the master's HA dispatch and MQTT availability/performance helpers.

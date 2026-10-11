@@ -483,8 +483,75 @@ static void web_handle_config_import() {
   ESP.restart();
 }
 
+static void web_handle_wifi_scan() {
+  int n = WiFi.scanComplete();
+  if (web.method() == HTTP_POST && n != WIFI_SCAN_RUNNING) {
+    WiFi.scanDelete();
+    n = WiFi.scanNetworks(true, true);
+  }
+  String json;
+  json.reserve(256 + (n > 0 ? n * 96 : 0));
+  if (n == WIFI_SCAN_RUNNING) json = F("{\"status\":\"scanning\"}");
+  else if (n < 0) json = F("{\"status\":\"failed\"}");
+  else {
+    json = F("{\"status\":\"complete\",\"networks\":[");
+    bool first = true;
+    for (int i = 0; i < n; ++i) {
+      const String ssid = WiFi.SSID(i);
+      if (!ssid.length()) continue;
+      if (!first) json += ',';
+      first = false;
+      json += F("{\"ssid\":\""); json += json_escape(ssid.c_str());
+      json += F("\",\"rssi\":"); json += WiFi.RSSI(i); json += '}';
+    }
+    json += F("]}");
+  }
+  web.send(200, "application/json; charset=utf-8", json);
+}
+
+static void web_append_wifi_scan_controls(String& html, bool auto_scan) {
+  html += F("<div class='actions' style='margin-top:10px'><button id='wifi_scan_button' type='button' class='secondary' onclick='scanConfigWifi()'>");
+  html += web_text("Netzwerke neu scannen", "Scan networks");
+  html += F("</button><span id='wifi_scan_status' class='muted' role='status' aria-live='polite'></span></div><script>const configWifiScan={csrf:'");
+  html += web_csrf_token;
+  html += F("',german:"); html += web_is_german() ? F("true") : F("false");
+  html += F("};");
+  html += F(R"JS(
+async function scanConfigWifi(){
+  const button=document.getElementById('wifi_scan_button'),status=document.getElementById('wifi_scan_status'),select=document.getElementById('wifi_networks');
+  if(!button||!status||!select||button.disabled)return;
+  const text=(de,en)=>configWifiScan.german?de:en;
+  button.disabled=true;status.textContent=text('Suche...','Scanning...');
+  try{
+    let method='POST';const deadline=Date.now()+30000;
+    while(true){
+      const response=await fetch('/config/wifi-scan',{method,headers:method==='POST'?{'X-CSRF-Token':configWifiScan.csrf}:{},cache:'no-store',signal:AbortSignal.timeout(5000)});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      const result=await response.json();
+      if(result.status==='complete'){
+        const selected=select.value,seen=new Set(),options=[];
+        for(const network of result.networks||[]){
+          if(!network.ssid||seen.has(network.ssid))continue;
+          seen.add(network.ssid);options.push(new Option(network.ssid+' ('+network.rssi+' dBm)',network.ssid));
+        }
+        if(selected&&!seen.has(selected))options.unshift(new Option(selected,selected));
+        if(!options.length)options.push(new Option(text('Keine Netzwerke gefunden - SSID manuell eingeben','No networks found - enter SSID manually'),''));
+        select.replaceChildren(...options);if(selected)select.value=selected;
+        status.textContent=text('Suche abgeschlossen','Scan complete');break;
+      }
+      if(result.status!=='scanning'||Date.now()>=deadline)throw new Error('scan');
+      await new Promise(resolve=>setTimeout(resolve,500));method='GET';
+    }
+  }catch(error){status.textContent=text('Suche fehlgeschlagen - erneut versuchen oder SSID manuell eingeben','Scan failed - try again or enter SSID manually');}
+  finally{button.disabled=false;}
+}
+)JS");
+  if (auto_scan) html += F("window.addEventListener('DOMContentLoaded',()=>scanConfigWifi());");
+  html += F("</script>");
+}
+
 static void web_handle_initial_network_setup() {
-  int n = WiFi.scanNetworks(false, true);
+  const int n = WiFi.scanComplete();
   String html;
   html.reserve(5200);
   web_shell_begin(html, web_text("Netzwerk einrichten", "Set up network"), web_text("Ersteinrichtung", "Initial setup"), "config");
@@ -497,7 +564,7 @@ static void web_handle_initial_network_setup() {
   html += web_text("WLAN-Verbindung", "WiFi connection");
   html += F("</h2><label>");
   html += web_text("Gefundene Netzwerke", "Detected networks");
-  html += F("</label><select name='ssid'>");
+  html += F("</label><select id='wifi_networks' name='ssid'>");
   bool current_listed = false;
   for (int i = 0; i < n; ++i) {
     String ssid = WiFi.SSID(i);
@@ -525,9 +592,9 @@ static void web_handle_initial_network_setup() {
   if (n <= 0 && !strlen(wifi_ssid)) {
     html += F("<option value=''>"); html += web_text("Keine Netzwerke gefunden - SSID manuell eingeben", "No networks found - enter SSID manually"); html += F("</option>");
   }
-  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn' href='/config'>");
-  html += web_text("Netzwerke neu scannen", "Scan networks");
-  html += F("</a></div><label>");
+  html += F("</select>");
+  web_append_wifi_scan_controls(html, n < 0);
+  html += F("<label>");
   html += web_text("SSID manuell eingeben", "Enter SSID manually");
   html += F("</label><input name='ssid_manual' maxlength='32' placeholder='SSID'><label>");
   html += web_text("WLAN-Passwort", "WiFi password");
@@ -659,15 +726,15 @@ static void web_handle_config() {
     web_handle_initial_network_setup();
     return;
   }
-  int n = WiFi.scanNetworks(false, true);
+  const int n = WiFi.scanComplete();
   const String password_error = web.arg("password_error");
   const bool password_error_known = password_error == "mismatch" || password_error == "length" || password_error == "default" || password_error == "storage";
   String html;
   html.reserve(15000 + mqtt_ca_cert.length() * 2);
-  web_shell_begin(html, web_text("Netzwerk Setup", "Network Setup"), web_text("Netzwerk", "Network"), "config");
+  web_shell_begin(html, web_text("Netzwerk/System", "Network/System"), web_text("Einstellungen", "Settings"), "config");
   web_csrf_init();
   html += F("<p class='muted'>");
-  html += web_text("Master mit deinem lokalen WLAN verbinden oder die Zugangsdaten ändern.", "Connect the master to your local WiFi or change its credentials.");
+  html += web_text("Netzwerk, Web-Login, MQTT und Systemeinstellungen des Masters.", "Network, web login, MQTT and master system settings.");
   html += F("</p>");
   if (web_password_change_required) {
     web_csrf_init();
@@ -719,7 +786,7 @@ static void web_handle_config() {
   html += web_text("WLAN-Zugang", "WiFi credentials");
   html += F("</h2><label>");
   html += web_text("Gefundene Netzwerke", "Detected networks");
-  html += F("</label><select name='ssid'>");
+  html += F("</label><select id='wifi_networks' name='ssid'>");
   bool current_listed = false;
   for (int i = 0; i < n; ++i) {
     String scanned_ssid = WiFi.SSID(i);
@@ -734,9 +801,9 @@ static void web_handle_config() {
   if (n <= 0 && !strlen(wifi_ssid)) {
     html += F("<option value=''>"); html += web_text("Keine Netzwerke gefunden - SSID manuell eingeben", "No networks found - enter SSID manually"); html += F("</option>");
   }
-  html += F("</select><div class='actions' style='margin-top:10px'><a class='btn' href='/config'>");
-  html += web_text("Netzwerke neu scannen", "Scan networks");
-  html += F("</a></div><label>");
+  html += F("</select>");
+  web_append_wifi_scan_controls(html, n < 0 && !web_password_change_required);
+  html += F("<label>");
   html += web_text("SSID manuell eingeben", "Enter SSID manually");
   html += F("</label><input name='ssid_manual' maxlength='32' placeholder='SSID'><label>");
   html += web_text("WLAN-Passwort", "WiFi password");

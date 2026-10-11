@@ -6,6 +6,32 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "OpenFumeExtractorMaster" / 
 
 
 class RequestWaitIntegrationTests(unittest.TestCase):
+    def test_discovery_guard_covers_physical_path_not_successful_network_route(self):
+        bus = (SRC / "bus/Rs485PeripheralBus.cpp").read_text(encoding="utf-8")
+        send = bus.split("void Link::send(", 1)[1].split("void Link::sendPhysical(", 1)[0]
+        self.assertIn("send_route_(context_, frame)", send)
+        self.assertIn("sendPhysical(frame);", send)
+        self.assertNotIn("physical_send_guard_", send)
+        physical = bus.split("void Link::sendPhysical(", 1)[1].split("void Link::sendWakePreamble(", 1)[0]
+        self.assertLess(physical.index("physical_send_guard_(physical_guard_context_)"),
+                        physical.index("stream_.write("))
+        scheduler = (SRC / "MasterScheduler.cpp").read_text(encoding="utf-8")
+        self.assertIn("link_.setPhysicalSendGuard(this", scheduler)
+        request = scheduler.split("bool MasterScheduler::request(", 1)[1].split(
+            "bool MasterScheduler::startAsyncDisplayRequest(", 1)[0]
+        self.assertLess(request.index("link_.send(req);"), request.index("const uint32_t start = millis();"))
+
+    def test_all_discovery_rounds_reserve_window_after_transmission(self):
+        scheduler = (SRC / "MasterScheduler.cpp").read_text(encoding="utf-8")
+        hotplug = scheduler.split("void MasterScheduler::pollHotplugDiscovery()", 1)[1].split(
+            "void MasterScheduler::pollOfflineModules()", 1)[0]
+        manual = scheduler.split("uint8_t MasterScheduler::autoAddressModules(", 1)[1].split(
+            "// Wireless displays are not participants", 1)[0]
+        for method in (hotplug, manual):
+            self.assertLess(method.index("link_.send(req);"), method.index("reserveDiscoveryWindow();"))
+        self.assertIn("millis() - hotplug_discovery_window_until_ms_", manual)
+        self.assertNotIn("420UL", manual)
+
     def test_probe_wraps_real_synchronous_receive_loop(self):
         text = (SRC / "MasterScheduler.cpp").read_text(encoding="utf-8")
         request = text.split("bool MasterScheduler::request(", 1)[1].split(

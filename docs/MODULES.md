@@ -85,6 +85,25 @@ The physical Weller connection requires the correct electrical interface. Use a
 MAX3232 for RS232 voltage levels; never connect those levels directly to the
 ESP32 UART.
 
+### Filter interval and retained readings
+
+The replacement interval selector starts with **Off**. Selecting it sends
+`f000` followed by `g000`, with the Weller checksum: the programmed interval is
+disabled and its operating-time counter is reset. Selecting a positive interval
+enables the timer again. Use **Reset filter operating time** after replacing a
+filter when you want to keep the programmed interval.
+
+The independently reported filter condition is retained while the Weller is
+disconnected, provided its OFE module remains online. Treat it as the last
+received condition, not a fresh measurement. A powered-down Weller can report
+"replace soon" and change back after the fan runs; the firmware does not
+override the device's reported condition. Active alarms use freshness checks.
+
+This requires Master **2.0.51 RC** and Weller **1.1.83 RC**. Display **1.4.3 RC**
+(AXS15231B), **1.4.10 RC** (RGB) and **1.0.13 RC** (ST7796) put Off first and
+translate the interval choices into the selected display language. The observed
+`r001`/`r000` commands have an unconfirmed purpose and are not sent automatically.
+
 ## Fan/IO and Fan/IO Pro
 
 Open **Hardware configuration** from the module card. The editor creates a

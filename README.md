@@ -2,7 +2,8 @@
 
 Open Fume Extractor is a modular fume-extraction controller built around an
 ESP32-S3 master, a 250 kbaud OFE RS485 bus, interchangeable interface modules,
-three display variants, a web interface and Home Assistant integration through MQTT.
+three display variants, a web interface and Home Assistant integration through
+MQTT or a direct local connection without a broker.
 
 This repository contains the complete project source, ready-to-flash firmware
 images, a browser-based USB flasher and English end-user documentation.
@@ -18,7 +19,7 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.0.30 RC release notes](docs/RELEASE-2.0.30RC.md)
+- [2.0.51 RC release notes](docs/RELEASE-2.0.51RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [Master setup and configuration](docs/MASTER.md)
@@ -30,6 +31,7 @@ images, a browser-based USB flasher and English end-user documentation.
 - [Universal RS232 and Modbus RTU Profile Builder](docs/PROFILE-BUILDER.md)
 - [Display RS485/WiFi operation](docs/DISPLAYS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Native Home Assistant integration and dashboard cards](HomeAssistant/README.md)
 - [GitHub Pages web flasher setup](docs/GITHUB-PAGES.md)
 
 ## Source layout
@@ -51,6 +53,8 @@ images, a browser-based USB flasher and English end-user documentation.
 - main input/output routing, after-run power and graphical Boolean logic
 - bilingual web UI and displays
 - Home Assistant MQTT Discovery with TLS support
+- Native Home Assistant integration with configurable 1-60 second polling,
+  dynamic module entities, OFE/EVT indicators and dashboard cards
 - Ed25519-signed master and module firmware updates
 - AXS15231B 320x480, ST7796 320x480 and RGB 800x480 displays with
   RS485/WiFi failover and wireless OTA

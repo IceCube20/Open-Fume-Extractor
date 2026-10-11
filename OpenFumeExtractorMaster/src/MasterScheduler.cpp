@@ -3,6 +3,7 @@
 #include "MasterSettingsStore.h"
 #include "MasterBuildConfig.h"
 #include "EntityPresentation.h"
+#include "ModulePowerSaveState.h"
 #include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
@@ -1058,6 +1059,9 @@ static void traceLocalText(uint8_t addr, MasterScheduler::TraceDirection directi
 void MasterScheduler::begin() {
   registry_.clear();
   if (!bus_mutex_) bus_mutex_ = xSemaphoreCreateMutex();
+  link_.setPhysicalSendGuard(this, [](void* context) {
+    static_cast<MasterScheduler*>(context)->waitForDiscoveryWindow();
+  });
 
   // Trace storage is a developer feature (~640 KiB). Allocate it lazily when
   // traceStart() is actually used instead of reserving it at every boot.
@@ -1594,6 +1598,27 @@ void MasterScheduler::broadcastLedSync(uint32_t now) {
   }
   link_.send(req);
   busDiagRecordTx(req);
+}
+
+void MasterScheduler::reserveDiscoveryWindow() {
+  const uint32_t deadline = millis() + HOTPLUG_DISCOVERY_WINDOW_MS;
+  // Zero means inactive; preserve the reservation even at the millis wrap.
+  hotplug_discovery_window_until_ms_ = deadline ? deadline : 1;
+}
+
+void MasterScheduler::waitForDiscoveryWindow() {
+  // Physical send callers already own bus_mutex_. Do not acquire it again.
+  while (hotplug_discovery_window_until_ms_ != 0 &&
+         (int32_t)(millis() - hotplug_discovery_window_until_ms_) < 0) {
+    Frame frame;
+    for (uint8_t i = 0; i < 6 && link_.poll(frame); ++i) {
+      busDiagRecordRx(frame);
+      if (!handleAsyncDisplayFrame(frame)) noticeDiscoveryResponse(frame);
+    }
+    serviceWhileWaiting();
+    delay(1);
+  }
+  hotplug_discovery_window_until_ms_ = 0;
 }
 
 void MasterScheduler::serviceWhileWaiting() {
@@ -2624,7 +2649,7 @@ void MasterScheduler::pollHotplugDiscovery() {
   // Discovery responses are intentionally delayed by the modules (currently up
   // to about 383 ms). Reserve the OFE bus for that response window so normal
   // polls cannot transmit into an unsolicited discovery response.
-  hotplug_discovery_window_until_ms_ = now + HOTPLUG_DISCOVERY_WINDOW_MS;
+  reserveDiscoveryWindow();
 }
 
 void MasterScheduler::pollOfflineModules() {
@@ -3099,6 +3124,11 @@ void MasterScheduler::syncOtherJbcSettings(uint8_t source_addr) {
   system_jbc_sync_remaining_ = 0;
 }
 
+static bool module_filter_fault_current(const ModuleRecord& module) {
+  return !(module.caps & CAP_WELLER_INTERFACE) ||
+    (module.weller_uart_age_sec != 0xFFFF && module.weller_uart_age_sec <= 10);
+}
+
 uint16_t MasterScheduler::systemJbcError() const {
   // JBC FAE status-error masks from the original emulator table.
   static const uint16_t JBC_STOP_FILTER_LIFE = 1U;   // STOP1
@@ -3139,7 +3169,7 @@ uint16_t MasterScheduler::systemJbcError() const {
 
   uint16_t error = 0;
   const uint16_t output_fault = out->output_fault_mask | out->io_fault_mask;
-  const bool generic_filter_sensor = (out->caps & CAP_FILTER_SENSOR) != 0;
+  const bool generic_filter_sensor = (out->caps & CAP_FILTER_SENSOR) != 0 && module_filter_fault_current(*out);
   if (generic_filter_sensor && (output_fault & GENERIC_FILTER_WARN)) error |= JBC_WARN_FILTER_LIFE;
   if (generic_filter_sensor && (output_fault & GENERIC_FILTER_FULL)) error |= JBC_STOP_FILTER_LIFE;
 
@@ -3147,8 +3177,8 @@ uint16_t MasterScheduler::systemJbcError() const {
     static const uint16_t WELLER_FILTER_FAULTS = 0x0006U;
     if (output_fault & (uint16_t)~WELLER_FILTER_FAULTS) error |= JBC_STOP_SYSTEM;
     if (out->weller_uart_age_sec == 0xFFFF || out->weller_uart_age_sec > 10) error |= JBC_STOP_SYSTEM;
-    if (out->weller_filter_status == 10) error |= JBC_WARN_FILTER_LIFE;
-    else if (out->weller_filter_status == 100) error |= JBC_STOP_FILTER_LIFE;
+    // The cached Weller reading is display-only; fresh module fault flags above
+    // determine active filter warnings, including expiry of the L reply.
   } else {
     if (output_fault & (FAN_FAULT_NO_TACH | FAN_FAULT_LOW_RPM)) error |= JBC_STOP_BLOWER;
     uint16_t ignored = FAN_FAULT_NO_TACH | FAN_FAULT_LOW_RPM;
@@ -3162,16 +3192,16 @@ uint16_t MasterScheduler::systemJbcFilterLife() const {
   const ModuleRecord* out = registry_.find(active_output_addr_);
   if (!out || !out->online) return 0;
   const uint16_t output_fault = out->output_fault_mask | out->io_fault_mask;
-  if ((out->caps & CAP_FILTER_SENSOR) && (output_fault & 0x0004U)) return 1000;
-  if ((out->caps & CAP_FILTER_SENSOR) && (output_fault & 0x0002U)) return 900;
+  if ((out->caps & CAP_FILTER_SENSOR) && module_filter_fault_current(*out)) {
+    if (output_fault & 0x0004U) return 1000;
+    if (output_fault & 0x0002U) return 900;
+  }
   if (!(out->caps & CAP_WELLER_INTERFACE)) return 0;
   if (out->weller_programmed_filter_minutes > 0) {
     const uint32_t used = (uint32_t)out->weller_filter_runtime_minutes * 1000UL /
       out->weller_programmed_filter_minutes;
     return (uint16_t)(used > 1000UL ? 1000UL : used);
   }
-  if (out->weller_filter_status == 100) return 1000;
-  if (out->weller_filter_status == 10) return 900;
   return 0;
 }
 
@@ -3179,11 +3209,10 @@ uint16_t MasterScheduler::systemJbcFilterSaturation() const {
   const ModuleRecord* out = registry_.find(active_output_addr_);
   if (!out || !out->online) return 0;
   const uint16_t output_fault = out->output_fault_mask | out->io_fault_mask;
-  if ((out->caps & CAP_FILTER_SENSOR) && (output_fault & 0x0004U)) return 1000;
-  if ((out->caps & CAP_FILTER_SENSOR) && (output_fault & 0x0002U)) return 900;
-  if (!(out->caps & CAP_WELLER_INTERFACE)) return 0;
-  if (out->weller_filter_status == 100) return 1000;
-  if (out->weller_filter_status == 10) return 900;
+  if ((out->caps & CAP_FILTER_SENSOR) && module_filter_fault_current(*out)) {
+    if (output_fault & 0x0004U) return 1000;
+    if (output_fault & 0x0002U) return 900;
+  }
   return 0;
 }
 uint16_t MasterScheduler::minSelectFlowForActiveOutput() const {
@@ -4509,20 +4538,20 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
     rec->weller_work_light = resp.payload[12];
     if (resp.len >= 15) rec->weller_fan_rpm = get_u16_le(resp.payload + 13);
     if (resp.len >= 30) {
+      if (module_update_uptime(*rec, get_u32_le(resp.payload + 23))) last_power_save_apply_ms_ = 0;
       rec->telemetry_valid = true;
       rec->module_heap_free = get_u32_le(resp.payload + 15);
       rec->module_heap_min = get_u32_le(resp.payload + 19);
-      rec->module_uptime_s = get_u32_le(resp.payload + 23);
       rec->module_cpu_load_pct = resp.payload[27];
       rec->module_loop_max_ms = get_u16_le(resp.payload + 28);
     }
   } else if (resp.payload[1] == MODULE_JBC_USB && resp.len >= 37) {
     // JbcUsbModule extended telemetry:
     // heap/min/uptime, USB RX/TX bytes, JBC RX/TX frames and protocol errors.
+    if (module_update_uptime(*rec, get_u32_le(resp.payload + 10))) last_power_save_apply_ms_ = 0;
     rec->telemetry_valid = true;
     rec->module_heap_free = get_u32_le(resp.payload + 2);
     rec->module_heap_min = get_u32_le(resp.payload + 6);
-    rec->module_uptime_s = get_u32_le(resp.payload + 10);
     rec->module_cpu_load_pct = 0;
     rec->module_loop_max_ms = 0;
     rec->jbc_usb_usb_rx_bytes = get_u32_le(resp.payload + 14);
@@ -5228,10 +5257,10 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
       rec->jbc_usb_station_name[0] = 0;
     }
   } else if (resp.len >= 17) {
+    if (module_update_uptime(*rec, get_u32_le(resp.payload + 10))) last_power_save_apply_ms_ = 0;
     rec->telemetry_valid = true;
     rec->module_heap_free = get_u32_le(resp.payload + 2);
     rec->module_heap_min = get_u32_le(resp.payload + 6);
-    rec->module_uptime_s = get_u32_le(resp.payload + 10);
     rec->module_cpu_load_pct = resp.payload[14];
     rec->module_loop_max_ms = get_u16_le(resp.payload + 15);
     if (resp.payload[1] == MODULE_DISPLAY && resp.len >= 21) {
@@ -7225,7 +7254,7 @@ void MasterScheduler::handleDisplayEvent(uint8_t type, int16_t value, uint8_t di
 
   if (type == DISPLAY_EVENT_WELLER_FILTER_TIME_NEXT) {
     if (!(out->caps & CAP_WELLER_INTERFACE)) return;
-    static const uint16_t presets[] = {60, 120, 240, 480, 720, 1440, 2880, 4320, 5760, 7200, 8640, 9600};
+    static const uint16_t presets[] = {0, 60, 120, 240, 480, 720, 1440, 2880, 4320, 5760, 7200, 8640, 9600};
     uint16_t next = presets[0];
     for (uint8_t i = 0; i < sizeof(presets) / sizeof(presets[0]); ++i) {
       if (out->weller_programmed_filter_minutes < presets[i]) {
@@ -7241,11 +7270,12 @@ void MasterScheduler::handleDisplayEvent(uint8_t type, int16_t value, uint8_t di
   if (type == DISPLAY_EVENT_WELLER_FILTER_TIME_SET) {
     if (!(out->caps & CAP_WELLER_INTERFACE)) return;
     const uint8_t preset = (uint8_t)requested_value;
+    if (preset > 30) return;
     uint16_t minutes = 0;
     if (preset < 23) minutes = (uint16_t)(preset + 1U) * 60U;
     else if (preset < 29) minutes = (uint16_t)(preset - 22U) * 1440U;
     else if (preset == 29) minutes = 9600U;
-    if (minutes) setWellerFilterRuntime(out->addr, minutes);
+    setWellerFilterRuntime(out->addr, minutes);
     return;
   }
   if (type == DISPLAY_EVENT_IO_OUT_TOGGLE) {
@@ -7704,7 +7734,7 @@ bool MasterScheduler::setWellerFilterRuntime(uint8_t addr, uint16_t minutes) {
   if (module_fw_active_ && addr == module_fw_target_) return false;
   ModuleRecord* rec = registry_.find(addr);
   if (!rec || !rec->online || !(rec->caps & CAP_WELLER_INTERFACE)) return false;
-  if (minutes < 60U) minutes = 60U;
+  if (minutes != 0 && minutes < 60U) minutes = 60U;
   if (minutes > 9990U) minutes = 9990U;
   uint8_t payload[3];
   payload[0] = 3;
@@ -8489,10 +8519,10 @@ uint8_t MasterScheduler::autoAddressModules(bool preserve_remembered) {
     req.len = 1;
     req.payload[0] = round;
     link_.send(req);
+    reserveDiscoveryWindow();
     busDiagRecordTx(req);
 
-    const uint32_t start = millis();
-    while ((uint32_t)(millis() - start) < 420UL) {
+    while ((int32_t)(millis() - hotplug_discovery_window_until_ms_) < 0) {
       Frame resp;
       if (link_.poll(resp)) {
         busDiagRecordRx(resp);

@@ -6,6 +6,7 @@ on:
     paths:
       - "firmware/**"
       - "flasher/firmware-catalog.json"
+      - "HomeAssistant/dist/*.zip"
       - ".github/workflows/release-assets.yml"
   workflow_dispatch:
 
@@ -70,4 +71,6 @@ jobs:
           make_latest: false
           fail_on_unmatched_files: true
           overwrite_files: true
-          files: firmware/**/*.bin
+          files: |
+            firmware/**/*.bin
+            HomeAssistant/dist/*.zip

@@ -404,6 +404,8 @@ private:
   void processDisplayStatusResponse(ModuleRecord& display, const jbc_rs485::Frame& resp);
   void completeDisplayCacheResponse(ModuleRecord& display, uint8_t cmd);
   void serviceWhileWaiting();
+  void waitForDiscoveryWindow();
+  void reserveDiscoveryWindow();
   void serviceDelay(uint32_t delay_ms);
   void traceLog(uint8_t addr, TraceDirection direction, uint8_t cmd, uint8_t status, const uint8_t* data, uint8_t len, uint16_t latency_ms, const char* text = nullptr, uint8_t frame_seq = 0xFF);
   bool traceMatches(uint8_t addr) const;

@@ -22,3 +22,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Maintenance extraction failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance native build failed' }
 & "$build\test_maintenance.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance regressions failed' }
+& $python "$PSScriptRoot\extract_discovery_guard.py" "$build\generated_discovery_guard.inc.h"
+if ($LASTEXITCODE -ne 0) { throw 'Discovery guard extraction failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "$PSScriptRoot\test_discovery_guard.cpp" "/Fo$build\" "/Fe$build\test_discovery_guard.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Discovery guard native build failed' }
+& "$build\test_discovery_guard.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Discovery guard regressions failed' }

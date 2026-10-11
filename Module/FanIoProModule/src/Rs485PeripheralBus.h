@@ -343,8 +343,12 @@ public:
   using SendRoute = bool (*)(void*, const Frame&);
   using PollRoute = bool (*)(void*, Frame&);
   using SerialFilter = bool (*)(void*, const Frame&);
+  using PhysicalSendGuard = void (*)(void*);
   void setTransportHooks(void* context, SendRoute send, PollRoute poll, SerialFilter serial) {
     context_ = context; send_route_ = send; poll_route_ = poll; serial_filter_ = serial;
+  }
+  void setPhysicalSendGuard(void* context, PhysicalSendGuard guard) {
+    physical_guard_context_ = context; physical_send_guard_ = guard;
   }
   bool poll(Frame& out);
   const BusStats& stats() const { return parser_.stats(); }
@@ -365,6 +369,8 @@ private:
   SendRoute send_route_ = nullptr;
   PollRoute poll_route_ = nullptr;
   SerialFilter serial_filter_ = nullptr;
+  void* physical_guard_context_ = nullptr;
+  PhysicalSendGuard physical_send_guard_ = nullptr;
   bool tx_network_ = false;
   bool rx_network_ = false;
 };

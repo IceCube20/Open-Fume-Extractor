@@ -235,7 +235,7 @@ static constexpr uint32_t DISPLAY_NATIVE_CAP = (1UL << 22);
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 4
-#define OFE_MODULE_FW_PATCH 1
+#define OFE_MODULE_FW_PATCH 3
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -2241,16 +2241,22 @@ static String fmt_dhm(uint32_t minutes) {
   return String(m) + "m";
 }
 
-static const char WELLER_FILTER_OPTIONS[] =
-  "1 hour\n2 hours\n3 hours\n4 hours\n5 hours\n6 hours\n7 hours\n8 hours\n9 hours\n10 hours\n"
-  "11 hours\n12 hours\n13 hours\n14 hours\n15 hours\n16 hours\n17 hours\n18 hours\n19 hours\n20 hours\n"
-  "21 hours\n22 hours\n23 hours\n1 day\n2 days\n3 days\n4 days\n5 days\n6 days\n6 days 16 hours";
+static const char* weller_filter_options() {
+  return tr(
+    "Off\n1 hour\n2 hours\n3 hours\n4 hours\n5 hours\n6 hours\n7 hours\n8 hours\n9 hours\n10 hours\n"
+    "11 hours\n12 hours\n13 hours\n14 hours\n15 hours\n16 hours\n17 hours\n18 hours\n19 hours\n20 hours\n"
+    "21 hours\n22 hours\n23 hours\n1 day\n2 days\n3 days\n4 days\n5 days\n6 days\n6 days 16 hours",
+    "Aus\n1 Stunde\n2 Stunden\n3 Stunden\n4 Stunden\n5 Stunden\n6 Stunden\n7 Stunden\n8 Stunden\n9 Stunden\n10 Stunden\n"
+    "11 Stunden\n12 Stunden\n13 Stunden\n14 Stunden\n15 Stunden\n16 Stunden\n17 Stunden\n18 Stunden\n19 Stunden\n20 Stunden\n"
+    "21 Stunden\n22 Stunden\n23 Stunden\n1 Tag\n2 Tage\n3 Tage\n4 Tage\n5 Tage\n6 Tage\n6 Tage 16 Stunden");
+}
 
 static uint8_t weller_filter_preset_index(uint16_t minutes) {
-  if (minutes == 9600U) return 29;
-  if (minutes >= 60U && minutes <= 1380U && (minutes % 60U) == 0) return (minutes / 60U) - 1U;
-  if (minutes >= 1440U && minutes <= 8640U && (minutes % 1440U) == 0) return 22U + (minutes / 1440U);
-  return 0;
+  if (minutes == 0) return 0;
+  if (minutes == 9600U) return 30;
+  if (minutes >= 60U && minutes <= 1380U && (minutes % 60U) == 0) return (uint8_t)(minutes / 60U);
+  if (minutes >= 1440U && minutes <= 8640U && (minutes % 1440U) == 0) return (uint8_t)(23U + (minutes / 1440U));
+  return 1;
 }
 static const char* suction_name(uint8_t level) {
   switch (level) {
@@ -5433,8 +5439,11 @@ static void lv_detail_weller_speed_up_event(lv_event_t*) {
 static void lv_detail_weller_filter_event(lv_event_t* e) {
   lv_obj_t* dropdown = lv_event_get_target_obj(e);
   const uint16_t selected = lv_dropdown_get_selected(dropdown);
+  if (selected > 30) return;
+  // Keep the wire presets unchanged: hours/days 0..29, Off 30.
+  const uint8_t preset = selected == 0 ? 30 : (uint8_t)(selected - 1U);
   queue_display_event(DISPLAY_EVENT_WELLER_FILTER_TIME_SET,
-    targeted_event_value(selected_module.addr, (int8_t)selected));
+    targeted_event_value(selected_module.addr, (int8_t)preset));
 }
 
 static void lv_detail_weller_reset_event(lv_event_t*) {
@@ -6415,7 +6424,7 @@ static void lv_build_detail_controls() {
     ui_detail_weller_filter_dropdown = lv_dropdown_create(ui_detail_controls);
     lv_obj_set_pos(ui_detail_weller_filter_dropdown, 10, 76);
     lv_obj_set_size(ui_detail_weller_filter_dropdown, 202, 40);
-    lv_dropdown_set_options(ui_detail_weller_filter_dropdown, WELLER_FILTER_OPTIONS);
+    lv_dropdown_set_options(ui_detail_weller_filter_dropdown, weller_filter_options());
     lv_dropdown_set_selected(ui_detail_weller_filter_dropdown,
       weller_filter_preset_index(selected_module.weller_programmed));
     lv_obj_set_style_radius(ui_detail_weller_filter_dropdown, 8, 0);

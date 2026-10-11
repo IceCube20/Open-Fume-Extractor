@@ -61,7 +61,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 81
+#define OFE_MODULE_FW_PATCH 83
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -573,6 +573,12 @@ static void weller_send_speed(uint8_t percent) {
 }
 
 static void weller_set_filter_runtime(uint16_t minutes) {
+  if (minutes == 0) {
+    // Disable the interval, then reset its counter, as in the captured setup.
+    weller_send_checked4('f', 0);
+    weller_send_checked4('g', 0);
+    return;
+  }
   // The Weller stores programmed filter lifetime in 10-minute steps. Keep the
   // web/display side from accidentally writing tiny limits such as 20 minutes,
   // which immediately makes a used filter look "full" on the Weller itself.
@@ -682,8 +688,8 @@ static void publish_weller_frame(char typ, uint16_t val) {
       programmed_filter_minutes = val * 10U;
       break;
     case 'L':
-      // Only a current, recognized L reply establishes a filter condition.
-      filter_status_code = (val == 1 || val == 10 || val == 100) ? (uint8_t)val : 0;
+      // Keep the last recognized reading for display, independently of faults.
+      if (val == 1 || val == 10 || val == 100) filter_status_code = (uint8_t)val;
       last_filter_status_ms = millis();
       fault_mask &= (uint16_t)~0x0006U;
       if (val == 10) fault_mask |= 0x0002U;
@@ -972,10 +978,9 @@ static void update_weller_faults() {
   if (!weller_online) fault_mask |= WELLER_FAULT_BUS;
   else fault_mask &= (uint16_t)~WELLER_FAULT_BUS;
 
-  // An OFE master restart must not resurrect a warning cached while Weller
-  // was powered off. Other UART replies do not refresh the L-status lifetime.
+  // Stale readings remain visible, but must not resurrect active filter faults.
+  // Other UART replies do not refresh the L-status lifetime.
   if (!weller_online || (uint32_t)(now - last_filter_status_ms) > WELLER_FILTER_MAX_AGE_MS) {
-    filter_status_code = 0;
     fault_mask &= (uint16_t)~0x0006U;
   }
 

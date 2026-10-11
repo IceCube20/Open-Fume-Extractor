@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "2.0.30RC",
+    "version": "2.0.51RC",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.30RC-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.30RC.bin",
-    "mergedSha256": "bef11e516918b88eade0c8c2882f1e273fda9619587d7f4f3d31ea215a65f8ed"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.51RC-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.51RC.bin",
+    "mergedSha256": "5773d11586c55b08ab6e6ab7f3728324180f58c3198278141498849b97490d8a"
   },
   {
     "id": "JBC-FAE-Bus",
@@ -62,50 +62,50 @@
   {
     "id": "Weller-Zero-Smog",
     "label": "Weller Zero Smog",
-    "version": "1.1.81RC",
+    "version": "1.1.83RC",
     "signatureTarget": "WELLER_ZERO_SMOG",
     "chipFamily": "ESP32",
     "flashSize": "4 MB",
     "manifest": "flasher/manifests/Weller-Zero-Smog.json",
-    "merged": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.81RC-merged.bin",
-    "ota": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.81RC.bin",
-    "mergedSha256": "6b4d041e59deb4da20a4704764aa3f253db261666f9b2123870ed481f9a45b42"
+    "merged": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.83RC-merged.bin",
+    "ota": "firmware/Weller-Zero-Smog/Weller-Zero-Smog-1.1.83RC.bin",
+    "mergedSha256": "003f355958dc7fae9a58c98036b17b83b9f281a2e8e30ad43d3b303d216c9031"
   },
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.4.1RC",
+    "version": "1.4.3RC",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.4.1RC-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.4.1RC.bin",
-    "mergedSha256": "d011563d10b5275e4976df07c21eda0c6362a6ccc63e8efe83decee1b7814b5e"
+    "merged": "firmware/Display-320x480/Display-320x480-1.4.3RC-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.4.3RC.bin",
+    "mergedSha256": "72f87be86dbd0f079ad6f246d07fb52178a6a066c7c213c7150cc968f21b6cb5"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.4.8RC",
+    "version": "1.4.10RC",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.4.8RC-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.4.8RC.bin",
-    "mergedSha256": "095bfff1c83f47e9ea6a19b9c1dec593aebdcbe36eeb4d5d1dcbbc4eb150c4ee"
+    "merged": "firmware/Display-800x480/Display-800x480-1.4.10RC-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.4.10RC.bin",
+    "mergedSha256": "920a3cb815430c25eabe8b5e915f057fc27f3c5d02be19dab269476c423f15a5"
   },
   {
     "id": "Display-ST7796-320x480",
     "label": "Display ST7796 320x480",
-    "version": "1.0.11RC",
+    "version": "1.0.13RC",
     "signatureTarget": "DISPLAY_ST7796_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-ST7796-320x480.json",
-    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.11RC-merged.bin",
-    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.11RC.bin",
-    "mergedSha256": "601eb97aae457097b465f768aee9feaf5f3743469c82f293606e2e5d6f9e229a"
+    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.13RC-merged.bin",
+    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.13RC.bin",
+    "mergedSha256": "07d62e05443dae296288ad77cafe52b0fe2e1df89348988336ca185d2d628c8d"
   },
   {
     "id": "Universal-RS232",

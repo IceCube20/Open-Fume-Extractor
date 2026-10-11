@@ -1512,6 +1512,8 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-module-address{margin-top:5px;color:#718090;font:600 11px/1.15 var(--ofe-font-ui);white-space:nowrap}
 .diag-module-statuses{display:flex;height:74px;min-height:74px;flex-direction:column;flex-wrap:nowrap;align-items:flex-end;justify-content:center;gap:3px;flex:0 0 auto;min-width:78px}
 .diag-module-head .diag-online-pill{flex:0 0 auto;width:78px;min-width:78px;height:22px;padding:0 9px;font-size:11px;white-space:nowrap;line-height:1}
+.diag-device-head .diag-online-pill{flex:0 0 auto;width:auto;min-width:118px;white-space:nowrap}
+.diag-device-title{min-width:0;overflow-wrap:anywhere}
 @media(max-width:520px){.diag-module-head{height:auto;min-height:136px;max-height:none;flex-basis:auto}.diag-module-head-main{align-items:center}.diag-module-statuses{flex:0 0 auto}}
 
 </style>)CSS");
@@ -1957,7 +1959,7 @@ function jbcUsbPeripheralConfigDiag(p){
   if(!p||p.length!==31)return null;let id=Number(p[30]),hexok=true;for(let i=0;i<24;i++)if(!((p[i]>=48&&p[i]<=57)||(p[i]>=65&&p[i]<=70)||(p[i]>=97&&p[i]<=102))){hexok=false;break;}if(hexok)for(let i=24;i<30;i++)if(p[i]!==32){hexok=false;break;}
   if(hexok){let dev=String.fromCharCode.apply(null,p.slice(0,24));return {h:jbcField('ID',String(id+1),'primary')+jbcField(u('Typ','Type'),'FAE')+jbcTextField('Device ID',dev),summary:'FAE '+dev};}
   let asc=(a,b)=>String.fromCharCode.apply(null,p.slice(a,b)),num2=(a)=>{let t=asc(a,a+2);return /^\d\d$/.test(t)?String(Number(t)):t;},type=asc(20,22),port=asc(22,24),fn=asc(24,26),act=asc(26,28),delay=num2(28);
-  let h=jbcField('ID',String(id+1),'primary')+jbcField(u('Version','Version'),num2(0))+jbcTextField('UID hash',asc(2,6))+jbcTextField(u('Datum/Zeit','Date/time'),asc(6,20))+jbcField(u('Typ','Type'),type)+jbcField('Port',port==='00'||port==='01'||port==='02'||port==='03'?String(Number(port)+1):port)+jbcField(u('Funktion','Function'),fn)+jbcField(u('Aktivierung','Activation'),act)+jbcField(u('Verzögerung','Delay'),delay+' s');
+  let h=jbcField('ID',String(id+1),'primary')+jbcField(u('Version','Version'),num2(0))+jbcTextField(u('Seriennummer-Hash','Serial number hash'),asc(2,6))+jbcTextField(u('Datum/Zeit','Date/time'),asc(6,20))+jbcField(u('Typ','Type'),type)+jbcField('Port',port==='00'||port==='01'||port==='02'||port==='03'?String(Number(port)+1):port)+jbcField(u('Funktion','Function'),fn)+jbcField(u('Aktivierung','Activation'),act)+jbcField(u('Verzögerung','Delay'),delay+' s');
   return {h:h,summary:type+' · P'+(port==='00'||port==='01'||port==='02'||port==='03'?String(Number(port)+1):port)};
 }
 function jbcUsbContiMaskBefore(f){

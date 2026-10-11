@@ -1,5 +1,9 @@
 #pragma once
 #include <mbedtls/sha256.h>
+#include "JbcUsbHaCounters.h"
+#include "JbcUsbHaControls.h"
+#include "HaEntityIcons.h"
+#include "MqttAvailabilityCache.h"
 
 // Stagger module-state publishes across short MQTT service ticks. Publishing
 // every module back-to-back created a periodic CPU/heap burst on the same core
@@ -11,6 +15,21 @@ static uint32_t mqtt_state_module_last_ms = 0;
 static bool mqtt_state_module_cycle_pending = false;
 // Availability belongs to the connected session, even after config changes.
 static String mqtt_session_topic_root;
+static MqttAvailabilityCache mqtt_availability_cache;
+
+static bool mqtt_publish_measured(const char* topic, const char* payload, bool retained) {
+  if (!developer_mode_enabled || !mqtt_enabled) return mqtt_client.publish(topic, payload, retained);
+  const uint32_t start_us = micros();
+  const bool success = mqtt_client.publish(topic, payload, retained);
+  const uint32_t elapsed_us = (uint32_t)(micros() - start_us);
+  mqtt_perf_record(MqttPerfPhase::Publish, elapsed_us, payload ? strlen(payload) : 0, success);
+  return success;
+}
+
+static void mqtt_client_loop_measured() {
+  MqttPerfScope timing(MqttPerfPhase::ClientLoop);
+  mqtt_client.loop();
+}
 
 // MQTT/Home Assistant integration. Included from the master sketch so it can
 // use the sketch-local static configuration while the main file stays readable.
@@ -77,7 +96,8 @@ static void web_handle_state() {
   heap_diag_set_context(HEAP_DIAG_CTX_WEB, include_universal_descriptor ? "state+descriptor" : "state");
   heap_diag_sample("state_begin");
   OfePsramTextBuffer& payload = web_state_json_buffer;
-  const bool state_ok = build_state_json(payload, include_universal_descriptor, include_heap_diag);
+  const bool include_ha = web.hasArg("ha") && web.arg("ha") == "1";
+  const bool state_ok = build_state_json(payload, include_universal_descriptor, include_heap_diag, include_ha);
   heap_diag_sample("state_built");
   if (!state_ok || payload.empty()) {
     web.send(503, "application/json", "{\"error\":\"state buffer allocation failed\"}");
@@ -214,7 +234,7 @@ static String mqtt_discovery_topic(const char* component, const char* object, co
 
 static const uint32_t MQTT_HA_MANIFEST_MAGIC = 0x4F464548UL; // "OFEH"
 static const uint8_t MQTT_HA_MANIFEST_VERSION = 1;
-static const uint8_t MQTT_HA_MANIFEST_MAX_ENTITIES = 72;
+static const uint8_t MQTT_HA_MANIFEST_MAX_ENTITIES = 192;
 
 enum MqttManifestComponent : uint8_t {
   MQTT_MAN_COMP_NONE = 0,
@@ -230,6 +250,9 @@ enum MqttManifestComponent : uint8_t {
 enum MqttManifestEntityKind : uint8_t {
   MQTT_MAN_ENTITY_STATIC = 0,
   MQTT_MAN_ENTITY_DYNAMIC = 1,
+  MQTT_MAN_ENTITY_COUNTER_P1 = 2,
+  MQTT_MAN_ENTITY_COUNTER_P4 = 5,
+  MQTT_MAN_ENTITY_JBC_CONTROL = 6,
 };
 
 struct MqttManifestEntity {
@@ -344,6 +367,27 @@ static void mqtt_manifest_load_once() {
     mqtt_manifest_previous_valid =
       got == sizeof(MqttDiscoveryManifest) &&
       mqtt_manifest_valid(*mqtt_manifest_previous);
+  } else {
+    // Migrate the original 72-entry module layout without losing retained cleanup.
+    const size_t header_size = offsetof(MqttDiscoveryManifest, modules);
+    const size_t old_stride = 2U + 72U * sizeof(MqttManifestEntity);
+    const size_t old_size = (header_size + old_stride * ModuleRegistry::MAX_MODULES + 3U) & ~3U;
+    if (stored_len == old_size) {
+      uint8_t* old = static_cast<uint8_t*>(mqtt_manifest_alloc(stored_len));
+      if (old && prefs.getBytes("manifest", old, stored_len) == stored_len) {
+        memcpy(mqtt_manifest_previous, old, header_size);
+        bool valid = mqtt_manifest_previous->struct_size == old_size &&
+                     mqtt_manifest_previous->module_count <= ModuleRegistry::MAX_MODULES;
+        for (uint8_t i = 0; valid && i < mqtt_manifest_previous->module_count; ++i) {
+          const uint8_t* module = old + header_size + i * old_stride;
+          valid = module[0] != 0 && module[1] <= 72;
+          if (valid) memcpy(&mqtt_manifest_previous->modules[i], module, old_stride);
+        }
+        mqtt_manifest_previous->struct_size = sizeof(MqttDiscoveryManifest);
+        mqtt_manifest_previous_valid = valid && mqtt_manifest_valid(*mqtt_manifest_previous);
+      }
+      free(old);
+    }
   }
   prefs.end();
 
@@ -438,7 +482,11 @@ static uint8_t mqtt_manifest_static_key(const char* suffix) {
     "jbc_p4_future_mode", "jbc_p4_transition_countdown_s", "jbc_p4_time_to_stop_ds",
     "jbc_time_to_stop",
     // Fan/IO Pro filter telemetry. Append only.
-    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining"
+    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining",
+    "heap_min", "loop_max", "eco", "transport", "reboot", "serial_number",
+    "jbc_station_name", "jbc_port_count", "jbc_p1_set_flow_permille", "jbc_p2_set_flow_permille",
+    "jbc_p3_set_flow_permille", "jbc_p4_set_flow_permille", "jbc_tc1_set_temp_c", "jbc_tc2_set_temp_c",
+    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval"
   };
   for (uint8_t i = 1; i < sizeof(keys) / sizeof(keys[0]); ++i) {
     if (!strcmp(keys[i], suffix)) return i;
@@ -475,7 +523,11 @@ static const char* mqtt_manifest_static_suffix(uint8_t key) {
     "jbc_p4_future_mode", "jbc_p4_transition_countdown_s", "jbc_p4_time_to_stop_ds",
     "jbc_time_to_stop",
     // Fan/IO Pro filter telemetry. Append only.
-    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining"
+    "filter_saturation", "filter_pressure", "filter_mode", "filter_lifetime", "filter_remaining",
+    "heap_min", "loop_max", "eco", "transport", "reboot", "serial_number",
+    "jbc_station_name", "jbc_port_count", "jbc_p1_set_flow_permille", "jbc_p2_set_flow_permille",
+    "jbc_p3_set_flow_permille", "jbc_p4_set_flow_permille", "jbc_tc1_set_temp_c", "jbc_tc2_set_temp_c",
+    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval"
   };
   return key < sizeof(keys) / sizeof(keys[0]) ? keys[key] : nullptr;
 }
@@ -487,6 +539,14 @@ static bool mqtt_manifest_encode_entity(
   entity = MqttManifestEntity();
   entity.component = mqtt_manifest_component_code(component);
   if (!entity.component || !suffix || !suffix[0]) return false;
+  if (!strncmp(suffix, "jbc_cfg_", 8)) {
+    char* end = nullptr;
+    const unsigned long id = strtoul(suffix + 8, &end, 10);
+    if (end != suffix + 8 && !*end && id < HA_JBC_CONTROL_COUNT) {
+      entity.kind = MQTT_MAN_ENTITY_JBC_CONTROL; entity.key = id; return true;
+    }
+    return false;
+  }
 
   if (!strncmp(suffix, "entity_", 7)) {
     char* end = nullptr;
@@ -498,6 +558,15 @@ static bool mqtt_manifest_encode_entity(
     }
   }
 
+  if (!strncmp(suffix, "jbc_p", 5) && suffix[5] >= '1' && suffix[5] <= '4' && suffix[6] == '_') {
+    for (size_t i = 0; i < HA_JBC_COUNTER_COUNT; ++i) {
+      if (!strcmp(suffix + 7, HA_JBC_COUNTERS[i].key)) {
+        entity.kind = MQTT_MAN_ENTITY_COUNTER_P1 + suffix[5] - '1';
+        entity.key = i;
+        return true;
+      }
+    }
+  }
   entity.kind = MQTT_MAN_ENTITY_STATIC;
   entity.key = mqtt_manifest_static_key(suffix);
   return entity.key != 0;
@@ -627,9 +696,14 @@ static bool mqtt_manifest_clear_discovery_entity(
   const char* component = mqtt_manifest_component_text(entity.component);
   if (!component) return true;
 
-  char suffix[24];
+  char suffix[80];
   if (entity.kind == MQTT_MAN_ENTITY_DYNAMIC) {
     snprintf(suffix, sizeof(suffix), "entity_%u", entity.key);
+  } else if (entity.kind == MQTT_MAN_ENTITY_JBC_CONTROL) {
+    snprintf(suffix, sizeof(suffix), "jbc_cfg_%u", entity.key);
+  } else if (entity.kind >= MQTT_MAN_ENTITY_COUNTER_P1 && entity.kind <= MQTT_MAN_ENTITY_COUNTER_P4) {
+    if (entity.key >= HA_JBC_COUNTER_COUNT) return true;
+    snprintf(suffix, sizeof(suffix), "jbc_p%u_%s", entity.kind - MQTT_MAN_ENTITY_COUNTER_P1 + 1U, HA_JBC_COUNTERS[entity.key].key);
   } else {
     const char* static_suffix = mqtt_manifest_static_suffix(entity.key);
     if (!static_suffix) return true;
@@ -637,7 +711,7 @@ static bool mqtt_manifest_clear_discovery_entity(
     suffix[sizeof(suffix) - 1] = 0;
   }
 
-  char full_suffix[40];
+  char full_suffix[96];
   snprintf(full_suffix, sizeof(full_suffix), "mod_%02X_%s", addr, suffix);
   const String topic = mqtt_discovery_topic_for_namespace(
     old_manifest.discovery_prefix,
@@ -645,7 +719,7 @@ static bool mqtt_manifest_clear_discovery_entity(
     old_manifest.device_id,
     full_suffix);
 
-  if (!mqtt_client.publish(topic.c_str(), "", true)) {
+  if (!mqtt_publish_measured(topic.c_str(), "", true)) {
     ++mqtt_manifest_delete_failed;
     return false;
   }
@@ -661,7 +735,7 @@ static bool mqtt_manifest_clear_old_module_value(
     const char* leaf) {
   const String topic = mqtt_topic_for_base_namespace(
     old_manifest.base_topic, addr, leaf);
-  if (!mqtt_client.publish(topic.c_str(), "", true)) {
+  if (!mqtt_publish_measured(topic.c_str(), "", true)) {
     ++mqtt_manifest_delete_failed;
     return false;
   }
@@ -762,6 +836,8 @@ static String mqtt_device_json() {
   json += ids;
   json += F("\"],\"name\":\"0x01 Open Fume Extractor Master\",\"mf\":\"IceCube20\",\"mdl\":\"Open Fume Extractor Master\",\"sw\":\"");
   json += MASTER_FW_VERSION;
+  json += F("\",\"sn\":\"");
+  json += uid_hex(ESP.getEfuseMac());
   json += F("\",\"cu\":\"");
   json += mqtt_config_url();
   json += F("\"}");
@@ -787,6 +863,10 @@ static String mqtt_module_device_json(const ModuleRecord& m) {
   json += module_type_name_for(m);
   json += F("\",\"sw\":\"");
   json += mqtt_fw_string(m);
+  if (m.uid) {
+    json += F("\",\"sn\":\"");
+    json += uid_hex(m.uid);
+  }
   json += F("\",\"via_device\":\"");
   json += master_device_id;
   json += F("\",\"cu\":\"");
@@ -829,6 +909,11 @@ static void mqtt_publish_discovery_entity(const char* component, const char* suf
                                           const char* state_class = nullptr,
                                           bool binary = false) {
   if (!mqtt_ha_discovery || !mqtt_client.connected()) return;
+  if (!developer_mode_enabled && (!strcmp(suffix, "heap") || !strcmp(suffix, "heap_min") || !strcmp(suffix, "loop_max"))) {
+    if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), "", true))
+      mqtt_discovery_publish_failed = true;
+    return;
+  }
   String object = master_device_id;
   object += "_";
   object += suffix;
@@ -844,11 +929,23 @@ static void mqtt_publish_discovery_entity(const char* component, const char* suf
   payload += object;
   payload += F("\",\"stat_t\":\"");
   payload += mqtt_topic_path("state");
-  payload += F("\",\"avty_t\":\"");
-  payload += mqtt_topic_path("status");
-  payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",\"val_tpl\":\"");
+  if (!strncmp(suffix, "feedback_", 9) || !strcmp(suffix, "output_fault")) {
+    payload += F("\",\"availability_mode\":\"all\",\"availability\":[{\"topic\":\"");
+    payload += mqtt_topic_path("status");
+    payload += F("\"},{\"topic\":\"");
+    payload += mqtt_topic_path("state");
+    payload += F("\",\"value_template\":\"{{ 'online' if value_json.get('feedback_valid', false) else 'offline' }}\"}],\"val_tpl\":\"");
+  } else {
+    payload += F("\",\"avty_t\":\"");
+    payload += mqtt_topic_path("status");
+    payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",\"val_tpl\":\"");
+  }
   payload += value_template;
   payload += F("\"");
+  if (!strcmp(suffix, "alarm_count") || !strcmp(suffix, "alarm_text")) {
+    payload += F(",\"json_attr_t\":\""); payload += mqtt_topic_path("state");
+    payload += F("\",\"json_attr_tpl\":\"{{ {'alarms': value_json.get('alarms', []), 'alarm_count': value_json.get('alarm_count', 0) | int} | tojson }}\"");
+  }
   if (binary) {
     payload += F(",\"pl_on\":\"ON\",\"pl_off\":\"OFF\"");
   }
@@ -867,10 +964,17 @@ static void mqtt_publish_discovery_entity(const char* component, const char* suf
     payload += state_class;
     payload += F("\"");
   }
+  if (!strcmp(suffix, "feedback_power")) payload += F(",\"sug_dsp_prc\":0");
+  if (!strcmp(suffix, "serial_number") || !strcmp(suffix, "firmware") || !strcmp(suffix, "cpu") ||
+      !strcmp(suffix, "heap") || !strcmp(suffix, "wifi_rssi") || !strcmp(suffix, "ip") ||
+      !strcmp(suffix, "datetime") || !strcmp(suffix, "mqtt_state") || !strcmp(suffix, "mqtt_state_code") ||
+      !strcmp(suffix, "uptime") || !strcmp(suffix, "heap_min") || !strcmp(suffix, "loop_max"))
+    payload += F(",\"ent_cat\":\"diagnostic\"");
+  payload += F(",\"icon\":\""); payload += ha_entity_icon(suffix, component, unit); payload += '"';
   payload += F(",\"dev\":");
   payload += mqtt_device_json();
   payload += F("}");
-  if (!mqtt_client.publish(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true))
+  if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true))
     mqtt_discovery_publish_failed = true;
 }
 
@@ -891,20 +995,28 @@ static void mqtt_publish_discovery_control(const char* component, const char* su
   payload += name;
   payload += F("\",\"uniq_id\":\"");
   payload += object;
-  payload += F("\",\"stat_t\":\"");
-  payload += mqtt_topic_path("state");
+  if (strcmp(component, "button")) {
+    payload += F("\",\"stat_t\":\"");
+    payload += mqtt_topic_path("state");
+  }
   payload += F("\",\"cmd_t\":\"");
   payload += mqtt_topic_path(command_leaf);
   payload += F("\",\"avty_t\":\"");
   payload += mqtt_topic_path("status");
-  payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",\"val_tpl\":\"");
-  payload += value_template;
-  payload += F("\"");
+  payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\"");
+  if (value_template && value_template[0]) {
+    payload += F(",\"val_tpl\":\"");
+    payload += value_template;
+    payload += F("\"");
+  }
   if (extra_json && extra_json[0]) payload += extra_json;
+  if (!extra_json || !strstr(extra_json, "\"icon\"")) {
+    payload += F(",\"icon\":\""); payload += ha_entity_icon(suffix, component); payload += '"';
+  }
   payload += F(",\"dev\":");
   payload += mqtt_device_json();
   payload += F("}");
-  if (!mqtt_client.publish(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true))
+  if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true))
     mqtt_discovery_publish_failed = true;
 }
 
@@ -913,6 +1025,12 @@ static String mqtt_module_topic(uint8_t addr, const char* leaf) {
   char path[40];
   snprintf(path, sizeof(path), "module/%02X/%s", addr, leaf ? leaf : "state");
   return mqtt_topic_path(path);
+}
+
+static void mqtt_publish_module_availability(uint8_t addr, bool online) {
+  if (!mqtt_client.connected() || !mqtt_availability_cache.needsPublish(addr, online)) return;
+  if (mqtt_publish_measured(mqtt_module_topic(addr, "status").c_str(), online ? "online" : "offline", true))
+    mqtt_availability_cache.published(addr, online);
 }
 
 static String mqtt_module_command_leaf(uint8_t addr, const char* action) {
@@ -1275,6 +1393,19 @@ static String mqtt_main_output_options_extra() {
   return extra;
 }
 
+static void ha_append_route_options(OfePsramTextBuffer& json) {
+  // Reuse MQTT's labels/options, including remembered offline selections.
+  json += ",\"ha_routes\":{\"main_input\":{\"value\":\"";
+  json += json_escape(mqtt_main_input_label(scheduler.mainInputSourceType(), scheduler.mainInputSourceAddr(), scheduler.mainInputSourceBit()).c_str());
+  json += '"';
+  json += mqtt_main_input_options_extra();
+  json += "},\"main_output\":{\"value\":\"";
+  json += json_escape(mqtt_main_output_label(scheduler.preferredOutputAddr()).c_str());
+  json += '"';
+  json += mqtt_main_output_options_extra();
+  json += "}}";
+}
+
 static String mqtt_route_options_signature_now() {
   String sig;
   sig.reserve(192);
@@ -1431,12 +1562,18 @@ static String mqtt_universal_select_command_value(const MqttUniversalEntityDef& 
   return selected;
 }
 
+static String mqtt_universal_entity_value_with_def(const UniversalEntityState& e, const ofe_entity::Definition& def) {
+  const String raw = mqtt_universal_entity_value(e, ofe_entity::valueEncoding(def));
+  if (ofe_entity::equal(def.type, "number") &&
+      (ofe_entity::equal(ofe_entity::access(def), "rw") || ofe_entity::equal(ofe_entity::access(def), "wo"))) return raw;
+  return entity_display_string(def, raw.c_str());
+}
+
 static String mqtt_universal_entity_value_for_def(const ModuleRecord& m, const UniversalEntityState& e) {
   ofe_entity::Definition def;
-  const bool has_def = m.universal_descriptor_valid && ofe_entity::find(m.universal_descriptor, e.id, def);
-  const String raw = mqtt_universal_entity_value(e, has_def ? ofe_entity::valueEncoding(def) : ofe_entity::Encoding::Auto);
-  if (!has_def) return raw;
-  return entity_display_string(def, raw.c_str());
+  if (m.universal_descriptor_valid && ofe_entity::find(m.universal_descriptor, e.id, def))
+    return mqtt_universal_entity_value_with_def(e, def);
+  return mqtt_universal_entity_value(e);
 }
 
 static const UniversalEntityState* mqtt_universal_state_by_id(const ModuleRecord& m, uint8_t id) {
@@ -1476,7 +1613,7 @@ static String mqtt_universal_entity_extra(const MqttUniversalEntityDef& def, con
   }
   // d/h/m is emitted as human-readable text (e.g. "6d 16h 5m"), so a raw
   // unit such as "min" would make Home Assistant display a misleading suffix.
-  const bool duration_text = mqtt_ascii_ci_eq(def.time_display, "dhm") && def.time_base.length() && !mqtt_ascii_ci_eq(def.time_base, "none");
+  const bool duration_text = strcmp(component, "number") && mqtt_ascii_ci_eq(def.time_display, "dhm") && def.time_base.length() && !mqtt_ascii_ci_eq(def.time_base, "none");
   if (def.unit.length() && !duration_text) { extra += F(",\"unit_of_meas\":\""); extra += json_escape(def.unit.c_str()); extra += '"'; }
   return extra;
 }
@@ -1529,6 +1666,21 @@ static void mqtt_publish_universal_descriptor_entities(const ModuleRecord& m, co
       if (!strcmp(component, "switch") || !strcmp(component, "binary_sensor")) tpl = "{{ 'ON' if value_json.entity_" + String(def.id) + " in ['1','ON','on','true','100'] or value_json.entity_" + String(def.id) + " == 1 else 'OFF' }}";
       else tpl = "{{ value_json.entity_" + String(def.id) + " }}";
       String extra = mqtt_universal_entity_extra(def, component);
+      if (!strcmp(component, "text")) extra += F(",\"min\":0,\"max\":188,\"mode\":\"text\"");
+      String icon = mqtt_descriptor_meta(line, "icon");
+      if (!icon.startsWith("mdi:") && mqtt_universal_role_matches(def, "main_output_enable", "main_output_power")) icon = "mdi:fan";
+      if (!icon.startsWith("mdi:")) {
+        const bool time_text = strcmp(component, "number") && mqtt_ascii_ci_eq(def.time_display, "dhm") && def.time_base.length() && !mqtt_ascii_ci_eq(def.time_base, "none");
+        icon = time_text ? "mdi:timer-outline" : ha_entity_icon(def.key.c_str(), component, def.unit.c_str());
+      }
+      if (icon.startsWith("mdi:")) { extra += ",\"icon\":\""; extra += json_escape(icon.c_str()); extra += '"'; }
+      if (!strcmp(component, "sensor") && (is_sensor || is_number) && def.unit.length() &&
+          (!def.time_display.length() || mqtt_ascii_ci_eq(def.time_display, "none"))) {
+        if (def.unit == "KiB") extra += F(",\"dev_cla\":\"data_size\"");
+        else if (def.unit == "dBm") extra += F(",\"dev_cla\":\"signal_strength\"");
+        else if (def.unit == "°C") extra += F(",\"dev_cla\":\"temperature\"");
+        extra += F(",\"stat_cla\":\"measurement\"");
+      }
       String cmd;
       if (writable && strcmp(component, "sensor") && strcmp(component, "binary_sensor")) cmd = mqtt_module_command_leaf(m.addr, suffix);
       // WO switches still need a normal Home Assistant toggle. Publish the
@@ -1613,7 +1765,8 @@ static uint8_t mqtt_universal_descriptor_entity_count(const ModuleRecord& m) {
 static String mqtt_module_discovery_signature_now() {
   String sig;
   sig.reserve(160);
-  sig += F("schema:mqtt_jbc_core_v2|");
+  sig += F("schema:mqtt_short_entity_names_v3|weller_filter_off_v1|");
+  sig += F("developer:"); sig += developer_mode_enabled ? '1' : '0';
   sig += F("lang:");
   sig += web_lang;
   sig += F("|flowmin:");
@@ -1648,6 +1801,20 @@ static String mqtt_module_discovery_signature_now() {
       sig += ':'; sig += m.jbc_usb_model;
       sig += ':'; sig += core.family;
       sig += ':'; sig += core.port_count;
+      uint32_t counter_layout = 2166136261UL;
+      for (uint8_t port = 0; port < core.port_count && port < 4; ++port) {
+        for (size_t index = 0; index < HA_JBC_COUNTER_COUNT; ++index) {
+          counter_layout ^= ha_jbc_counter_supported(m.jbc_usb_ports[port], core.family, HA_JBC_COUNTERS[index]) ? 1U : 0U;
+          counter_layout *= 16777619UL;
+        }
+      }
+      sig += ':'; sig += counter_layout;
+      for (uint8_t id = 0; id < HA_JBC_CONTROL_COUNT; ++id) {
+        HaJbcControl control;
+        if (ha_jbc_control(m, id, false, control)) {
+          sig += ':'; sig += id; sig += ':'; sig += control.minimum; sig += ':'; sig += control.maximum;
+        }
+      }
     }
     if (mqtt_module_has_fanio_filter_telemetry(m)) {
       sig += F(":filter_mode:");
@@ -1700,13 +1867,58 @@ static void mqtt_publish_discovery_custom(const char* component, const char* suf
   payload += F(",\"dev\":");
   payload += mqtt_device_json();
   payload += F("}");
-  mqtt_client.publish(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true);
+  mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, suffix).c_str(), payload.c_str(), true);
+}
+
+static String mqtt_module_availability_condition(const ModuleRecord& m, const char* suffix, bool stateful) {
+  String condition;
+  if (!strcmp(suffix, "cpu") || !strcmp(suffix, "heap") || !strcmp(suffix, "heap_min") ||
+      !strcmp(suffix, "uptime") || !strcmp(suffix, "loop_max") || m.type == MODULE_DISPLAY) {
+    if (strcmp(suffix, "online") && strcmp(suffix, "firmware") && strcmp(suffix, "serial_number") &&
+        strcmp(suffix, "transport") && strcmp(suffix, "eco") && strcmp(suffix, "reboot"))
+      condition = "value_json.get('telemetry_valid', false)";
+  }
+  if (m.type == MODULE_WELLER_ZERO_SMOG && strcmp(suffix, "weller_link") &&
+      (!strcmp(suffix, "speed") || !strcmp(suffix, "fan") || !strcmp(suffix, "light") || !strcmp(suffix, "reset_filter"))) {
+    condition = "value_json.get('weller_link', false)";
+  }
+  if (!strcmp(suffix, "fault") || !strcmp(suffix, "power") || !strcmp(suffix, "relay_fan") ||
+      (!strcmp(suffix, "rpm") && m.type != MODULE_WELLER_ZERO_SMOG))
+    condition = "value_json.get('output_status_valid', false)";
+  if (!strncmp(suffix, "entity_", 7) && stateful) {
+    condition = "value_json.get('universal_entities_valid', false) and value_json.get('";
+    condition += suffix; condition += "') is not none and value_json.get('";
+    condition += suffix; condition += "') != ''";
+  }
+  if (m.type == MODULE_JBC_USB && strncmp(suffix, "jbc_", 4) == 0 && strcmp(suffix, "jbc_link")) {
+    condition = "value_json.get('jbc_valid', false) and value_json.get('jbc_link', false)";
+    String field = suffix;
+    if (!strcmp(suffix, "jbc_station_error")) field += "_text";
+    else if (!strcmp(suffix, "jbc_door")) field = "jbc_door_open";
+    else if (!strcmp(suffix, "jbc_selected_power")) field += "_permille";
+    else if (!strcmp(suffix, "jbc_time_to_stop")) field += "_ds";
+    else if (!strcmp(suffix, "jbc_speed")) field += "_tenth_mm_s";
+    else if (!strcmp(suffix, "jbc_length")) field += "_tenth_mm";
+    if (!strncmp(suffix, "jbc_p", 5) && suffix[5] >= '1' && suffix[5] <= '4' && suffix[6] == '_') {
+      condition += " and value_json.get('";
+      condition += String(suffix).substring(0, 7); condition += "valid', false)";
+      if (field.endsWith("_tool")) field += "_name";
+      else if (field.endsWith("_error")) field += "_text";
+    }
+    condition += " and value_json.get('"; condition += field; condition += "') is not none";
+    condition += " and value_json.get('"; condition += field; condition += "') != '-'";
+    condition += " and (value_json.get('"; condition += field; condition += "') is not number or value_json.get('";
+    condition += field; condition += "') >= 0)";
+    if (!strcmp(suffix, "jbc_station_name")) condition += " and value_json.get('jbc_station_name') != ''";
+  }
+  return condition;
 }
 
 static void mqtt_publish_module_entity(const ModuleRecord& m, const char* component, const char* suffix, const String& name,
                                        const char* value_template, const char* extra_json = nullptr,
                                        const String& command_leaf = String(), bool stateful = true) {
-  char full_suffix[40];
+  if (!developer_mode_enabled && (!strcmp(suffix, "heap") || !strcmp(suffix, "heap_min") || !strcmp(suffix, "loop_max"))) return;
+  char full_suffix[96];
   snprintf(full_suffix, sizeof(full_suffix), "mod_%02X_%s", m.addr, suffix);
   String object = master_device_id;
   object += "_";
@@ -1720,7 +1932,9 @@ static void mqtt_publish_module_entity(const ModuleRecord& m, const char* compon
   else
     payload.reserveInternal(1536UL);
   payload += F("{\"name\":\"");
-  payload += json_escape(name.c_str());
+  String entity_name = name;
+  entity_name.trim();
+  payload += json_escape(entity_name.c_str());
   payload += F("\",\"uniq_id\":\"");
   payload += object;
   payload += F("\"");
@@ -1734,59 +1948,79 @@ static void mqtt_publish_module_entity(const ModuleRecord& m, const char* compon
     payload += cmd_topic;
     payload += F("\"");
   }
-  payload += F(",\"avty_t\":\"");
-  payload += mqtt_module_topic(m.addr, "status");
-  payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\"");
+  const String condition = mqtt_module_availability_condition(m, suffix, stateful);
+  if (condition.length()) {
+    payload += F(",\"availability_mode\":\"all\",\"availability\":[{\"topic\":\"");
+    payload += mqtt_module_topic(m.addr, "status");
+    payload += F("\"},{\"topic\":\"");
+    payload += mqtt_module_topic(m.addr, "state");
+    payload += F("\",\"value_template\":\"{{ 'online' if ");
+    payload += condition;
+    payload += F(" else 'offline' }}\"}]");
+  } else {
+    payload += F(",\"avty_t\":\"");
+    payload += !strcmp(suffix, "online") ? mqtt_topic_path("status") : mqtt_module_topic(m.addr, "status");
+    payload += F("\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\"");
+  }
   if (stateful && value_template && value_template[0]) {
     payload += F(",\"val_tpl\":\"");
     payload += value_template;
     payload += F("\"");
   }
   if (extra_json && extra_json[0]) payload += extra_json;
+  if ((!strcmp(suffix, "online") || !strcmp(suffix, "firmware") || !strcmp(suffix, "cpu") ||
+       !strcmp(suffix, "heap") || !strcmp(suffix, "uptime") || !strcmp(suffix, "heap_min") ||
+       !strcmp(suffix, "loop_max") || !strcmp(suffix, "transport") || !strcmp(suffix, "reboot")) && (!extra_json || !strstr(extra_json, "ent_cat")))
+    payload += F(",\"ent_cat\":\"diagnostic\"");
+  if (!extra_json || !strstr(extra_json, "\"icon\"")) {
+    const char* unit = extra_json && strstr(extra_json, "\"unit_of_meas\":\"°C\"") ? "°C" :
+      extra_json && strstr(extra_json, "\"unit_of_meas\":\"%\"") ? "%" : nullptr;
+    payload += F(",\"icon\":\""); payload += ha_entity_icon(suffix, component, unit); payload += '"';
+  }
   payload += F(",\"dev\":");
   payload += mqtt_module_device_json(m);
   payload += F("}");
 
   mqtt_manifest_note_entity(m.addr, component, suffix);
-  if (!mqtt_client.publish(mqtt_discovery_topic(component, master_device_id, full_suffix).c_str(), payload.c_str(), true))
+  if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, full_suffix).c_str(), payload.c_str(), true))
     mqtt_discovery_publish_failed = true;
 }
 
 static void mqtt_clear_module_entity(uint8_t addr, const char* component, const char* suffix) {
   char full_suffix[40];
   snprintf(full_suffix, sizeof(full_suffix), "mod_%02X_%s", addr, suffix);
-  if (!mqtt_client.publish(mqtt_discovery_topic(component, master_device_id, full_suffix).c_str(), "", true))
+  if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, full_suffix).c_str(), "", true))
     mqtt_discovery_publish_failed = true;
 }
 
 static void mqtt_clear_module_state(uint8_t addr) {
   // Remove retained module values. Availability is handled separately so stale
   // Home-Assistant entities never stay available when a module disappears.
-  mqtt_client.publish(mqtt_module_topic(addr, "state").c_str(), "", true);
+  mqtt_publish_measured(mqtt_module_topic(addr, "state").c_str(), "", true);
 }
 
 static void mqtt_publish_module_offline(uint8_t addr) {
   if (!mqtt_client.connected()) return;
-  mqtt_client.publish(mqtt_module_topic(addr, "status").c_str(), "offline", true);
+  mqtt_publish_module_availability(addr, false);
   char json[80];
   snprintf(json, sizeof(json), "{\"addr\":%u,\"online\":false}", (unsigned)addr);
-  mqtt_client.publish(mqtt_module_topic(addr, "state").c_str(), json, true);
+  mqtt_publish_measured(mqtt_module_topic(addr, "state").c_str(), json, true);
 }
 
 static void mqtt_publish_all_availability_offline() {
   if (!mqtt_client.connected()) return;
   const String root = mqtt_session_topic_root.length() ? mqtt_session_topic_root : mqtt_topic_path("");
-  mqtt_client.publish((root + "status").c_str(), "offline", true);
+  mqtt_publish_measured((root + "status").c_str(), "offline", true);
   for (uint8_t i = 0; i < registry.count(); ++i) {
     const uint8_t addr = registry.at(i).addr;
     char path[40], json[80];
     snprintf(path, sizeof(path), "module/%02X/status", addr);
-    mqtt_client.publish((root + path).c_str(), "offline", true);
+    mqtt_publish_measured((root + path).c_str(), "offline", true);
     snprintf(path, sizeof(path), "module/%02X/state", addr);
     snprintf(json, sizeof(json), "{\"addr\":%u,\"online\":false}", (unsigned)addr);
-    mqtt_client.publish((root + path).c_str(), json, true);
+    mqtt_publish_measured((root + path).c_str(), json, true);
   }
-  mqtt_client.loop();
+  mqtt_client_loop_measured();
 }
 
 static bool mqtt_registry_has_addr(uint8_t addr) {
@@ -1882,6 +2116,7 @@ static void mqtt_cleanup_tick() {
               *mqtt_manifest_previous, old_module.addr, "status")) {
           break;
         }
+        if (removed_from_registry && !base_changed) mqtt_availability_cache.forget(old_module.addr);
         ++sent;
       }
       mqtt_manifest_cleanup_stage = 3;
@@ -2049,10 +2284,34 @@ static void mqtt_clear_jbc_usb_incompatible_discovery(
   }
 }
 
+static void mqtt_publish_jbc_usb_control_discovery(const ModuleRecord& m) {
+  for (uint8_t id = 0; id < HA_JBC_CONTROL_COUNT; ++id) {
+    HaJbcControl control;
+    if (!ha_jbc_control(m, id, web_is_german(), control)) continue;
+    char suffix[20], tpl[128];
+    snprintf(suffix, sizeof(suffix), "jbc_cfg_%u", id);
+    if (!strcmp(control.component, "switch"))
+      snprintf(tpl, sizeof(tpl), "{{ 'ON' if value_json.%s > 0 else 'OFF' }}", suffix);
+    else if (!strcmp(control.component, "select"))
+      snprintf(tpl, sizeof(tpl), "{{ 'Level ' ~ ((value_json.%s | int) + 1) }}", suffix);
+    else snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", suffix);
+    String extra = F(",\"icon\":\""); extra += control.icon; extra += '"';
+    if (!strcmp(control.component, "switch")) extra += F(",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"");
+    else if (!strcmp(control.component, "select")) extra += F(",\"options\":[\"Level 1\",\"Level 2\",\"Level 3\"]");
+    else {
+      extra += F(",\"min\":"); extra += control.minimum; extra += F(",\"max\":"); extra += control.maximum;
+      extra += F(",\"step\":"); extra += control.step; extra += F(",\"mode\":\"box\",\"unit_of_meas\":\""); extra += control.unit; extra += '"';
+    }
+    mqtt_publish_module_entity(m, control.component, suffix, control.name, tpl, extra.c_str(), mqtt_module_command_leaf(m.addr, suffix));
+  }
+}
+
 static void mqtt_publish_jbc_usb_core_discovery(const ModuleRecord& m, const String& base) {
+  mqtt_publish_jbc_usb_control_discovery(m);
   const JbcUsbCoreState c = jbc_usb_core_state(m);
-  if (!c.valid) return;
   mqtt_clear_jbc_usb_incompatible_discovery(m, c.family, c.port_count);
+  mqtt_publish_module_entity(m, "sensor", "jbc_station_name", base + String(mqtt_txt(" Stationsname", " Station name")), "{{ value_json.jbc_station_name }}", ",\"ent_cat\":\"diagnostic\"");
+  mqtt_publish_module_entity(m, "sensor", "jbc_port_count", base + " Ports", "{{ value_json.jbc_port_count }}");
   mqtt_publish_module_entity(m, "binary_sensor", "jbc_link", base + String(mqtt_txt(" JBC Verbindung", " JBC Link")), "{{ 'ON' if value_json.jbc_link else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
   mqtt_publish_module_entity(m, "sensor", "jbc_model", base + String(mqtt_txt(" Stationsmodell", " Station model")), "{{ value_json.jbc_model }}");
   mqtt_publish_module_entity(m, "sensor", "jbc_family", base + String(mqtt_txt(" Gerätefamilie", " Device family")), "{{ value_json.jbc_family }}");
@@ -2088,9 +2347,29 @@ static void mqtt_publish_jbc_usb_core_discovery(const ModuleRecord& m, const Str
       } else if (c.family == JBC_USB_CORE_HA) {
         const String flow_suffix = mqtt_jbc_port_suffix(i, "flow_permille");
         mqtt_publish_module_entity(m, "sensor", flow_suffix.c_str(), mqtt_jbc_port_name(base, i, "Luftstrom", "Flow"), (String("{{ (value_json.") + flow_suffix + " | int / 10) | round(1) }}").c_str(), ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\"");
+        const String selected_flow = mqtt_jbc_port_suffix(i, "set_flow_permille");
+        mqtt_publish_module_entity(m, "sensor", selected_flow.c_str(), mqtt_jbc_port_name(base, i, "Soll-Luftstrom", "Set flow"), (String("{{ (value_json.") + selected_flow + " | int / 10) | round(1) }}").c_str(), ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\"");
         const String stop_suffix = mqtt_jbc_port_suffix(i, "time_to_stop_ds");
         mqtt_publish_module_entity(m, "sensor", stop_suffix.c_str(), mqtt_jbc_port_name(base, i, "Time to stop", "Time to stop"), (String("{% set ds = value_json.") + stop_suffix + " | int(0) %}{% set s = (ds + 9) // 10 %}{{ '%d min %02d s' | format(s // 60, s % 60) }}").c_str(), ",\"icon\":\"mdi:timer-sand\"");
       }
+    }
+  }
+
+  for (uint8_t port = 0; port < c.port_count && port < 4; ++port) {
+    for (size_t index = 0; index < HA_JBC_COUNTER_COUNT; ++index) {
+      const HaJbcCounterDef& def = HA_JBC_COUNTERS[index];
+      if (!ha_jbc_counter_supported(m.jbc_usb_ports[port], c.family, def)) continue;
+      const String suffix = mqtt_jbc_port_suffix(port, def.key);
+      String extra = ",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:";
+      extra += def.unit ? "timer-outline\"" : "counter\"";
+      String tpl = String("{{ value_json.") + suffix + " }}";
+      if (def.unit) {
+        tpl = String("{% set m = value_json.") + suffix + " | int(0) %}{% set d = m // 1440 %}{% set h = (m % 1440) // 60 %}{% set r = m % 60 %}{{ (((d ~ 'd ') if d else '') ~ ((h ~ 'h ') if h else '') ~ ((r ~ 'm') if r or not (d or h) else '')) | trim }}";
+        extra += ",\"json_attr_t\":\""; extra += mqtt_module_topic(m.addr, "state");
+        extra += "\",\"json_attr_tpl\":\"{{ {'counter_minutes': value_json."; extra += suffix; extra += " | int(0)} | tojson }}\"";
+      }
+      mqtt_publish_module_entity(m, "sensor", suffix.c_str(), mqtt_jbc_port_name(base, port, def.de, def.en),
+        tpl.c_str(), extra.c_str());
     }
   }
 
@@ -2103,6 +2382,9 @@ static void mqtt_publish_jbc_usb_core_discovery(const ModuleRecord& m, const Str
       String suffix = F("jbc_tc"); suffix += (uint8_t)(tc + 1U); suffix += F("_temp_c");
       String name = base + F(" TC"); name += (uint8_t)(tc + 1U); name += String(mqtt_txt(" Temperatur", " Temperature"));
       mqtt_publish_module_entity(m, "sensor", suffix.c_str(), name, (String("{{ value_json.") + suffix + " }}").c_str(), ",\"unit_of_meas\":\"°C\",\"dev_cla\":\"temperature\",\"stat_cla\":\"measurement\"");
+      suffix = F("jbc_tc"); suffix += (uint8_t)(tc + 1U); suffix += F("_set_temp_c");
+      name = base + F(" TC"); name += (uint8_t)(tc + 1U); name += String(mqtt_txt(" Solltemperatur", " Set temperature"));
+      mqtt_publish_module_entity(m, "sensor", suffix.c_str(), name, (String("{{ value_json.") + suffix + " }}").c_str(), ",\"unit_of_meas\":\"°C\",\"dev_cla\":\"temperature\",\"ent_cat\":\"diagnostic\"");
     }
     mqtt_publish_module_entity(m, "binary_sensor", "jbc_heater", base + String(mqtt_txt(" Heizung", " Heater")), "{{ 'ON' if value_json.jbc_heater else 'OFF' }}", ",\"icon\":\"mdi:radiator\"");
     mqtt_publish_module_entity(m, "sensor", "jbc_selected_power", base + String(mqtt_txt(" Sollleistung", " Selected power")), "{{ (value_json.jbc_selected_power_permille | int / 10) | round(1) }}", ",\"unit_of_meas\":\"%\"");
@@ -2125,23 +2407,23 @@ static void mqtt_publish_jbc_usb_core_discovery(const ModuleRecord& m, const Str
 
 static void mqtt_publish_module_discovery(const ModuleRecord& m) {
   const uint8_t addr = m.addr;
-  String hxAddr = String(addr, HEX);
-  hxAddr.toUpperCase();
-  String base = F("0x");
-  if (addr < 16) base += '0';
-  base += hxAddr;
-  base += ' ';
-  base += module_display_name(m);
-  mqtt_publish_module_entity(m, "binary_sensor", "online", base + String(mqtt_txt(" RS485", " RS485")), "{{ 'ON' if value_json.online else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
+  const String base = "";
+  mqtt_publish_module_entity(m, "binary_sensor", "online", base + String(mqtt_txt(" Verbindung", " Connection")), "{{ 'ON' if value_json.online else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
   mqtt_publish_module_entity(m, "sensor", "firmware", base + String(mqtt_txt(" Firmware", " Firmware")), "{{ value_json.fw }}");
+  mqtt_publish_module_entity(m, "sensor", "serial_number", base + String(mqtt_txt(" Seriennummer", " Serial number")), "{{ value_json.uid }}", ",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:barcode\"");
   mqtt_publish_module_entity(m, "sensor", "cpu", base + String(mqtt_txt(" CPU", " CPU")), "{{ value_json.cpu }}", ",\"unit_of_meas\":\"%\",\"stat_cla\":\"measurement\"");
-  mqtt_publish_module_entity(m, "sensor", "heap", base + String(mqtt_txt(" Heap", " Heap")), "{{ value_json.heap_kb }}", ",\"unit_of_meas\":\"KB\",\"dev_cla\":\"data_size\",\"stat_cla\":\"measurement\"");
+  mqtt_publish_module_entity(m, "sensor", "heap", base + String(mqtt_txt(" Heap", " Heap")), "{{ value_json.heap_kb }}", ",\"unit_of_meas\":\"KiB\",\"dev_cla\":\"data_size\",\"stat_cla\":\"measurement\"");
   mqtt_publish_module_entity(m, "sensor", "uptime", base + String(mqtt_txt(" Laufzeit", " Uptime")), "{{ value_json.uptime_text }}");
+  mqtt_publish_module_entity(m, "sensor", "heap_min", base + String(mqtt_txt(" Minimaler freier Heap", " Minimum free heap")), "{{ value_json.heap_min_kb }}", ",\"unit_of_meas\":\"KiB\",\"dev_cla\":\"data_size\",\"stat_cla\":\"measurement\"");
+  mqtt_publish_module_entity(m, "sensor", "loop_max", base + String(mqtt_txt(" Maximale Loop-Zeit", " Maximum loop time")), "{{ value_json.loop_ms }}", ",\"unit_of_meas\":\"ms\",\"stat_cla\":\"measurement\"");
+  mqtt_publish_module_entity(m, "sensor", "transport", base + String(mqtt_txt(" Transport", " Transport")), "{{ value_json.transport }}");
+  mqtt_publish_module_entity(m, "binary_sensor", "eco", base + String(mqtt_txt(" Energiesparen", " Power saving")), "{{ 'ON' if value_json.eco_mode else 'OFF' }}", ",\"icon\":\"mdi:sprout\"");
+  mqtt_publish_module_entity(m, "button", "reboot", base + String(mqtt_txt(" Neustart", " Restart")), nullptr, ",\"pl_prs\":\"RESTART\",\"icon\":\"mdi:restart\"", mqtt_module_command_leaf(addr, "reboot"), false);
 
   if (m.type == MODULE_JBC_BUS || (m.caps & CAP_JBC_BUS)) {
     mqtt_publish_module_entity(m, "binary_sensor", "jbc_link", base + String(mqtt_txt(" JBC Verbindung", " JBC Link")), "{{ 'ON' if value_json.jbc_link else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
     mqtt_publish_module_entity(m, "binary_sensor", "work", base + String(mqtt_txt(" Work", " Work")), "{{ 'ON' if value_json.work_active else 'OFF' }}", ",\"icon\":\"mdi:soldering-iron\"");
-    mqtt_publish_module_entity(m, "binary_sensor", "stand", base + String(mqtt_txt(" Stand", " Stand")), "{{ 'ON' if value_json.stand_active else 'OFF' }}", ",\"icon\":\"mdi:soldering-iron\"");
+    mqtt_publish_module_entity(m, "binary_sensor", "stand", base + String(mqtt_txt(" Stand", " Stand")), "{{ 'ON' if value_json.stand_active else 'OFF' }}", ",\"icon\":\"mdi:car-brake-parking\"");
     mqtt_publish_module_entity(m, "sensor", "station", base + String(mqtt_txt(" Station", " Station")), "{{ value_json.station }}");
     mqtt_publish_module_entity(m, "sensor", "device_id", base + String(mqtt_txt(" Device ID", " Device ID")), "{{ value_json.device_id }}");
   }
@@ -2157,11 +2439,16 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_module_entity(m, "binary_sensor", "in2", mqtt_alias_or(m.io_in2_alias, "IN2"), "{{ 'ON' if value_json.in2 else 'OFF' }}");
     mqtt_publish_module_entity(m, "switch", "out1", mqtt_alias_or(m.io_out1_alias, "OUT1"), "{{ 'ON' if value_json.out1 else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "io_out1"));
     mqtt_publish_module_entity(m, "switch", "out2", mqtt_alias_or(m.io_out2_alias, "OUT2"), "{{ 'ON' if value_json.out2 else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "io_out2"));
-    mqtt_publish_module_entity(m, "switch", "relay_fan", mqtt_alias_or(m.io_main_alias, "Relay/Fan"), "{{ 'ON' if value_json.enabled else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "relay_fan"));
-    mqtt_publish_module_entity(m, "number", "power", base + String(mqtt_txt(" Leistung", " Power")), "{{ value_json.power_pct }}", ",\"min\":10,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "output_power"));
-    mqtt_publish_module_entity(m, "sensor", "rpm", base + String(mqtt_txt(" RPM", " RPM")), "{{ value_json.rpm }}", ",\"unit_of_meas\":\"rpm\",\"stat_cla\":\"measurement\"");
-    mqtt_publish_module_entity(m, "sensor", "fault", base + String(mqtt_txt(" Fehler", " Fault")), "{{ value_json.fault }}");
+    if (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT))
+      mqtt_publish_module_entity(m, "switch", "relay_fan", mqtt_alias_or(m.io_main_alias, "Relay/Fan"), "{{ 'ON' if value_json.enabled else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "relay_fan"));
+    if (m.caps & CAP_PWM_OUTPUT)
+      mqtt_publish_module_entity(m, "number", "power", base + String(mqtt_txt(" Leistung", " Power")), "{{ value_json.power_pct }}", ",\"min\":10,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "output_power"));
+    if (m.caps & CAP_TACHO_INPUT)
+      mqtt_publish_module_entity(m, "sensor", "rpm", base + String(mqtt_txt(" RPM", " RPM")), "{{ value_json.rpm }}", ",\"unit_of_meas\":\"rpm\",\"stat_cla\":\"measurement\"");
   }
+
+  if ((m.type == MODULE_FAN_IO || m.type == MODULE_FAN_IO_PRO) && (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT)))
+    mqtt_publish_module_entity(m, "sensor", "fault", base + String(mqtt_txt(" Fehler", " Fault")), "{{ value_json.fault }}");
 
   if (mqtt_module_has_fanio_filter_telemetry(m)) {
     const uint8_t filter_mode = mqtt_fanio_filter_mode(m);
@@ -2175,6 +2462,7 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
       mqtt_publish_module_entity(m, "sensor", "filter_pressure", base + String(mqtt_txt(" Druck", " Pressure")), "{{ value_json.fanio_filter_pressure_raw }}", ",\"icon\":\"mdi:gauge\"");
     }
     if (runtime_enabled) {
+      mqtt_publish_module_entity(m, "button", "reset_filter", base + String(mqtt_txt(" Filterbetriebszeit zurücksetzen", " Reset filter operating time")), nullptr, ",\"pl_prs\":\"RESET\",\"icon\":\"mdi:air-filter\"", mqtt_module_command_leaf(addr, "fanio_reset_filter"), false);
       mqtt_publish_module_entity(m, "sensor", "filter_lifetime", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.fanio_filter_lifetime_text }}", ",\"icon\":\"mdi:calendar-sync\"");
       mqtt_publish_module_entity(m, "sensor", "filter_runtime", base + String(mqtt_txt(" Filterbetriebszeit", " Filter operating time")), "{{ value_json.fanio_filter_runtime_text }}", ",\"icon\":\"mdi:timer-outline\"");
       mqtt_publish_module_entity(m, "sensor", "filter_remaining", base + String(mqtt_txt(" Filter-Restlaufzeit", " Filter remaining time")), "{{ value_json.fanio_filter_remaining_text }}", ",\"icon\":\"mdi:timer-sand\"");
@@ -2182,6 +2470,16 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
   }
 
   if (m.type == MODULE_WELLER_ZERO_SMOG) {
+    mqtt_publish_module_entity(m, "button", "reset_filter", base + String(mqtt_txt(" Filterbetriebszeit zurücksetzen", " Reset filter operating time")), nullptr, ",\"pl_prs\":\"RESET\",\"icon\":\"mdi:air-filter\"", mqtt_module_command_leaf(addr, "weller_reset_filter"), false);
+    String filter_options = F(",\"options\":[");
+    filter_options += '"'; filter_options += mqtt_txt("Aus", "Off"); filter_options += '"';
+    for (uint8_t option = 0; option < 30; ++option) {
+      const uint16_t minutes = option < 23 ? (option + 1U) * 60U : (option < 29 ? (option - 22U) * 1440U : 9600U);
+      filter_options += ',';
+      filter_options += '"'; filter_options += duration_text_minutes(minutes); filter_options += '"';
+    }
+    filter_options += F("],\"icon\":\"mdi:calendar-sync\"");
+    mqtt_publish_module_entity(m, "select", "filter_interval", base + String(mqtt_txt(" Filter-Wechselintervall", " Filter replacement interval")), "{{ value_json.filter_lifetime_text }}", filter_options.c_str(), mqtt_module_command_leaf(addr, "weller_filter_interval"));
     mqtt_publish_module_entity(m, "binary_sensor", "weller_link", base + String(mqtt_txt(" Weller Verbindung", " Weller Link")), "{{ 'ON' if value_json.weller_link else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
     mqtt_publish_module_entity(m, "number", "speed", base + String(mqtt_txt(" Drehzahl", " Speed")), "{{ value_json.speed }}", ",\"min\":30,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:fan\"", mqtt_module_command_leaf(addr, "weller_speed"));
     mqtt_publish_module_entity(m, "switch", "fan", base + String(mqtt_txt(" Lüfter", " Fan")), "{{ 'ON' if value_json.fan else 'OFF' }}", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\"", mqtt_module_command_leaf(addr, "weller_fan"));
@@ -2221,15 +2519,25 @@ static void mqtt_publish_discovery() {
   mqtt_publish_discovery_entity("sensor", "jbc_error", mqtt_txt("JBC Fehler", "JBC Error"), "{{ value_json.jbc_error }}", nullptr, nullptr, "measurement");
   mqtt_publish_discovery_entity("sensor", "jbc_error_text", mqtt_txt("JBC Fehlertext", "JBC Error Text"), "{{ value_json.jbc_error_text }}");
   mqtt_publish_discovery_entity("sensor", "alarm_count", mqtt_txt("Alarm Anzahl", "Alarm Count"), "{{ value_json.alarm_count }}", nullptr, nullptr, "measurement");
-  mqtt_publish_discovery_entity("sensor", "alarm_text", mqtt_txt("Alarm Text", "Alarm Text"), "{{ value_json.alarm_text }}");
+  mqtt_publish_discovery_entity("sensor", "alarm_text", mqtt_txt("Alarm Text", "Alarm Text"), "{{ (value_json.get('alarm_text') or (value_json.get('alarms', []) | join('; ')) or 'OK')[:255] }}");
   mqtt_publish_discovery_entity("sensor", "wifi_rssi", mqtt_txt("WLAN Signal", "WiFi RSSI"), "{{ value_json.wifi_rssi }}", "dBm", "signal_strength", "measurement");
   mqtt_publish_discovery_entity("sensor", "ip", mqtt_txt("IP Adresse", "IP Address"), "{{ value_json.ip }}");
   mqtt_publish_discovery_entity("sensor", "datetime", mqtt_txt("Datum/Zeit", "Date Time"), "{{ value_json.datetime }}");
   mqtt_publish_discovery_entity("sensor", "mqtt_state", mqtt_txt("MQTT Status", "MQTT State"), "{{ value_json.mqtt_state_text }}");
   mqtt_publish_discovery_entity("sensor", "mqtt_state_code", mqtt_txt("MQTT Statuscode", "MQTT State Code"), "{{ value_json.mqtt_state }}", nullptr, nullptr, "measurement");
-  mqtt_publish_discovery_entity("sensor", "heap", mqtt_txt("Freier Heap", "Free Heap"), "{{ (value_json.heap | int / 1024) | round(0) }}", "KB", "data_size", "measurement");
+  mqtt_publish_discovery_entity("sensor", "heap", mqtt_txt("Freier Heap", "Free Heap"), "{{ (value_json.heap | int / 1024) | round(0) }}", "KiB", "data_size", "measurement");
   mqtt_publish_discovery_entity("sensor", "cpu", mqtt_txt("CPU Last", "CPU Load"), "{{ value_json.cpu }}", "%", nullptr, "measurement");
   mqtt_publish_discovery_entity("sensor", "firmware", "Firmware", "{{ value_json.fw }}");
+  mqtt_publish_discovery_entity("sensor", "serial_number", mqtt_txt("Seriennummer", "Serial number"), "{{ value_json.uid }}");
+  mqtt_publish_discovery_control("button", "restart", mqtt_txt("Neustart", "Restart"), nullptr, "cmd/restart", ",\"pl_prs\":\"RESTART\",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:restart\"");
+  mqtt_publish_discovery_entity("sensor", "uptime", mqtt_txt("Laufzeit", "Uptime"), "{{ value_json.uptime_text }}");
+  mqtt_publish_discovery_entity("sensor", "heap_min", mqtt_txt("Minimaler freier Heap", "Minimum free heap"), "{{ (value_json.heap_min | int / 1024) | round(0) }}", "KiB", "data_size", "measurement");
+  mqtt_publish_discovery_entity("sensor", "loop_max", mqtt_txt("Maximale Loop-Zeit", "Maximum loop time"), "{{ value_json.loop_max_ms }}", "ms", nullptr, "measurement");
+  mqtt_publish_discovery_entity("binary_sensor", "work", "Work", "{{ 'ON' if value_json.work_mask else 'OFF' }}", nullptr, nullptr, nullptr, true);
+  mqtt_publish_discovery_entity("binary_sensor", "eco", mqtt_txt("Energiesparen", "Power saving"), "{{ 'ON' if value_json.eco_mode else 'OFF' }}", nullptr, nullptr, nullptr, true);
+  mqtt_publish_discovery_entity("sensor", "feedback_rpm", mqtt_txt("Lüfter RPM", "Fan RPM"), "{{ value_json.feedback_rpm }}", "rpm", nullptr, "measurement");
+  mqtt_publish_discovery_entity("sensor", "feedback_power", mqtt_txt("Ausgang Rückmeldung", "Output power feedback"), "{{ value_json.feedback_power }}", "%", nullptr, "measurement");
+  mqtt_publish_discovery_entity("sensor", "output_fault", mqtt_txt("Ausgang Fehler", "Output fault"), "{{ value_json.output_fault }}");
   mqtt_publish_discovery_control("switch", "status_led_enabled", mqtt_txt("Status-LEDs", "Status LEDs"), "{{ 'ON' if value_json.status_led_enabled else 'OFF' }}", "cmd/status_led_enabled", ",\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"stat_on\":\"ON\",\"stat_off\":\"OFF\",\"icon\":\"mdi:led-on\"");
   mqtt_publish_discovery_control("number", "status_led_brightness", mqtt_txt("Status-LED Helligkeit", "Status LED brightness"), "{{ value_json.status_led_brightness }}", "cmd/status_led_brightness", ",\"min\":10,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_meas\":\"%\",\"icon\":\"mdi:brightness-6\"");
   mqtt_publish_discovery_control("number", "afterrun_stand", mqtt_txt("Nachlauf Stand", "Afterrun stand"), "{{ value_json.delay_stand }}", "cmd/delay_stand", ",\"min\":0,\"max\":3600,\"step\":1,\"mode\":\"box\",\"unit_of_meas\":\"s\",\"icon\":\"mdi:timer-outline\"");
@@ -2262,12 +2570,10 @@ static void mqtt_publish_discovery() {
   for (uint8_t oi = 0; oi < count; ++oi) {
     const ModuleRecord& m = registry.at(order[oi]);
 
-    // Keep offline remembered addresses in the manifest with zero discovery
-    // entities. Their old entities are removed, but their retained offline
-    // state/status remains until a manual module scan actually removes them.
+    // A temporary disconnect changes availability, not the entity inventory.
     mqtt_manifest_note_module(m.addr);
-    if (m.online) mqtt_publish_module_discovery(m);
-    else mqtt_publish_module_offline(m.addr);
+    mqtt_publish_module_discovery(m);
+    if (!m.online) mqtt_publish_module_offline(m.addr);
   }
 
   if (mqtt_discovery_publish_failed) {
@@ -2290,6 +2596,13 @@ static bool mqtt_payload_bool(const String& value) {
 }
 
 static void mqtt_apply_command(const String& leaf, const String& value) {
+  if (leaf == "restart") {
+    if (value == "RESTART" && !master_update_active && !scheduler.firmwareUpdateActive()) {
+      const uint32_t due = millis() + 250UL;
+      master_update_restart_due_ms.store(due ? due : 1UL);
+    }
+    return;
+  }
   const JbcModuleState& cs = scheduler.controlSettings();
   uint8_t suction = cs.suction_level;
   uint16_t select_flow = cs.select_flow ? cs.select_flow : 1000;
@@ -2408,7 +2721,7 @@ static void mqtt_configure_client() {
   }
   mqtt_client.setServer(mqtt_host, mqtt_port);
   mqtt_client.setCallback(mqtt_callback);
-  mqtt_client.setBufferSize(4096);
+  mqtt_client.setBufferSize(16384);
   // PubSubClient uses a blocking socket during connect/publish. Keep the
   // timeout short so an unreachable broker cannot stall the system for 15 s
   // per retry. The MQTT task is separate from the web task, but this also
@@ -2442,8 +2755,9 @@ static bool mqtt_connect_if_needed() {
   else ok = mqtt_client.connect(client_id, will_topic.c_str(), 0, true, "offline");
   mqtt_last_state = mqtt_client.state();
   if (ok) {
+    mqtt_availability_cache.reset();
     mqtt_session_topic_root = will_topic.substring(0, will_topic.length() - 6);
-    mqtt_client.publish(will_topic.c_str(), "online", true);
+    mqtt_publish_measured(will_topic.c_str(), "online", true);
     mqtt_client.subscribe(mqtt_topic_path("cmd/#").c_str());
     mqtt_was_connected = true;
     mqtt_last_publish_ms = 0;
@@ -2496,20 +2810,131 @@ static uint8_t mqtt_display_screensaver_value(const String& value) {
   return 0;
 }
 
+// Shared, cache-only JBC projection for MQTT and the broker-free HA API.
+static void mqtt_append_jbc_usb_state(String& json, const ModuleRecord& m, bool include_controls) {
+  for (uint8_t id = 0; id < HA_JBC_CONTROL_COUNT; ++id) {
+    HaJbcControl control;
+    if (!ha_jbc_control(m, id, web_is_german(), control)) continue;
+    json += F(",\"jbc_cfg_"); json += id; json += F("\":"); json += control.valid ? control.value : -1;
+  }
+  if (include_controls) {
+    json += F(",\"controls\":["); bool first = true;
+    for (uint8_t id = 0; id < HA_JBC_CONTROL_COUNT; ++id) {
+      HaJbcControl control;
+      if (!ha_jbc_control(m, id, web_is_german(), control)) continue;
+      if (!first) json += ','; first = false;
+      json += F("{\"id\":"); json += id; json += F(",\"name\":\""); json += json_escape(control.name);
+      json += F("\",\"platform\":\""); json += control.component; json += F("\",\"icon\":\""); json += control.icon;
+      json += F("\",\"min\":"); json += control.minimum; json += F(",\"max\":"); json += control.maximum;
+      json += F(",\"step\":"); json += control.step;
+      if (control.unit) { json += F(",\"unit\":\""); json += control.unit; json += '"'; }
+      json += '}';
+    }
+    json += ']';
+  }
+  const JbcUsbCoreState c = jbc_usb_core_state(m);
+  json += ",\"jbc_valid\":"; json += c.valid ? "true" : "false";
+  json += ",\"jbc_station_name\":\""; json += json_escape(m.jbc_usb_station_name); json += "\"";
+  json += ",\"jbc_link\":"; json += c.linked ? "true" : "false";
+  json += ",\"jbc_model\":\""; json += json_escape(m.jbc_usb_model); json += "\"";
+  json += ",\"jbc_family\":\""; json += jbc_usb_core_family_name(c.family); json += "\"";
+  json += ",\"jbc_port_count\":"; json += c.port_count;
+  json += ",\"work_active\":"; json += c.work_active ? "true" : "false";
+  json += ",\"stand_active\":"; json += c.stand_active ? "true" : "false";
+  json += ",\"jbc_station_error\":"; if (c.station_error_valid) json += c.station_error; else json += -1;
+  json += ",\"jbc_station_error_text\":\""; json += json_escape(mqtt_jbc_station_error_text(c.station_error_valid, c.station_error).c_str()); json += "\"";
+  json += ",\"jbc_connect_mode\":\""; json += c.connect_mode_valid ? (c.control_mode ? "CONTROL" : "MONITOR") : "-"; json += "\"";
+
+  for (uint8_t i = 0; i < c.port_count && i < 4; ++i) {
+    const JbcUsbCorePort& port = c.ports[i];
+    const String prefix = String(F("jbc_p")) + String((uint8_t)(i + 1U)) + '_';
+    for (size_t index = 0; index < HA_JBC_COUNTER_COUNT; ++index) {
+      const HaJbcCounterDef& def = HA_JBC_COUNTERS[index];
+      if (!ha_jbc_counter_supported(m.jbc_usb_ports[i], c.family, def)) continue;
+      json += ",\""; json += prefix; json += def.key; json += "\":";
+      json += u64_dec(ha_jbc_counter_value(m.jbc_usb_ports[i], def));
+    }
+    json += ",\""; json += prefix; json += "valid\":"; json += port.valid ? "true" : "false";
+    json += ",\""; json += prefix; json += "state\":\""; json += port.valid ? mqtt_jbc_state_text(port.state) : mqtt_txt("KEINE DATEN", "NO DATA"); json += "\"";
+    json += ",\""; json += prefix; json += "tool\":"; if (port.valid) json += port.tool; else json += -1;
+    json += ",\""; json += prefix; json += "tool_name\":\""; json += json_escape(port.valid ? mqtt_jbc_tool_name(c.family, m.jbc_usb_model, port.tool).c_str() : "-"); json += "\"";
+    json += ",\""; json += prefix; json += "error\":"; if (port.valid) json += port.error; else json += -1;
+    json += ",\""; json += prefix; json += "error_text\":\""; json += json_escape(mqtt_jbc_tool_error_text(c.family, port.valid, port.error).c_str()); json += "\"";
+    if (c.family == JBC_USB_CORE_SOLD || c.family == JBC_USB_CORE_HA) {
+      json += ",\""; json += prefix; json += "temp_c\":"; if (port.valid) json += (uint16_t)(port.actual_temp / 9U); else json += -1;
+      json += ",\""; json += prefix; json += "set_temp_c\":"; if (port.selected_temp_valid) json += (uint16_t)(port.selected_temp / 9U); else json += -1;
+      json += ",\""; json += prefix; json += "power_permille\":"; if (port.valid) json += port.power_permille; else json += -1;
+      if (c.family == JBC_USB_CORE_SOLD) {
+        json += ",\""; json += prefix; json += "future_mode\":\"";
+        json += json_escape(port.valid ? mqtt_jbc_future_mode_text(port.future_mode).c_str() : "-"); json += "\"";
+        json += ",\""; json += prefix; json += "transition_countdown_s\":";
+        if (port.valid) json += port.transition_countdown_s; else json += -1;
+      } else if (c.family == JBC_USB_CORE_HA) {
+        json += ",\""; json += prefix; json += "flow_permille\":"; if (port.valid) json += port.flow_permille; else json += -1;
+        json += ",\""; json += prefix; json += "set_flow_permille\":"; if (port.selected_flow_valid) json += port.selected_flow_permille; else json += -1;
+        json += ",\""; json += prefix; json += "time_to_stop_ds\":"; json += port.time_to_stop;
+      }
+    }
+  }
+
+  if (c.family == JBC_USB_CORE_CL) {
+    const JbcUsbCorePort& port = c.ports[0];
+    json += ",\"jbc_cleaner_mode\":\""; json += mqtt_jbc_core_cl_mode(port.mode); json += "\"";
+    json += ",\"jbc_motors\":"; json += (port.motors_valid && port.motors_on) ? "true" : "false";
+    json += ",\"jbc_door_open\":"; json += (port.door_valid && port.door_open) ? "true" : "false";
+  } else if (c.family == JBC_USB_CORE_PH) {
+    const JbcUsbCorePort& port = c.ports[0];
+    for (uint8_t tc = 0; tc < 4; ++tc) {
+      json += ",\"jbc_tc"; json += (uint8_t)(tc + 1U); json += "_temp_c\":";
+      if (c.ph_tc[tc].actual_valid) json += (uint16_t)(c.ph_tc[tc].actual_temp / 9U); else json += -1;
+      json += ",\"jbc_tc"; json += (uint8_t)(tc + 1U); json += "_set_temp_c\":";
+      if (c.ph_tc[tc].selected_valid) json += (uint16_t)(c.ph_tc[tc].selected_temp / 9U); else json += -1;
+    }
+    json += ",\"jbc_heater\":"; json += (port.heater_valid && port.heater_on) ? "true" : "false";
+    json += ",\"jbc_heater_power_permille\":"; json += port.power_permille;
+    json += ",\"jbc_selected_power_permille\":"; if (port.selected_power_valid) json += port.selected_power_permille; else json += -1;
+    json += ",\"jbc_active_zones\":"; if (port.active_zones_valid) json += port.active_zones; else json += -1;
+    json += ",\"jbc_work_mode\":"; json += port.mode;
+    json += ",\"jbc_time_to_stop_ds\":"; json += port.time_to_stop;
+  } else if (c.family == JBC_USB_CORE_FE) {
+    const JbcUsbCorePort& port = c.ports[0];
+    json += ",\"jbc_suction_level\":\""; json += mqtt_jbc_core_fe_level(port.mode); json += "\"";
+    json += ",\"jbc_continuous\":"; json += (c.continuous_valid && c.continuous_on) ? "true" : "false";
+    json += ",\"jbc_intake_work\":"; json += (port.intake_work_valid && port.intake_work_on) ? "true" : "false";
+    json += ",\"jbc_intake_stand\":"; json += (port.intake_stand_valid && port.intake_stand_on) ? "true" : "false";
+    json += ",\"jbc_time_to_stop_work_raw\":"; json += port.fe_time_to_stop_work;
+    json += ",\"jbc_time_to_stop_stand_raw\":"; json += port.fe_time_to_stop_stand;
+  } else if (c.family == JBC_USB_CORE_SF) {
+    const JbcUsbCorePort& port = c.ports[0];
+    json += ",\"jbc_feeding\":"; json += (port.sf_feeding_valid && port.sf_feeding) ? "true" : "false";
+    json += ",\"jbc_program\":"; json += port.sf_selected_program;
+    json += ",\"jbc_speed_tenth_mm_s\":"; json += port.sf_speed_tenth_mm_s;
+    json += ",\"jbc_length_tenth_mm\":"; json += port.sf_length_tenth_mm;
+    json += ",\"jbc_tool_enabled\":"; json += (port.sf_tool_enabled_valid && port.sf_tool_enabled) ? "true" : "false";
+  }
+}
+
 static void mqtt_publish_module_state(const ModuleRecord& m) {
-  if (m.online) mqtt_client.publish(mqtt_module_topic(m.addr, "status").c_str(), "online", true);
-  else mqtt_client.publish(mqtt_module_topic(m.addr, "status").c_str(), "offline", true);
+  mqtt_publish_module_availability(m.addr, m.online);
+  MqttPerfScope prepare(MqttPerfPhase::Build);
   String json;
   json.reserve(3400);
   json += "{";
   json += "\"addr\":"; json += m.addr;
+  json += ",\"uid\":\""; json += uid_hex(m.uid); json += "\"";
   json += ",\"online\":"; json += m.online ? "true" : "false";
+  json += ",\"telemetry_valid\":"; json += m.telemetry_valid ? "true" : "false";
+  json += ",\"output_status_valid\":"; json += m.output_status_valid ? "true" : "false";
+  json += ",\"universal_entities_valid\":"; json += m.universal_entities_valid ? "true" : "false";
   json += ",\"type\":"; json += m.type;
   json += ",\"type_name\":\""; json += module_type_name_for(m); json += "\"";
   json += ",\"name\":\""; json += json_escape(module_display_name(m).c_str()); json += "\"";
   json += ",\"fw\":\""; json += mqtt_fw_string(m); json += "\"";
   json += ",\"cpu\":"; json += m.module_cpu_load_pct;
   json += ",\"heap_kb\":"; json += (uint32_t)((m.module_heap_free + 512UL) / 1024UL);
+  json += ",\"heap_min_kb\":"; json += (uint32_t)((m.module_heap_min + 512UL) / 1024UL);
+  json += ",\"transport\":\""; json += master_display_wifi.active(m.addr) ? "wifi" : "rs485"; json += "\"";
+  json += ",\"eco_mode\":"; json += m.eco_mode ? "true" : "false";
   json += ",\"uptime_s\":"; json += m.module_uptime_s;
   json += ",\"uptime_text\":\""; json += duration_text_seconds(m.module_uptime_s); json += "\"";
   json += ",\"loop_ms\":"; json += m.module_loop_max_ms;
@@ -2520,95 +2945,31 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
   json += "\"";
 
   if (m.type == MODULE_JBC_BUS || (m.caps & CAP_JBC_BUS)) {
-    json += ",\"jbc_link\":"; json += (m.jbc_link_flags & FAST_FLAG_CONNECTED) ? "true" : "false";
-    json += ",\"station\":\""; json += station_type_name(m.station_addr); if (m.station_addr) { json += " 0x"; json += String(m.station_addr, HEX); } json += "\"";
+    const bool linked = m.station_addr && (m.jbc_link_flags & FAST_FLAG_CONNECTED);
+    json += ",\"jbc_link\":"; json += linked ? "true" : "false";
+    json += ",\"station\":\"";
+    if (linked) {
+      json += station_type_name(m.station_addr);
+      char station_address[6];
+      snprintf(station_address, sizeof(station_address), " 0x%02X", m.station_addr);
+      json += station_address;
+    } else json += "-";
+    json += "\"";
     json += ",\"jbc_addr\":"; json += m.jbc_addr;
-    json += ",\"work_active\":"; json += m.jbc_work_mask ? "true" : "false";
-    json += ",\"stand_active\":"; json += m.jbc_stand_mask ? "true" : "false";
+    json += ",\"work_active\":"; json += (linked && m.jbc_work_mask) ? "true" : "false";
+    json += ",\"stand_active\":"; json += (linked && !m.jbc_work_mask) ? "true" : "false";
     json += ",\"jbc_filter_life_rx\":"; json += m.jbc_filter_life;
     json += ",\"jbc_filter_sat_rx\":"; json += m.jbc_filter_sat;
     json += ",\"jbc_stat_error_rx\":"; json += m.jbc_stat_error;
     json += ",\"work_mask\":"; json += m.jbc_work_mask;
     json += ",\"stand_mask\":"; json += m.jbc_stand_mask;
-    json += ",\"jbc_filter_life_rx\":"; json += m.jbc_filter_life;
-    json += ",\"jbc_filter_sat_rx\":"; json += m.jbc_filter_sat;
-    json += ",\"jbc_stat_error_rx\":"; json += m.jbc_stat_error;
-    json += ",\"device_id\":\""; json += json_escape(bytes_ascii(m.jbc_device_id, m.jbc_device_id_len).c_str()); json += "\"";
+    String station_device_id = bytes_ascii(m.jbc_device_id, m.jbc_device_id_len);
+    station_device_id.trim();
+    json += ",\"device_id\":\""; json += json_escape(station_device_id.length() ? station_device_id.c_str() : "-"); json += "\"";
   }
 
   if (m.type == MODULE_JBC_USB || (m.caps & CAP_JBC_USB)) {
-    const JbcUsbCoreState c = jbc_usb_core_state(m);
-    json += ",\"jbc_link\":"; json += c.linked ? "true" : "false";
-    json += ",\"jbc_model\":\""; json += json_escape(m.jbc_usb_model); json += "\"";
-    json += ",\"jbc_family\":\""; json += jbc_usb_core_family_name(c.family); json += "\"";
-    json += ",\"jbc_port_count\":"; json += c.port_count;
-    json += ",\"work_active\":"; json += c.work_active ? "true" : "false";
-    json += ",\"stand_active\":"; json += c.stand_active ? "true" : "false";
-    json += ",\"jbc_station_error\":"; if (c.station_error_valid) json += c.station_error; else json += -1;
-    json += ",\"jbc_station_error_text\":\""; json += json_escape(mqtt_jbc_station_error_text(c.station_error_valid, c.station_error).c_str()); json += "\"";
-    json += ",\"jbc_connect_mode\":\""; json += c.connect_mode_valid ? (c.control_mode ? "CONTROL" : "MONITOR") : "-"; json += "\"";
-
-    for (uint8_t i = 0; i < c.port_count && i < 4; ++i) {
-      const JbcUsbCorePort& port = c.ports[i];
-      const String prefix = String(F("jbc_p")) + String((uint8_t)(i + 1U)) + '_';
-      json += ",\""; json += prefix; json += "valid\":"; json += port.valid ? "true" : "false";
-      json += ",\""; json += prefix; json += "state\":\""; json += port.valid ? mqtt_jbc_state_text(port.state) : mqtt_txt("KEINE DATEN", "NO DATA"); json += "\"";
-      json += ",\""; json += prefix; json += "tool\":"; if (port.valid) json += port.tool; else json += -1;
-      json += ",\""; json += prefix; json += "tool_name\":\""; json += json_escape(port.valid ? mqtt_jbc_tool_name(c.family, m.jbc_usb_model, port.tool).c_str() : "-"); json += "\"";
-      json += ",\""; json += prefix; json += "error\":"; if (port.valid) json += port.error; else json += -1;
-      json += ",\""; json += prefix; json += "error_text\":\""; json += json_escape(mqtt_jbc_tool_error_text(c.family, port.valid, port.error).c_str()); json += "\"";
-      if (c.family == JBC_USB_CORE_SOLD || c.family == JBC_USB_CORE_HA) {
-        json += ",\""; json += prefix; json += "temp_c\":"; if (port.valid) json += (uint16_t)(port.actual_temp / 9U); else json += -1;
-        json += ",\""; json += prefix; json += "set_temp_c\":"; if (port.selected_temp_valid) json += (uint16_t)(port.selected_temp / 9U); else json += -1;
-        json += ",\""; json += prefix; json += "power_permille\":"; if (port.valid) json += port.power_permille; else json += -1;
-        if (c.family == JBC_USB_CORE_SOLD) {
-          json += ",\""; json += prefix; json += "future_mode\":\"";
-          json += json_escape(port.valid ? mqtt_jbc_future_mode_text(port.future_mode).c_str() : "-"); json += "\"";
-          json += ",\""; json += prefix; json += "transition_countdown_s\":";
-          if (port.valid) json += port.transition_countdown_s; else json += -1;
-        } else if (c.family == JBC_USB_CORE_HA) {
-          json += ",\""; json += prefix; json += "flow_permille\":"; if (port.valid) json += port.flow_permille; else json += -1;
-          json += ",\""; json += prefix; json += "set_flow_permille\":"; if (port.selected_flow_valid) json += port.selected_flow_permille; else json += -1;
-          json += ",\""; json += prefix; json += "time_to_stop_ds\":"; json += port.time_to_stop;
-        }
-      }
-    }
-
-    if (c.family == JBC_USB_CORE_CL) {
-      const JbcUsbCorePort& port = c.ports[0];
-      json += ",\"jbc_cleaner_mode\":\""; json += mqtt_jbc_core_cl_mode(port.mode); json += "\"";
-      json += ",\"jbc_motors\":"; json += (port.motors_valid && port.motors_on) ? "true" : "false";
-      json += ",\"jbc_door_open\":"; json += (port.door_valid && port.door_open) ? "true" : "false";
-    } else if (c.family == JBC_USB_CORE_PH) {
-      const JbcUsbCorePort& port = c.ports[0];
-      for (uint8_t tc = 0; tc < 4; ++tc) {
-        json += ",\"jbc_tc"; json += (uint8_t)(tc + 1U); json += "_temp_c\":";
-        if (c.ph_tc[tc].actual_valid) json += (uint16_t)(c.ph_tc[tc].actual_temp / 9U); else json += -1;
-        json += ",\"jbc_tc"; json += (uint8_t)(tc + 1U); json += "_set_temp_c\":";
-        if (c.ph_tc[tc].selected_valid) json += (uint16_t)(c.ph_tc[tc].selected_temp / 9U); else json += -1;
-      }
-      json += ",\"jbc_heater\":"; json += (port.heater_valid && port.heater_on) ? "true" : "false";
-      json += ",\"jbc_heater_power_permille\":"; json += port.power_permille;
-      json += ",\"jbc_selected_power_permille\":"; if (port.selected_power_valid) json += port.selected_power_permille; else json += -1;
-      json += ",\"jbc_active_zones\":"; if (port.active_zones_valid) json += port.active_zones; else json += -1;
-      json += ",\"jbc_work_mode\":"; json += port.mode;
-      json += ",\"jbc_time_to_stop_ds\":"; json += port.time_to_stop;
-    } else if (c.family == JBC_USB_CORE_FE) {
-      const JbcUsbCorePort& port = c.ports[0];
-      json += ",\"jbc_suction_level\":\""; json += mqtt_jbc_core_fe_level(port.mode); json += "\"";
-      json += ",\"jbc_continuous\":"; json += (c.continuous_valid && c.continuous_on) ? "true" : "false";
-      json += ",\"jbc_intake_work\":"; json += (port.intake_work_valid && port.intake_work_on) ? "true" : "false";
-      json += ",\"jbc_intake_stand\":"; json += (port.intake_stand_valid && port.intake_stand_on) ? "true" : "false";
-      json += ",\"jbc_time_to_stop_work_raw\":"; json += port.fe_time_to_stop_work;
-      json += ",\"jbc_time_to_stop_stand_raw\":"; json += port.fe_time_to_stop_stand;
-    } else if (c.family == JBC_USB_CORE_SF) {
-      const JbcUsbCorePort& port = c.ports[0];
-      json += ",\"jbc_feeding\":"; json += (port.sf_feeding_valid && port.sf_feeding) ? "true" : "false";
-      json += ",\"jbc_program\":"; json += port.sf_selected_program;
-      json += ",\"jbc_speed_tenth_mm_s\":"; json += port.sf_speed_tenth_mm_s;
-      json += ",\"jbc_length_tenth_mm\":"; json += port.sf_length_tenth_mm;
-      json += ",\"jbc_tool_enabled\":"; json += (port.sf_tool_enabled_valid && port.sf_tool_enabled) ? "true" : "false";
-    }
+    mqtt_append_jbc_usb_state(json, m);
   }
 
   if (m.type != MODULE_WELLER_ZERO_SMOG && (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_DIGITAL_OUTPUT | CAP_INPUT_KEYS))) {
@@ -2661,9 +3022,9 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"filter_runtime_min\":"; json += filter_runtime_min;
     json += ",\"filter_runtime_text\":\""; json += duration_text_minutes(filter_runtime_min); json += "\"";
     json += ",\"filter_lifetime_min\":"; json += filter_lifetime_min;
-    json += ",\"filter_lifetime_text\":\""; json += duration_text_minutes(filter_lifetime_min); json += "\"";
+    json += ",\"filter_lifetime_text\":\""; json += filter_lifetime_min ? duration_text_minutes(filter_lifetime_min) : String(mqtt_txt("Aus", "Off")); json += "\"";
     json += ",\"filter_remaining_min\":"; json += filter_remaining_min;
-    json += ",\"filter_remaining_text\":\""; json += duration_text_minutes(filter_remaining_min); json += "\"";
+    json += ",\"filter_remaining_text\":\""; json += filter_lifetime_min ? duration_text_minutes(filter_remaining_min) : String(mqtt_txt("Aus", "Off")); json += "\"";
     // Keep the old raw state keys for user automations that consume the module
     // JSON directly. Home Assistant discovery now uses the unified names above.
     json += ",\"filter_programmed_min\":"; json += filter_lifetime_min;
@@ -2685,21 +3046,18 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
       const char* p = m.universal_descriptor;
       while (p && *p) {
         const char* next = strchr(p, '\n');
-        char line[1024];
-        size_t len = next ? (size_t)(next - p) : strlen(p);
-        if (len >= sizeof(line)) len = sizeof(line) - 1;
-        memcpy(line, p, len);
-        line[len] = 0;
-        MqttUniversalEntityDef def;
-        if (mqtt_parse_universal_descriptor_line(line, def) && !emitted_entity_id[def.id]) {
+        const size_t len = next ? (size_t)(next - p) : strlen(p);
+        // Borrow descriptor spans for this publish; discovery still owns its metadata.
+        ofe_entity::Definition def;
+        if (ofe_entity::parse({p, len}, def) && !emitted_entity_id[def.id]) {
           emitted_entity_id[def.id] = true;
-          const bool readable = mqtt_universal_entity_readable(def);
-          const bool wo_switch_shadow = mqtt_ascii_ci_eq(def.type, "switch") &&
-                                        mqtt_universal_entity_writable(def) && !readable;
+          const ofe_entity::Text access = ofe_entity::access(def);
+          const bool readable = ofe_entity::equal(access, "ro") || ofe_entity::equal(access, "rw");
+          const bool wo_switch_shadow = ofe_entity::equal(def.type, "switch") && ofe_entity::equal(access, "wo");
           if (readable || wo_switch_shadow) {
             json += ",\"entity_"; json += def.id; json += "\":\"";
             const UniversalEntityState* e = mqtt_universal_state_by_id(m, def.id);
-            if (e) json += json_escape(mqtt_universal_entity_value_for_def(m, *e).c_str());
+            if (e) json += json_escape(mqtt_universal_entity_value_with_def(*e, def).c_str());
             else if (wo_switch_shadow) json += '0';
             json += "\"";
           }
@@ -2717,7 +3075,8 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     }
   }
   json += "}";
-  mqtt_client.publish(mqtt_module_topic(m.addr, "state").c_str(), json.c_str(), true);
+  prepare.finish();
+  mqtt_publish_measured(mqtt_module_topic(m.addr, "state").c_str(), json.c_str(), true);
 }
 
 static bool mqtt_apply_module_command(const String& leaf, const String& value) {
@@ -2729,8 +3088,29 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
   String action = leaf.substring(slash + 1);
   ModuleRecord* m = registry.find(addr);
   if (!m || !m->online) return true;
-
-  if (action.startsWith("entity_")) {
+  if (scheduler.moduleFirmwareUpdateActive() && scheduler.moduleFirmwareUpdateTarget() == addr) return true;
+  if (action.startsWith("jbc_cfg_")) {
+    char* end = nullptr;
+    const unsigned long id = strtoul(action.c_str() + 8, &end, 10);
+    if (end == action.c_str() + 8 || *end || id >= HA_JBC_CONTROL_COUNT) return true;
+    float parsed = 0;
+    HaJbcControl control;
+    if (!ha_jbc_control(*m, id, false, control)) return true;
+    if (!strcmp(control.component, "switch")) {
+      if (value != "ON" && value != "OFF") return true; parsed = value == "ON" ? 1 : 0;
+    } else if (!strcmp(control.component, "select")) {
+      if (value != "Level 1" && value != "Level 2" && value != "Level 3") return true;
+      parsed = value.charAt(6) - '1';
+    } else {
+      parsed = strtof(value.c_str(), &end); if (end == value.c_str() || *end) return true;
+    }
+    uint8_t payload[23], len = 0;
+    if (ha_jbc_control_payload(*m, id, parsed, payload, len)) master_cmd_set_jbc_usb_config(addr, payload, len);
+    return true;
+  }
+  if (action == "reboot") {
+    if (value == "RESTART") master_cmd_module_reboot(addr);
+  } else if (action.startsWith("entity_")) {
     uint8_t entity_id = (uint8_t)strtoul(action.substring(7).c_str(), nullptr, 10);
     if (entity_id >= 20) {
       String out = value;
@@ -2740,7 +3120,8 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
       const bool has_def = mqtt_universal_descriptor_def_for_entity(*m, entity_id, def);
       if (has_def && !mqtt_universal_entity_writable(def)) return true;
       if (has_def && mqtt_ascii_ci_eq(def.type, "select")) out = mqtt_universal_select_command_value(def, out);
-      uint8_t out_len = (uint8_t)(out.length() > 30 ? 30 : out.length());
+      if (out.length() > MAX_PAYLOAD - 2U) return true;
+      uint8_t out_len = (uint8_t)out.length();
       master_cmd_set_universal_entity(addr, entity_id, (const uint8_t*)out.c_str(), out_len);
     }
   } else if (action == "io_out1" || action == "weller_fan") {
@@ -2756,9 +3137,28 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
     master_cmd_set_module_power(addr, (uint16_t)(percent * 10U));
   } else if (action == "weller_speed") {
     uint16_t percent = (uint16_t)strtoul(value.c_str(), nullptr, 10);
-    if (percent < 10) percent = 10;
+    if (percent < 30) percent = 30;
     if (percent > 100) percent = 100;
     master_cmd_set_weller_speed(addr, (uint8_t)percent);
+  } else if (action == "weller_reset_filter") {
+    if (m->type == MODULE_WELLER_ZERO_SMOG && m->weller_uart_age_sec <= 10 && value == "RESET")
+      master_cmd_reset_weller_filter(addr);
+  } else if (action == "fanio_reset_filter") {
+    const uint8_t mode = mqtt_fanio_filter_mode(*m);
+    if (m->type == MODULE_FAN_IO_PRO && (mode == 1 || mode == 3) && value == "RESET")
+      master_cmd_calibrate_fanio_filter(addr, 7, 0, 0);
+  } else if (action == "weller_filter_interval") {
+    if (m->type == MODULE_WELLER_ZERO_SMOG) {
+      if (value == "Off" || value == "Aus") {
+        master_cmd_set_weller_filter_runtime(addr, 0);
+        mqtt_last_publish_ms = 0;
+        return true;
+      }
+      for (uint8_t option = 0; option < 30; ++option) {
+        const uint16_t minutes = option < 23 ? (option + 1U) * 60U : (option < 29 ? (option - 22U) * 1440U : 9600U);
+        if (value == duration_text_minutes(minutes)) { master_cmd_set_weller_filter_runtime(addr, minutes); break; }
+      }
+    }
   } else if (action == "display_brightness") {
     uint16_t brightness = (uint16_t)strtoul(value.c_str(), nullptr, 10);
     if (brightness < 10) brightness = 10;
@@ -2777,11 +3177,24 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
   return true;
 }
 
+static String mqtt_alarm_text_json(const String& text) {
+  // HA states allow 255 characters, not bytes. Keep complete UTF-8 characters;
+  // the full, unabridged alarm list remains in the alarms attribute.
+  if (!text.length()) return String("OK");
+  unsigned int end = 0;
+  for (uint16_t characters = 0; end < text.length() && characters < 255; ++characters) {
+    ++end;
+    while (end < text.length() && ((uint8_t)text[end] & 0xC0U) == 0x80U) ++end;
+  }
+  return json_escape(text.substring(0, end).c_str());
+}
+
 static void mqtt_publish_state(bool force = false) {
   if (!mqtt_connect_if_needed()) return;
   const uint32_t now = millis();
   if (!force && (uint32_t)(now - mqtt_last_publish_ms) < MASTER_MQTT_STATE_PUBLISH_MS) return;
   mqtt_last_publish_ms = now;
+  MqttPerfScope prepare(MqttPerfPhase::Build);
   heap_diag_set_context(HEAP_DIAG_CTX_MQTT, "publish_state");
   heap_diag_sample("mqtt_state_begin");
 
@@ -2791,7 +3204,6 @@ static void mqtt_publish_state(bool force = false) {
   const uint16_t custom_power = customPowerFromSelectFlow(cs.select_flow ? cs.select_flow : js.select_flow);
   const MasterAlarmJson alarms = build_master_alarm_json();
   const uint8_t alarm_count = alarms.count;
-  String alarm_text_json = json_escape(alarms.text.c_str());
   String dt;
   time_t now_ts = time(nullptr);
   struct tm now_tm;
@@ -2804,10 +3216,12 @@ static void mqtt_publish_state(bool force = false) {
   String main_input_name = json_escape(mqtt_main_input_label(scheduler.mainInputSourceType(), scheduler.mainInputSourceAddr(), scheduler.mainInputSourceBit()).c_str());
   String main_output_name = json_escape(mqtt_main_output_label(scheduler.preferredOutputAddr()).c_str());
   String master_ip = current_master_ip_string();
+  const String master_uid = uid_hex(ESP.getEfuseMac());
   char payload[2600];
-  snprintf(payload, sizeof(payload),
-           "{\"fw\":\"%s\",\"output\":%s,\"power\":%u,\"work_mask\":%u,\"afterrun_s\":%lu,\"afterrun_text\":\"%s\",\"modules\":%u,\"jbc_error\":%u,\"jbc_error_text\":\"%s\",\"alarm_count\":%u,\"alarm_text\":\"%s\",\"alarms\":%s,\"wifi_rssi\":%d,\"ip\":\"%s\",\"datetime\":\"%s\",\"mqtt_state\":%d,\"mqtt_state_text\":\"%s\",\"heap\":%lu,\"cpu\":%u,\"status_led_enabled\":%s,\"status_led_brightness\":%u,\"main_input_name\":\"%s\",\"main_output_name\":\"%s\","
+  const int written = snprintf(payload, sizeof(payload),
+           "{\"uid\":\"%s\",\"fw\":\"%s\",\"output\":%s,\"power\":%u,\"work_mask\":%u,\"afterrun_s\":%lu,\"afterrun_text\":\"%s\",\"modules\":%u,\"jbc_error\":%u,\"jbc_error_text\":\"%s\",\"alarm_count\":%u,\"alarms\":%s,\"wifi_rssi\":%d,\"ip\":\"%s\",\"datetime\":\"%s\",\"mqtt_state\":%d,\"mqtt_state_text\":\"%s\",\"heap\":%lu,\"cpu\":%u,\"status_led_enabled\":%s,\"status_led_brightness\":%u,\"main_input_name\":\"%s\",\"main_output_name\":\"%s\","
            "\"suction_level\":%u,\"suction_name\":\"%s\",\"custom_power\":%u,\"select_flow\":%u,\"afterrun_power_enabled\":%s,\"afterrun_power\":%u,\"delay_work\":%u,\"delay_stand\":%u,\"stand_intakes\":%s,\"continuous_set\":%s}",
+           master_uid.c_str(),
            MASTER_FW_VERSION,
            extractor.outputEnabled() ? "true" : "false",
            (unsigned)extractor.outputPower(),
@@ -2818,7 +3232,6 @@ static void mqtt_publish_state(bool force = false) {
            (unsigned)system_jbc_error,
            jbc_error_text(system_jbc_error).c_str(),
            (unsigned)alarm_count,
-           alarm_text_json.c_str(),
            alarms.strings_json.c_str(),
            WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
            master_ip.c_str(),
@@ -2841,7 +3254,25 @@ static void mqtt_publish_state(bool force = false) {
            (unsigned)cs.delay_stand_sec,
            cs.stand_intakes ? "true" : "false",
            cs.continuous ? "true" : "false");
-  mqtt_client.publish(mqtt_topic_path("state").c_str(), payload, true);
+  if (written > 0 && (size_t)written < sizeof(payload)) {
+    const OutputModuleState& feedback = extractor.outputState();
+    const ModuleRecord* output = registry.find(scheduler.outputAddr());
+    String state(payload);
+    state.remove(state.length() - 1);
+    state += ",\"alarm_text\":\""; state += mqtt_alarm_text_json(alarms.text); state += "\"";
+    state += ",\"uptime_text\":\""; state += duration_text_seconds(now / 1000UL); state += "\"";
+    state += ",\"heap_min\":"; state += ESP.getMinFreeHeap();
+    state += ",\"loop_max_ms\":"; state += loop_max_ms;
+    state += ",\"eco_mode\":"; state += scheduler.powerSaveActive() ? "true" : "false";
+    state += ",\"feedback_valid\":"; state += feedback.valid ? "true" : "false";
+    state += ",\"feedback_rpm\":"; state += feedback.rpm;
+    state += ",\"feedback_power\":"; state += (feedback.power + 5U) / 10U;
+    state += ",\"output_fault\":\"";
+    state += json_escape(output_fault_text_for_module(feedback.fault_mask, output ? output->type : MODULE_UNKNOWN).c_str());
+    state += "\"}";
+    prepare.finish();
+    mqtt_publish_measured(mqtt_topic_path("state").c_str(), state.c_str(), true);
+  }
 
   // Start a non-blocking module publish cycle. The MQTT task sends one module
   // every MASTER_MQTT_MODULE_PUBLISH_GAP_MS instead of serializing/publishing
@@ -2877,6 +3308,7 @@ static void mqtt_publish_module_cycle_tick() {
 }
 
 static void mqtt_loop() {
+  mqtt_perf_tick();
   if (mqtt_reconfigure_requested) {
     if (mqtt_client.connected()) {
       mqtt_publish_all_availability_offline();
@@ -2898,7 +3330,7 @@ static void mqtt_loop() {
     return;
   }
   if (mqtt_client.connected()) {
-    mqtt_client.loop();
+    mqtt_client_loop_measured();
     mqtt_cleanup_tick();
     if (mqtt_ha_discovery) {
       const uint32_t now = millis();

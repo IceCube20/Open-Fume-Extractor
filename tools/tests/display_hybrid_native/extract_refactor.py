@@ -29,6 +29,9 @@ Path(sys.argv[1]).with_name('generated_security.inc.h').write_text(
 source = (root / 'OpenFumeExtractorMaster/src/MasterMqtt.inc.h').read_text(encoding='utf-8')
 Path(sys.argv[1]).with_name('generated_mqtt_offline.inc.h').write_text(
     function('mqtt_publish_all_availability_offline'), encoding='utf-8')
+Path(sys.argv[1]).with_name('generated_mqtt_availability.inc.h').write_text(
+    function('mqtt_publish_module_availability') + '\n' + function('mqtt_publish_module_offline') + '\n' +
+    function('mqtt_publish_all_availability_offline'), encoding='utf-8')
 for module in ('FanIoModule', 'FanIoProModule'):
     source = (root / f'Module/{module}/{module}.ino').read_text(encoding='utf-8')
     Path(sys.argv[1]).with_name(f'generated_{module}_power.inc.h').write_text(

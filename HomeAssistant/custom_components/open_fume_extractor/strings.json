@@ -1,0 +1,9 @@
+{
+  "title": "Open Fume Extractor",
+  "config": {
+    "step": {"user": {"title": "Connect to your master", "description": "Enter the master's IP address or hostname and web login. MQTT is not required. Complete the master's initial setup first.", "data": {"host": "Master host", "username": "Web username", "password": "Web password"}}},
+    "error": {"invalid_auth": "The web login was rejected.", "cannot_connect": "Cannot connect. Check the host and complete initial master setup.", "invalid_host": "Enter only a host or HTTP(S) origin, without a path or credentials.", "unsupported_firmware": "Update the master to firmware 2.0.31 or later."},
+    "abort": {"already_configured": "This master is already configured.", "wrong_master": "This address belongs to a different master.", "reauth_successful": "Web login updated.", "reconfigure_successful": "Master connection updated."}
+  },
+  "options": {"step": {"init": {"title": "Status updates", "data": {"scan_interval": "Update interval (seconds, 1-60)"}}}}
+}

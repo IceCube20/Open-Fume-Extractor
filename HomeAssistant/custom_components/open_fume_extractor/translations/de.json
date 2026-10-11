@@ -1,0 +1,9 @@
+{
+  "title": "Open Fume Extractor",
+  "config": {
+    "step": {"user": {"title": "Mit dem Master verbinden", "description": "IP-Adresse oder Hostname und Web-Zugangsdaten des Masters eingeben. MQTT ist nicht erforderlich. Die Ersteinrichtung des Masters muss abgeschlossen sein.", "data": {"host": "Master-Adresse", "username": "Web-Benutzername", "password": "Web-Passwort"}}},
+    "error": {"invalid_auth": "Die Web-Zugangsdaten wurden abgelehnt.", "cannot_connect": "Verbindung fehlgeschlagen. Adresse und Ersteinrichtung des Masters prüfen.", "invalid_host": "Nur Hostname oder HTTP(S)-Adresse ohne Pfad oder Zugangsdaten eingeben.", "unsupported_firmware": "Den Master auf Firmware 2.0.31 oder neuer aktualisieren."},
+    "abort": {"already_configured": "Dieser Master ist bereits eingerichtet.", "wrong_master": "An dieser Adresse befindet sich ein anderer Master.", "reauth_successful": "Web-Zugangsdaten aktualisiert.", "reconfigure_successful": "Master-Verbindung aktualisiert."}
+  },
+  "options": {"step": {"init": {"title": "Statusaktualisierung", "data": {"scan_interval": "Aktualisierungsintervall (Sekunden, 1–60)"}}}}
+}

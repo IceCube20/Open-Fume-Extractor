@@ -2,6 +2,8 @@
 
 // WiFi startup, captive portal mode and HTTP route registration.
 // Included from the master sketch so route lambdas can call sketch-local handlers.
+#include "WebHomeAssistant.inc.h"
+
 static void wifi_start_setup_ap() {
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
@@ -92,6 +94,8 @@ static void web_begin() {
   web.on("/logo.png", HTTP_GET, web_handle_logo);
   web.on("/", HTTP_GET, [](){ if (captive_active) web_redirect_config(); else if (web_require_auth(true)) web_handle_root(); });
   web.on("/state", HTTP_GET, [](){ if (web_require_auth()) web_handle_state(); });
+  web.on("/api/ha/session", HTTP_GET, [](){ if (web_require_auth()) web_handle_ha_session(); });
+  web.on("/api/ha/control", HTTP_POST, [](){ if (web_require_auth()) web_handle_ha_control(); });
   web.on("/descriptors", HTTP_GET, [](){ if (web_require_auth()) web_handle_descriptors(); });
   web.on("/led_state", HTTP_GET, [](){ if (web_require_auth()) web_handle_led_state(); });
   web.on("/developer/mode", HTTP_POST, [](){ if (web_require_auth()) web_handle_developer_mode(); });
@@ -150,6 +154,8 @@ static void web_begin() {
       "Legacy module OTA endpoint disabled; use the firmware update page/chunked API");
   });
   web.on("/config", HTTP_GET, [](){ if (web_require_config_auth()) web_handle_config(); });
+  web.on("/config/wifi-scan", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_wifi_scan(); });
+  web.on("/config/wifi-scan", HTTP_GET, [](){ if (web_require_config_auth()) web_handle_wifi_scan(); });
   web.on("/config/export", HTTP_GET, [](){ if (web_require_auth()) web_handle_config_export(); });
   web.on("/config/import", HTTP_POST, [](){ if (web_require_auth()) web_handle_config_import(); });
   web.on("/config/leds", HTTP_POST, [](){ if (web_require_config_auth()) web_handle_config_leds(); });
