@@ -28,9 +28,19 @@ poll/match pattern. For Modbus confirm slave ID, register address and function.
 ## Home Assistant shows stale entities
 
 - ensure MQTT is connected and the master availability topic is online
+- enable **Home Assistant Discovery** under **Network/System > MQTT** and save;
+  live values can keep updating while Discovery is disabled, but new devices and
+  entity removals will not be published
 - allow Discovery reconciliation to complete after changing module/profile type
 - verify that the module returned its new descriptor
 - restart Home Assistant only after the master has published entity removals
+
+With Master 2.0.53 and native integration 0.1.0rc21, two confirmed reports of no
+station connected to an online JBC USB module remove its station-specific
+entities. The module itself and its connection/Work/Stand indicators remain.
+An offline OFE module is deliberately preserved. For the native integration,
+replace the component folder and restart HA when updating; removing the
+integration is not necessary.
 
 ## Display remains on Booting
 

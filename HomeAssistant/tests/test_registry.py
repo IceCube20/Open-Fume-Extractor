@@ -21,6 +21,7 @@ er.async_get = Mock()
 er.async_entries_for_config_entry = lambda registry, entry_id: [
     item for item in registry.items.values() if item.config_entry_id == entry_id]
 dr.async_get = Mock()
+dr.async_entries_for_config_entry = Mock(return_value=[])
 for name, module in (("entity_registry", er), ("device_registry", dr)):
     sys.modules[module.__name__] = module
     setattr(sys.modules["homeassistant.helpers"], name, module)
@@ -44,6 +45,35 @@ class RegistryTests(unittest.TestCase):
         self.backend = Mock(items=self.entries)
         self.backend.async_remove.side_effect = self.entries.pop
         er.async_get.return_value = self.backend
+
+    def test_collects_devices_and_orphan_entities_owned_by_this_master(self):
+        master, module, orphan = "0000000012345678", "1100000012345678", "2000000012345678"
+        devices = [types.SimpleNamespace(identifiers={(const.DOMAIN, f"{master}:{module}")}),
+                   types.SimpleNamespace(identifiers={(const.DOMAIN, f"{master}:{master}")}),
+                   types.SimpleNamespace(identifiers={("mqtt", f"{master}:{orphan}")})]
+        self.add("old", uid=orphan).unique_id = f"{master}:{orphan}:old:sensor"
+        with unittest.mock.patch.object(dr, "async_entries_for_config_entry", return_value=devices):
+            self.assertEqual(registry.registered_module_uids(None, "entry", master), {module, orphan})
+
+    def test_removed_devices_never_delete_master_mqtt_other_entries_or_shared_devices(self):
+        master, module = "0000000012345678", "1100000012345678"
+        def device(ident, **kw):
+            return types.SimpleNamespace(id=ident, identifiers={(const.DOMAIN, f"{master}:{module}")}, **kw)
+        own = device("own", config_entry_id="entry", is_composite_device=False)
+        other = device("other", config_entry_id="other")
+        composite = device("composite", config_entry_id="entry", is_composite_device=True)
+        shared = device("shared", config_entries={"entry", "mqtt"})
+        parent = device("master", config_entry_id="entry")
+        parent.identifiers = {(const.DOMAIN, f"{master}:{master}")}
+        foreign = device("foreign-master", config_entry_id="entry")
+        foreign.identifiers = {(const.DOMAIN, f"OTHER:{module}")}
+        mqtt = device("mqtt", config_entry_id="entry")
+        mqtt.identifiers = {("mqtt", f"{master}:{module}")}
+        backend = Mock(); dr.async_get.return_value = backend
+        with unittest.mock.patch.object(dr, "async_entries_for_config_entry", return_value=[
+                own, other, composite, shared, parent, foreign, mqtt]):
+            registry.reconcile_removed_devices(None, "entry", master, {master, module})
+        backend.async_remove_device.assert_called_once_with("own")
 
     def add(self, key, platform="sensor", uid="MODULE", owner=const.DOMAIN, entry="entry", **updates):
         item = types.SimpleNamespace(entity_id=platform + "." + key, platform=owner, options={},

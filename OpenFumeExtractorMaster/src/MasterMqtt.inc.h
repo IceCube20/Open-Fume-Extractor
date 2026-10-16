@@ -1798,6 +1798,7 @@ static String mqtt_module_discovery_signature_now() {
     }
     if (m.type == MODULE_JBC_USB || (m.caps & CAP_JBC_USB)) {
       const JbcUsbCoreState core = jbc_usb_core_state(m);
+      sig += ':'; sig += core.linked ? '1' : '0';
       sig += ':'; sig += m.jbc_usb_model;
       sig += ':'; sig += core.family;
       sig += ':'; sig += core.port_count;
@@ -1987,10 +1988,173 @@ static void mqtt_publish_module_entity(const ModuleRecord& m, const char* compon
 }
 
 static void mqtt_clear_module_entity(uint8_t addr, const char* component, const char* suffix) {
-  char full_suffix[40];
+  char full_suffix[96];
   snprintf(full_suffix, sizeof(full_suffix), "mod_%02X_%s", addr, suffix);
   if (!mqtt_publish_measured(mqtt_discovery_topic(component, master_device_id, full_suffix).c_str(), "", true))
     mqtt_discovery_publish_failed = true;
+}
+
+struct MqttJbcCleanupState {
+  uint64_t uid = 0;
+  uint32_t signature = 0;
+  uint16_t cursor = 0;
+  uint8_t addr = 0;
+  bool observed = false;
+  bool active = false;
+  bool complete = false;
+};
+
+static MqttJbcCleanupState mqtt_jbc_cleanup[ModuleRegistry::MAX_MODULES];
+static const uint16_t MQTT_JBC_STATIC_CANDIDATES = 256U * 2U;
+static const uint16_t MQTT_JBC_COUNTER_CANDIDATES = 4U * HA_JBC_COUNTER_COUNT;
+static const uint16_t MQTT_JBC_CLEANUP_CANDIDATES =
+  MQTT_JBC_STATIC_CANDIDATES + MQTT_JBC_COUNTER_CANDIDATES + 3U * HA_JBC_CONTROL_COUNT;
+
+static bool mqtt_jbc_cleanup_candidate(uint16_t cursor, MqttManifestEntity& entity) {
+  entity = MqttManifestEntity();
+  if (cursor < MQTT_JBC_STATIC_CANDIDATES) {
+    entity.key = (uint8_t)(cursor / 2U);
+    const char* suffix = mqtt_manifest_static_suffix(entity.key);
+    if (!suffix || strncmp(suffix, "jbc_", 4)) return false;
+    entity.component = cursor % 2U ? MQTT_MAN_COMP_BINARY_SENSOR : MQTT_MAN_COMP_SENSOR;
+  } else if ((cursor -= MQTT_JBC_STATIC_CANDIDATES) < MQTT_JBC_COUNTER_CANDIDATES) {
+    entity.component = MQTT_MAN_COMP_SENSOR;
+    entity.kind = (uint8_t)(MQTT_MAN_ENTITY_COUNTER_P1 + cursor / HA_JBC_COUNTER_COUNT);
+    entity.key = (uint8_t)(cursor % HA_JBC_COUNTER_COUNT);
+  } else {
+    cursor -= MQTT_JBC_COUNTER_CANDIDATES;
+    if (cursor >= 3U * HA_JBC_CONTROL_COUNT) return false;
+    const uint8_t components[] = {MQTT_MAN_COMP_NUMBER, MQTT_MAN_COMP_SWITCH, MQTT_MAN_COMP_SELECT};
+    entity.component = components[cursor % 3U];
+    entity.kind = MQTT_MAN_ENTITY_JBC_CONTROL;
+    entity.key = (uint8_t)(cursor / 3U);
+  }
+  return true;
+}
+
+static bool mqtt_jbc_cleanup_ready(const ModuleRecord& m) {
+  const JbcUsbCoreState core = jbc_usb_core_state(m);
+  return m.online && core.valid && (!core.linked ||
+    (core.family != JBC_USB_CORE_UNKNOWN && core.port_count > 0));
+}
+
+static uint32_t mqtt_jbc_cleanup_signature(const ModuleRecord& m, const MqttManifestModule& module) {
+  uint32_t hash = 2166136261UL;
+  const JbcUsbCoreState core = jbc_usb_core_state(m);
+  hash = (hash ^ (core.linked ? 1U : 0U)) * 16777619UL;
+  hash = (hash ^ core.family) * 16777619UL;
+  hash = (hash ^ core.port_count) * 16777619UL;
+  hash = (hash ^ m.jbc_usb_command_protocol) * 16777619UL;
+  hash = (hash ^ m.jbc_usb_model_version) * 16777619UL;
+  const char* roots[] = {mqtt_manifest_current->discovery_prefix, mqtt_manifest_current->device_id,
+    m.jbc_usb_model, m.jbc_usb_model_type};
+  for (const char* root : roots) {
+    do { hash = (hash ^ (uint8_t)*root) * 16777619UL; } while (*root++);
+  }
+  for (uint8_t i = 0; i < module.entity_count; ++i) {
+    const MqttManifestEntity& e = module.entities[i];
+    hash = (hash ^ e.component) * 16777619UL;
+    hash = (hash ^ e.kind) * 16777619UL;
+    hash = (hash ^ e.key) * 16777619UL;
+  }
+  return hash;
+}
+
+static bool mqtt_jbc_station_entity(const MqttManifestEntity& entity) {
+  if (entity.kind == MQTT_MAN_ENTITY_JBC_CONTROL ||
+      (entity.kind >= MQTT_MAN_ENTITY_COUNTER_P1 && entity.kind <= MQTT_MAN_ENTITY_COUNTER_P4)) return true;
+  const char* suffix = entity.kind == MQTT_MAN_ENTITY_STATIC ? mqtt_manifest_static_suffix(entity.key) : nullptr;
+  return suffix && !strncmp(suffix, "jbc_", 4);
+}
+
+static void mqtt_jbc_cleanup_schedule() {
+  if (!mqtt_manifest_current) return;
+  for (uint8_t i = 0; i < ModuleRegistry::MAX_MODULES; ++i) {
+    MqttJbcCleanupState& state = mqtt_jbc_cleanup[i];
+    if (i >= registry.count()) { state = MqttJbcCleanupState(); continue; }
+    const ModuleRecord& m = registry.at(i);
+    if (m.type != MODULE_JBC_USB && !(m.caps & CAP_JBC_USB)) {
+      state = MqttJbcCleanupState(); continue;
+    }
+    MqttManifestModule* desired = mqtt_manifest_find_module(*mqtt_manifest_current, m.addr);
+    if (!desired) continue;
+    bool confirmed = false;
+    if (state.uid != m.uid || state.addr != m.addr) state = MqttJbcCleanupState();
+    state.uid = m.uid; state.addr = m.addr;
+    if (mqtt_jbc_cleanup_ready(m)) {
+      const uint32_t signature = mqtt_jbc_cleanup_signature(m, *desired);
+      if (state.observed && state.signature == signature) {
+        confirmed = true;
+        if (!state.complete) state.active = true;
+      } else {
+        state.signature = signature; state.observed = true;
+        state.cursor = 0; state.active = false; state.complete = false;
+      }
+    } else {
+      state.observed = false; state.active = false;
+    }
+    // An online module can confirm station absence. Missing module/detail
+    // reports cannot; both connected and empty inventories must match twice.
+    if (!confirmed && mqtt_manifest_previous_valid) {
+      const MqttManifestModule* previous =
+        mqtt_manifest_find_module_const(*mqtt_manifest_previous, m.addr);
+      if (previous) {
+        MqttManifestModule preserved;
+        preserved.addr = m.addr;
+        // Preserve only station-specific definitions. Common diagnostics must
+        // still follow current settings, e.g. heap removal outside developer mode.
+        for (uint8_t pass = 0; pass < 2; ++pass) {
+          const MqttManifestModule& source = pass ? *previous : *desired;
+          for (uint8_t e = 0; e < source.entity_count; ++e) {
+            const MqttManifestEntity& entity = source.entities[e];
+            if (mqtt_jbc_station_entity(entity) != (pass != 0)) continue;
+            if (preserved.entity_count == MQTT_HA_MANIFEST_MAX_ENTITIES) {
+              mqtt_discovery_publish_failed = true;
+              return;
+            }
+            preserved.entities[preserved.entity_count++] = entity;
+          }
+        }
+        *desired = preserved;
+      }
+    }
+  }
+}
+
+static void mqtt_jbc_cleanup_tick() {
+  if (!mqtt_ha_discovery || !mqtt_client.connected() || !mqtt_discovery_published ||
+      !mqtt_manifest_current || mqtt_manifest_capture_active) return;
+  uint8_t checked = 0, sent = 0;
+  for (uint8_t i = 0; i < registry.count() && checked < 32 && sent < 2; ++i) {
+    MqttJbcCleanupState& state = mqtt_jbc_cleanup[i];
+    if (!state.active) continue;
+    const ModuleRecord& m = registry.at(i);
+    const MqttManifestModule* desired = mqtt_manifest_find_module_const(*mqtt_manifest_current, m.addr);
+    if (state.uid != m.uid || state.addr != m.addr || !mqtt_jbc_cleanup_ready(m) ||
+        !desired || state.signature != mqtt_jbc_cleanup_signature(m, *desired)) {
+      state.active = false; state.observed = false; continue;
+    }
+    while (state.cursor < MQTT_JBC_CLEANUP_CANDIDATES && checked < 32 && sent < 2) {
+      MqttManifestEntity entity;
+      ++checked;
+      if (mqtt_jbc_cleanup_candidate(state.cursor, entity) &&
+          !mqtt_manifest_module_contains(desired, entity)) {
+        if (!mqtt_manifest_clear_discovery_entity(*mqtt_manifest_current, m.addr, entity)) return;
+        ++sent;
+      }
+      ++state.cursor;
+    }
+    if (state.cursor == MQTT_JBC_CLEANUP_CANDIDATES) {
+      state.active = false; state.complete = true;
+    }
+  }
+}
+
+static bool mqtt_jbc_cleanup_needs_confirmation() {
+  for (const MqttJbcCleanupState& state : mqtt_jbc_cleanup) {
+    if (state.observed && !state.active && !state.complete) return true;
+  }
+  return false;
 }
 
 static void mqtt_clear_module_state(uint8_t addr) {
@@ -2039,8 +2203,10 @@ static bool mqtt_registry_has_online_addr(uint8_t addr) {
 
 
 static void mqtt_cleanup_tick() {
+  mqtt_jbc_cleanup_tick();
   if (!mqtt_ha_discovery ||
       !mqtt_client.connected() ||
+      !mqtt_discovery_published ||
       !mqtt_manifest_cleanup_active ||
       !mqtt_manifest_previous_valid ||
       !mqtt_manifest_previous ||
@@ -2212,77 +2378,6 @@ static String mqtt_jbc_port_name(const String& base, uint8_t port, const char* d
   return out;
 }
 
-static void mqtt_clear_jbc_usb_incompatible_discovery(
-    const ModuleRecord& m, uint8_t family, uint8_t port_count) {
-  // The station behind a JBC USB module can change without changing the OFE
-  // module address. HA discovery topics are retained, so remove every entity
-  // that is not part of the newly detected station class. The manifest still
-  // performs the same reconciliation persistently across reconnects/reboots.
-  for (uint8_t i = 0; i < 4; ++i) {
-    const bool active = i < port_count;
-    const bool soldering = active && family == JBC_USB_CORE_SOLD;
-    const bool hot_air = active && family == JBC_USB_CORE_HA;
-    const bool common_tool = soldering || hot_air;
-
-    if (!active) {
-      const String state = mqtt_jbc_port_suffix(i, "state");
-      const String error = mqtt_jbc_port_suffix(i, "error");
-      mqtt_clear_module_entity(m.addr, "sensor", state.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", error.c_str());
-    }
-    if (!common_tool) {
-      const String tool = mqtt_jbc_port_suffix(i, "tool");
-      const String temp = mqtt_jbc_port_suffix(i, "temp_c");
-      const String set_temp = mqtt_jbc_port_suffix(i, "set_temp_c");
-      const String power = mqtt_jbc_port_suffix(i, "power_permille");
-      mqtt_clear_module_entity(m.addr, "sensor", tool.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", temp.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", set_temp.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", power.c_str());
-    }
-    if (!soldering) {
-      const String future = mqtt_jbc_port_suffix(i, "future_mode");
-      const String countdown = mqtt_jbc_port_suffix(i, "transition_countdown_s");
-      mqtt_clear_module_entity(m.addr, "sensor", future.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", countdown.c_str());
-    }
-    if (!hot_air) {
-      const String flow = mqtt_jbc_port_suffix(i, "flow_permille");
-      const String stop = mqtt_jbc_port_suffix(i, "time_to_stop_ds");
-      mqtt_clear_module_entity(m.addr, "sensor", flow.c_str());
-      mqtt_clear_module_entity(m.addr, "sensor", stop.c_str());
-    }
-  }
-
-  if (family != JBC_USB_CORE_CL) {
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_cleaner_mode");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_motors");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_door");
-  }
-  if (family != JBC_USB_CORE_PH) {
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_tc1_temp_c");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_tc2_temp_c");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_tc3_temp_c");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_tc4_temp_c");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_heater");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_selected_power");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_active_zones");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_time_to_stop");
-  }
-  if (family != JBC_USB_CORE_FE) {
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_suction_level");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_continuous");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_intake_work");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_intake_stand");
-  }
-  if (family != JBC_USB_CORE_SF) {
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_feeding");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_program");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_speed");
-    mqtt_clear_module_entity(m.addr, "sensor", "jbc_length");
-    mqtt_clear_module_entity(m.addr, "binary_sensor", "jbc_tool_enabled");
-  }
-}
 
 static void mqtt_publish_jbc_usb_control_discovery(const ModuleRecord& m) {
   for (uint8_t id = 0; id < HA_JBC_CONTROL_COUNT; ++id) {
@@ -2307,16 +2402,16 @@ static void mqtt_publish_jbc_usb_control_discovery(const ModuleRecord& m) {
 }
 
 static void mqtt_publish_jbc_usb_core_discovery(const ModuleRecord& m, const String& base) {
-  mqtt_publish_jbc_usb_control_discovery(m);
   const JbcUsbCoreState c = jbc_usb_core_state(m);
-  mqtt_clear_jbc_usb_incompatible_discovery(m, c.family, c.port_count);
-  mqtt_publish_module_entity(m, "sensor", "jbc_station_name", base + String(mqtt_txt(" Stationsname", " Station name")), "{{ value_json.jbc_station_name }}", ",\"ent_cat\":\"diagnostic\"");
-  mqtt_publish_module_entity(m, "sensor", "jbc_port_count", base + " Ports", "{{ value_json.jbc_port_count }}");
   mqtt_publish_module_entity(m, "binary_sensor", "jbc_link", base + String(mqtt_txt(" JBC Verbindung", " JBC Link")), "{{ 'ON' if value_json.jbc_link else 'OFF' }}", ",\"dev_cla\":\"connectivity\"");
-  mqtt_publish_module_entity(m, "sensor", "jbc_model", base + String(mqtt_txt(" Stationsmodell", " Station model")), "{{ value_json.jbc_model }}");
-  mqtt_publish_module_entity(m, "sensor", "jbc_family", base + String(mqtt_txt(" Gerätefamilie", " Device family")), "{{ value_json.jbc_family }}");
   mqtt_publish_module_entity(m, "binary_sensor", "work", base + String(mqtt_txt(" Work", " Work")), "{{ 'ON' if value_json.work_active else 'OFF' }}", ",\"icon\":\"mdi:soldering-iron\"");
   mqtt_publish_module_entity(m, "binary_sensor", "stand", base + String(mqtt_txt(" Stand", " Stand")), "{{ 'ON' if value_json.stand_active else 'OFF' }}", ",\"icon\":\"mdi:car-brake-parking\"");
+  if (m.online && c.valid && !c.linked) return;
+  mqtt_publish_jbc_usb_control_discovery(m);
+  mqtt_publish_module_entity(m, "sensor", "jbc_station_name", base + String(mqtt_txt(" Stationsname", " Station name")), "{{ value_json.jbc_station_name }}", ",\"ent_cat\":\"diagnostic\"");
+  mqtt_publish_module_entity(m, "sensor", "jbc_port_count", base + " Ports", "{{ value_json.jbc_port_count }}");
+  mqtt_publish_module_entity(m, "sensor", "jbc_model", base + String(mqtt_txt(" Stationsmodell", " Station model")), "{{ value_json.jbc_model }}");
+  mqtt_publish_module_entity(m, "sensor", "jbc_family", base + String(mqtt_txt(" Gerätefamilie", " Device family")), "{{ value_json.jbc_family }}");
   mqtt_publish_module_entity(m, "sensor", "jbc_station_error", base + String(mqtt_txt(" Stationsfehler", " Station error")), "{{ value_json.jbc_station_error_text }}", ",\"icon\":\"mdi:alert-circle-outline\"");
   mqtt_publish_module_entity(m, "sensor", "jbc_connect_mode", base + String(mqtt_txt(" Verbindungsmodus", " Connection mode")), "{{ value_json.jbc_connect_mode }}");
 
@@ -2576,6 +2671,7 @@ static void mqtt_publish_discovery() {
     if (!m.online) mqtt_publish_module_offline(m.addr);
   }
 
+  if (!mqtt_discovery_publish_failed) mqtt_jbc_cleanup_schedule();
   if (mqtt_discovery_publish_failed) {
     // Do not persist/reconcile a partial desired set and do not advance the
     // discovery signature. mqtt_loop() will retry the full pass.
@@ -3337,7 +3433,8 @@ static void mqtt_loop() {
       if (!mqtt_discovery_published || (uint32_t)(now - mqtt_next_discovery_check_ms) >= MASTER_MQTT_DISCOVERY_CHECK_MS) {
         mqtt_next_discovery_check_ms = now;
         const String sig = mqtt_module_discovery_signature_now();
-        if (!mqtt_discovery_published || sig != mqtt_discovery_signature) mqtt_publish_discovery();
+        if (!mqtt_discovery_published || sig != mqtt_discovery_signature ||
+            mqtt_jbc_cleanup_needs_confirmation()) mqtt_publish_discovery();
       }
     }
     mqtt_publish_state(false);

@@ -1,8 +1,51 @@
 """Reconcile only this integration's confirmed hardware entity inventory."""
+import re
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from .const import DOMAIN, MASTER_DEVICE_NAME, MASTER_DEVICE_MODEL, module_device_name
+
+
+def _module_uid(master_uid, identity):
+    prefix = master_uid + ":"
+    if not identity.startswith(prefix):
+        return None
+    uid = identity[len(prefix):].partition(":")[0]
+    return uid if re.fullmatch(r"[0-9A-F]{16}", uid) and uid != master_uid else None
+
+
+@callback
+def registered_module_uids(hass, entry_id, master_uid):
+    """Include stale devices/entities which predate this coordinator's startup."""
+    uids = set()
+    entities = er.async_get(hass)
+    for item in er.async_entries_for_config_entry(entities, entry_id):
+        if item.platform == DOMAIN and (uid := _module_uid(master_uid, item.unique_id)):
+            uids.add(uid)
+    devices = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(devices, entry_id):
+        for domain, identity in device.identifiers:
+            if domain == DOMAIN and (uid := _module_uid(master_uid, identity)):
+                uids.add(uid)
+    return uids
+
+
+@callback
+def reconcile_removed_devices(hass, entry_id, master_uid, removed_uids):
+    """Remove only confirmed absent devices exclusively owned by this entry."""
+    if not removed_uids:
+        return
+    registry = dr.async_get(hass)
+    for device in list(dr.async_entries_for_config_entry(registry, entry_id)):
+        owner = getattr(device, "config_entry_id", None)
+        if owner is not None:
+            if owner != entry_id or getattr(device, "is_composite_device", False):
+                continue
+        elif getattr(device, "config_entries", set()) != {entry_id}:
+            continue  # Older HA devices can be shared with another integration.
+        if any(domain == DOMAIN and identity == f"{master_uid}:{uid}"
+               for domain, identity in device.identifiers for uid in removed_uids if uid != master_uid):
+            registry.async_remove_device(device.id)
 
 
 @callback

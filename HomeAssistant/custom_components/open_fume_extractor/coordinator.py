@@ -2,12 +2,13 @@
 from __future__ import annotations
 from datetime import timedelta
 import logging
+import re
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from .api import ApiError, InvalidAuth, OfeApi
 from .const import CONF_INTERVAL, DEFAULT_INTERVAL
 from .model import Spec, build_specs
-from .registry import reconcile_entities, reconcile_devices
+from .registry import reconcile_entities, reconcile_devices, registered_module_uids, reconcile_removed_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,9 +27,32 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
         self.language: str | None = None
         self.entity_revisions: dict[tuple[str, str], int] = {}
         self._inventories: dict[str, tuple] = {}
+        self._last_module_uids: set[str] | None = None
+
+    def _confirmed_removed_modules(self, state):
+        """An offline module remains listed; only confirmed absence means removal."""
+        modules = state.get("modules")
+        count = state.get("modules_count")
+        uptime = state.get("uptime_ms")
+        if (not isinstance(modules, list) or not all(isinstance(m, dict) for m in modules)
+                or state.get("master_uid", "").upper() != self.master_uid
+                or type(count) is not int or count != len(modules)
+                or type(uptime) is not int or uptime < 30000 or state.get("module_fw_update_active")):
+            self._last_module_uids = None
+            return set()
+        present = {str(module.get("uid", "")).upper() for module in modules}
+        if (len(present) != count or any(not re.fullmatch(r"[0-9A-F]{16}", uid)
+                                       or uid in ("0000000000000000", self.master_uid) for uid in present)):
+            self._last_module_uids = None
+            return set()
+        previous = self._last_module_uids
+        self._last_module_uids = present
+        if previous != present:
+            return set()
+        return registered_module_uids(self.hass, self.entry.entry_id, self.master_uid) - present
 
     def _confirmed_inventory(self, state):
-        """Require two complete snapshots; disconnects never authorize deletion."""
+        """Require two complete snapshots, including explicit station absence."""
         candidates = {self.master_uid}
         for uid, module in self.modules.items():
             typ = module.get("type")
@@ -37,7 +61,9 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
                 continue
             if typ == 9:
                 core = module.get("ha_jbc") or {}
-                if not core.get("valid") or not core.get("jbc_link") or core.get("jbc_family") in (None, "UNKNOWN"):
+                if (core.get("valid") is not True or type(core.get("jbc_link")) is not bool
+                        or (core["jbc_link"] and (core.get("jbc_family") not in ("SOLD", "HA", "CL", "PH", "FE", "SF")
+                                                  or not core.get("jbc_port_count")))):
                     continue
             if module.get("universal_descriptor_valid"):
                 if uid not in self.definitions or self.crcs.get(uid) != module.get("universal_descriptor_crc"):
@@ -51,7 +77,9 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
         confirmed = set()
         for uid in candidates:
             module = self.modules.get(uid, {})
+            core = module.get("ha_jbc") or {}
             fingerprint = (module.get("type"), module.get("caps"), module.get("universal_descriptor_crc"),
+                           core.get("jbc_link"),
                            tuple(sorted((s.id, s.platform) for s in self.specs.values() if s.uid == uid)))
             inventories[uid] = fingerprint
             if self._inventories.get(uid) == fingerprint:
@@ -91,17 +119,25 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
             self.language = state.get("ui_lang")
             self.modules = {str(m.get("uid", "")).upper(): m for m in state["modules"]}
             self.specs = build_specs(self.master_uid, state, self.definitions)
+            removed_modules = self._confirmed_removed_modules(state)
             reconcile_devices(self.hass, self.master_uid, state, self.modules)
             removed = reconcile_entities(self.hass, self.entry.entry_id, self.master_uid,
-                                         self.specs, self._confirmed_inventory(state), state.get("developer_mode"))
+                                         self.specs, self._confirmed_inventory(state) | removed_modules,
+                                         state.get("developer_mode"))
+            reconcile_removed_devices(self.hass, self.entry.entry_id, self.master_uid, removed_modules)
+            for uid in removed_modules:
+                self.definitions.pop(uid, None)
+                self.crcs.pop(uid, None)
             for key in removed:
                 self.entity_revisions[key] = self.entity_revisions.get(key, 0) + 1
             return state
         except InvalidAuth as err:
             self._inventories.clear()
+            self._last_module_uids = None
             raise ConfigEntryAuthFailed from err
         except ApiError as err:
             self._inventories.clear()
+            self._last_module_uids = None
             raise UpdateFailed(str(err)) from err
 
     async def command(self, spec: Spec, value=None):

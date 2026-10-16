@@ -81,7 +81,8 @@ def cases():
             if controls:
                 core["controls"] = [{**control, "name": control[lang]} for control in controls]
                 core.update({"jbc_cfg_" + str(control["id"]): control["value"] for control in controls})
-            wire = {**raw, "definitions": defs, "core": {**core, "port_count": core.get("jbc_port_count", 0), "family": core.get("jbc_family", "UNKNOWN")}}
+            wire = {**raw, "definitions": defs, "core": {**core, "linked": core.get("jbc_link", False),
+                    "port_count": core.get("jbc_port_count", 0), "family": core.get("jbc_family", "UNKNOWN")}}
             result.append({"id": id + "/" + lang, "state": translated, "definitions": defs,
                            "wire": {"id": id + "/" + lang, "lang": lang, "developer_mode": state.get("developer_mode", False),
                                     "master": id.startswith("Master"), "module": wire}})

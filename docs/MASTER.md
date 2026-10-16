@@ -121,15 +121,17 @@ so status pages and backups remain easy to understand.
 
 ## Network and MQTT
 
-**Network Setup** contains WiFi/IP, web login, display pairing, MQTT, status LED
+**Network/System** contains WiFi/IP, web login, display pairing, MQTT, status LED
 and backup settings.
 
 For Home Assistant:
 
 1. Enable MQTT and enter broker host, port and credentials.
 2. Enable TLS when required and paste the broker CA certificate.
-3. Set the base topic and Discovery prefix.
-4. Save the settings and wait for Discovery reconciliation.
+3. Enable **Home Assistant Discovery** and set the base topic and Discovery
+   prefix (normally `homeassistant`).
+4. Save the settings and wait for Discovery reconciliation. MQTT live values
+   alone do not enable new device discovery or obsolete entity removal.
 
 The master publishes itself and every module as a separate device. Names,
 language, dynamic profile entities and alarms follow the master. When MQTT is

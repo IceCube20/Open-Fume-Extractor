@@ -2,14 +2,14 @@
 
 Install a complete merged image with the [GitHub Pages web flasher](https://icecube20.github.io/Open-Fume-Extractor/).
 
-Release tree generated: **2026-10-11**
+Release tree generated: **2026-10-17**
 
 The normal `.bin` files are Ed25519-signed OTA packages for the master web updater.
 The `*-merged.bin` files are complete images for an initial USB flash at address `0x0`.
 
 | Target | Version | Signature target | OTA file | Merged file |
 |---|---:|---|---|---|
-| OpenFumeExtractor-Master | `2.0.51RC` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.51RC.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.51RC-merged.bin) |
+| OpenFumeExtractor-Master | `2.0.53RC` | `MASTER` | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.53RC.bin) | [download](../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.53RC-merged.bin) |
 | JBC-FAE-Bus | `1.1.67RC` | `JBC_BUS` | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.67RC.bin) | [download](../firmware/JBC-FAE-Bus/JBC-FAE-Bus-1.1.67RC-merged.bin) |
 | JBC-USB | `1.1.83RC` | `JBC_USB` | [download](../firmware/JBC-USB/JBC-USB-1.1.83RC.bin) | [download](../firmware/JBC-USB/JBC-USB-1.1.83RC-merged.bin) |
 | Fan-IO | `1.1.75RC` | `FAN_IO` | [download](../firmware/Fan-IO/Fan-IO-1.1.75RC.bin) | [download](../firmware/Fan-IO/Fan-IO-1.1.75RC-merged.bin) |
@@ -23,8 +23,8 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 
 ## SHA-256 checksums
 
-- `0be5a69f1bfa8c6d4a85d18cade5f007c3b328a0812b07dbec729fa2462b22a8`  `OpenFumeExtractor-Master-2.0.51RC.bin`
-- `5773d11586c55b08ab6e6ab7f3728324180f58c3198278141498849b97490d8a`  `OpenFumeExtractor-Master-2.0.51RC-merged.bin`
+- `dd9b7edb345c4d17c2df0aaaf747fe36990d120ce69908971fc7346b7c3afbff`  `OpenFumeExtractor-Master-2.0.53RC.bin`
+- `6c2ecef65602dbdce42274f6954c983060ce5580b9efdde83d2c949c36d5f4c6`  `OpenFumeExtractor-Master-2.0.53RC-merged.bin`
 - `f6146b08cc5e92f6b5361ce0230d94b28032415cb50b41718c16bf6c1958af59`  `JBC-FAE-Bus-1.1.67RC.bin`
 - `909fd97d2e941983766ccbe221f36d658adfea03253a42517b45eeb122e22800`  `JBC-FAE-Bus-1.1.67RC-merged.bin`
 - `a9fb95a23e4e66c1b8eadaefa7ed5db4ccc13fe4a9352b5e9d3153227b283ef5`  `JBC-USB-1.1.83RC.bin`

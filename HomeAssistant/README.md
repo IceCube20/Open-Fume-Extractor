@@ -1,17 +1,12 @@
 # Open Fume Extractor for Home Assistant
 
 An initial local, broker-free custom integration. Master firmware **2.0.31 or
-later** is required; use **2.0.51+** with **0.1.0rc19** for the aligned MQTT/native
+later** is required; use **2.0.53+** with **0.1.0rc21** for the aligned MQTT/native
 catalogue, station parameter controls and developer-only diagnostics. No module firmware changes are required.
 This version is ready for a Home Assistant test installation, not a claim of
 certification or full feature parity with the existing MQTT discovery.
 
 ## Installation
-
-Download the integration ZIP from the
-[2.0.51 RC release](https://github.com/IceCube20/Open-Fume-Extractor/releases/tag/v2.0.51RC)
-and extract it into your Home Assistant configuration directory. It contains
-the `custom_components/open_fume_extractor` folder described below.
 
 1. Update the master and complete its Wi-Fi and web-password setup.
 2. Place `custom_components/open_fume_extractor` in the Home Assistant
@@ -43,7 +38,9 @@ identities; changing an alias or bus address does not create new entities.
   cleaner motors/door/counters, preheater thermocouples/heater/power,
   extractor intakes and feeder speed/length/program. Unsupported values disappear
   from the registry after two matching, complete online snapshots confirm a
-  station-class change. Temporary disconnects do not authorize deletion.
+  station-class change. Explicit station absence, reported twice by an online
+  JBC USB module, also removes station-specific entities. An offline module or
+  failed poll does not authorize deletion.
 - JBC USB supported station settings: port temperature and hot-air flow, global
   and individual temperature-level enable switches, selected level and level
   setpoints, preheater thermocouple setpoints and extractor flow. Read-back
@@ -71,6 +68,35 @@ the supported master/module cases; it is not a full web-control parity claim.
 
 ## Updating from earlier versions
 
+RC21 removes JBC USB station-specific entities after two matching successful
+polls explicitly report no station connected. Module diagnostics, station
+connection, Work and Stand remain; supported station entities return on reconnect.
+This also ignores stale cached ports and controls in a disconnected report.
+MQTT uses the same policy with Master 2.0.53, confirming two discovery snapshots
+(normally about 15-30 seconds, followed by incremental retained-topic cleanup).
+No JBC USB module update is required.
+
+For MQTT discovery and cleanup, enable **Home Assistant Discovery** under the
+master's **Network/System > MQTT** settings and save. The normal discovery
+prefix is `homeassistant`. MQTT live state publishing continues even with
+discovery disabled, but new devices and retained entity removals do not.
+
+RC20 repairs stale devices and entities. Modules removed from the master's
+inventory are removed from this integration after two complete matching lists;
+modules still listed as offline are preserved. Cleanup also covers registry
+entries left from before a Home Assistant restart. It is paused during the
+master's first 30 seconds, firmware updates, failed polls and incomplete lists.
+The master and devices owned/shared by other integrations are not deleted.
+
+JBC station changes remove unsupported entities after two matching connected
+snapshots. The authoritative master counter projection no longer falls back to
+old raw counter caches when the current station exposes no counters; counter
+families and port counts are checked before creating entities. This prevents
+obsolete counters being created again immediately after cleanup.
+
+The native cleanup works with the existing Master 2.0.51 firmware. The separate
+MQTT retained-discovery repair requires Master 2.0.52; no module flash is needed.
+
 RC19 adds **Off** to the Weller filter replacement interval selector.
 Use **Master 2.0.51+** and **Weller module 1.1.83+**: selecting Off queues
 `f000` followed by `g000`, each with the Weller checksum, as in the original
@@ -80,7 +106,7 @@ The independently reported filter condition is not changed or hidden.
 The observed `r001`/`r000` commands have an unconfirmed purpose and are not
 automatically sent during connection.
 
-Replace the component folder with **0.1.0rc19** and restart Home Assistant. Do not
+Replace the component folder with **0.1.0rc21** and restart Home Assistant. Do not
 delete and recreate the integration: existing hardware-based entity IDs remain
 unchanged. This update fixes unavailable entities caused by a collision with HA's
 reserved `platform` attribute and removes the deprecated device-link parameter.
@@ -289,7 +315,7 @@ removed or no-longer-supported entities are excluded. Diagnostics are optional.
 
 1. After updating the integration and restarting HA, open **Settings > Dashboards
    > Resources** (enable Advanced Mode in your user profile if necessary).
-2. Add `/open_fume_extractor/ofe-cards.js?v=0.1.0rc19` as a **JavaScript module**.
+2. Add `/open_fume_extractor/ofe-cards.js?v=0.1.0rc21` as a **JavaScript module**.
 3. Reload the browser. Edit your dashboard, add a card and choose **OFE Overview**,
    **OFE Master** or **OFE Module**. The graphical editor selects master/module
    and controls whether diagnostics and summary values are shown. Update the

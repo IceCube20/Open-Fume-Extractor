@@ -54,6 +54,7 @@ for kind in ("entity_registry", "device_registry"):
     setattr(sys.modules["homeassistant.helpers"], kind, module)
 sys.modules["homeassistant.helpers.entity_registry"].async_entries_for_config_entry = Mock(return_value=[])
 sys.modules["homeassistant.helpers.device_registry"].async_get.return_value.async_get_device.return_value = None
+sys.modules["homeassistant.helpers.device_registry"].async_entries_for_config_entry = Mock(return_value=[])
 
 
 def load(name):
@@ -79,7 +80,7 @@ def state(crc=1, definitions=None, addr=32):
               "universal_entities": [{"id": 20, "len": 1, "value_bool": True}]}
     if definitions is not None:
         module["universal_entity_defs"] = definitions
-    return {"master_uid": MASTER, "master_fw": "2.0.31RC", "modules": [module]}
+    return {"master_uid": MASTER, "master_fw": "2.0.31RC", "modules": [module], "modules_count": 1, "uptime_ms": 60000}
 
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
@@ -89,12 +90,127 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         entry = types.SimpleNamespace(unique_id=MASTER, entry_id="test-entry", options={})
         self.coordinator = coordinator.OfeCoordinator(None, entry, self.api)
 
+    def test_removed_modules_require_two_complete_lists_and_preserve_offline(self):
+        empty = {**state(), "modules": [], "modules_count": 0}
+        with patch.object(coordinator, "registered_module_uids", return_value={MODULE}):
+            self.assertEqual(self.coordinator._confirmed_removed_modules(empty), set())
+            self.assertEqual(self.coordinator._confirmed_removed_modules(empty), {MODULE})
+            offline = state()
+            offline["modules"][0]["online"] = False
+            for _ in range(3):
+                self.assertEqual(self.coordinator._confirmed_removed_modules(offline), set())
+
+    def test_partial_startup_ota_and_wrong_identity_break_removal_confirmation(self):
+        empty = {**state(), "modules": [], "modules_count": 0}
+        invalid = [
+            {**empty, "modules_count": 1}, {**empty, "modules_count": None},
+            {**empty, "uptime_ms": 0}, {**empty, "module_fw_update_active": True},
+            {**empty, "master_uid": MODULE},
+            {**state(), "modules": [{"uid": ""}]},
+            {**state(), "modules": [{"uid": "0000000000000000"}]},
+            {**state(), "modules": [{"uid": MASTER}]},
+            {**state(), "modules": [{"uid": MODULE}, {"uid": MODULE}], "modules_count": 2},
+        ]
+        with patch.object(coordinator, "registered_module_uids", return_value={MODULE}):
+            for snapshot in invalid:
+                with self.subTest(snapshot=snapshot):
+                    self.coordinator._last_module_uids = None
+                    self.assertEqual(self.coordinator._confirmed_removed_modules(empty), set())
+                    self.assertEqual(self.coordinator._confirmed_removed_modules(snapshot), set())
+                    self.assertEqual(self.coordinator._confirmed_removed_modules(empty), set())
+                    self.assertEqual(self.coordinator._confirmed_removed_modules(empty), {MODULE})
+
+    async def test_old_device_and_entities_are_removed_after_restart_and_can_reappear(self):
+        registries = sys.modules[PREFIX + ".registry"]
+        spec_id = MODULE + ":entity_20_out3"
+        entity = types.SimpleNamespace(entity_id="switch.old_valve", platform="open_fume_extractor",
+                                      options={}, unique_id=f"{MASTER}:{spec_id}:switch")
+        entities = {entity.entity_id: entity}
+        device = types.SimpleNamespace(id="old-device", config_entry_id="test-entry",
+                                       is_composite_device=False,
+                                       identifiers={("open_fume_extractor", f"{MASTER}:{MODULE}")})
+        devices = {device.id: device}
+        eb, db = Mock(), Mock()
+        eb.async_remove.side_effect = entities.pop
+        db.async_remove_device.side_effect = devices.pop
+        db.async_get_device.return_value = None
+        empty = {**state(), "modules": [], "modules_count": 0}
+        self.api.state.side_effect = [empty, empty, state(), state(definitions=[DEF])]
+        self.coordinator.definitions[MODULE] = [DEF]
+        self.coordinator.crcs[MODULE] = 1
+        with patch.object(registries.er, "async_get", return_value=eb), patch.object(
+                registries.er, "async_entries_for_config_entry", side_effect=lambda *_: list(entities.values())), patch.object(
+                registries.dr, "async_get", return_value=db), patch.object(
+                registries.dr, "async_entries_for_config_entry", side_effect=lambda *_: list(devices.values())):
+            await self.coordinator._async_update_data()
+            eb.async_remove.assert_not_called(); db.async_remove_device.assert_not_called()
+            await self.coordinator._async_update_data()
+            eb.async_remove.assert_called_once_with(entity.entity_id)
+            db.async_remove_device.assert_called_once_with(device.id)
+            self.assertNotIn(MODULE, self.coordinator.definitions)
+            self.assertNotIn(MODULE, self.coordinator.crcs)
+            self.assertEqual(self.coordinator.entity_revisions[(spec_id, "switch")], 1)
+            await self.coordinator._async_update_data()
+            self.assertIn(spec_id, self.coordinator.specs)
+
+    async def test_jbc_station_switch_removes_existing_old_entities_after_two_snapshots(self):
+        registries = sys.modules[PREFIX + ".registry"]
+        uid = "1100000012345678"
+        old = types.SimpleNamespace(entity_id="sensor.old_sleep", platform="open_fume_extractor", options={},
+                                    unique_id=f"{MASTER}:{uid}:jbc_p1_future_mode:sensor")
+        items = {old.entity_id: old}
+        backend = Mock(); backend.async_remove.side_effect = items.pop
+        module = {"uid": uid, "type": 9, "online": True, "caps": 1 << 24,
+                  "ha_jbc": {"valid": True, "jbc_link": True, "jbc_family": "CL", "jbc_port_count": 1,
+                             "jbc_p1_valid": True, "jbc_p1_state": "IDLE", "controls": []}}
+        snapshot = {**state(), "modules": [module]}
+        self.api.state.side_effect = [snapshot, snapshot]
+        with patch.object(registries.er, "async_get", return_value=backend), patch.object(
+                registries.er, "async_entries_for_config_entry", side_effect=lambda *_: list(items.values())):
+            await self.coordinator._async_update_data(); backend.async_remove.assert_not_called()
+            await self.coordinator._async_update_data()
+            backend.async_remove.assert_called_once_with(old.entity_id)
+
     async def test_metadata_fetched_only_on_crc_change(self):
         self.api.state.side_effect = [state(), state(definitions=[DEF]), state()]
         await self.coordinator._async_update_data()
         await self.coordinator._async_update_data()
         self.assertEqual(self.api.state.await_count, 3)
         self.assertEqual(self.api.state.await_args_list[1].kwargs, {"descriptors": True})
+
+    async def test_station_absence_prunes_old_entities_but_not_the_usb_module(self):
+        registries = sys.modules[PREFIX + ".registry"]
+        uid = "1100000012345678"
+        items = {}
+        for key, platform in (("jbc_p1_future_mode", "sensor"), ("jbc_p2_temperature", "sensor"),
+                              ("jbc_cfg_0", "number"), ("jbc_p1_cl_counter_plug_min", "sensor"),
+                              ("online", "binary_sensor"), ("jbc_link", "binary_sensor")):
+            item = types.SimpleNamespace(entity_id=f"{platform}.{key}", platform="open_fume_extractor", options={},
+                                         unique_id=f"{MASTER}:{uid}:{key}:{platform}")
+            items[item.entity_id] = item
+        backend = Mock(); backend.async_remove.side_effect = items.pop
+        core = {"valid": True, "jbc_link": False, "jbc_family": "UNKNOWN", "jbc_port_count": 0, "controls": []}
+        module = {"uid": uid, "type": 9, "online": True, "caps": 1 << 24, "ha_jbc": core}
+        snapshot = {**state(), "modules": [module]}
+        self.api.state.return_value = snapshot
+        with patch.object(registries.er, "async_get", return_value=backend), patch.object(
+                registries.er, "async_entries_for_config_entry", side_effect=lambda *_: list(items.values())):
+            await self.coordinator._async_update_data()
+            backend.async_remove.assert_not_called()
+            # A failed poll interrupts confirmation rather than deleting on a transient outage.
+            self.api.state.side_effect = api.ApiError("Interrupted")
+            with self.assertRaises(UpdateFailed):
+                await self.coordinator._async_update_data()
+            self.api.state.side_effect = None
+            await self.coordinator._async_update_data(); backend.async_remove.assert_not_called()
+            await self.coordinator._async_update_data()
+            self.assertEqual(set(items), {"binary_sensor.online", "binary_sensor.jbc_link"})
+            self.assertIn(uid, self.coordinator.modules)
+            self.assertEqual(self.coordinator.entity_revisions[(uid + ":jbc_cfg_0", "number")], 1)
+            core.update(jbc_link=True, jbc_family="SOLD", jbc_port_count=1, jbc_p1_valid=True,
+                        jbc_cfg_0=350, controls=[{"id": 0, "platform": "number", "name": "Temperature"}])
+            await self.coordinator._async_update_data()
+            self.assertIn(uid + ":jbc_cfg_0", self.coordinator.specs)
 
     def test_polling_interval_default_and_boundaries(self):
         self.assertEqual(self.coordinator.update_interval, timedelta(seconds=5))
@@ -134,12 +250,15 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jbc_class_change_requires_linked_valid_core(self):
         self.coordinator.modules[MODULE] = {"type": 9, "online": True, "ha_jbc": {
-            "valid": True, "jbc_link": True, "jbc_family": "SOLD"}}
+            "valid": True, "jbc_link": True, "jbc_family": "SOLD", "jbc_port_count": 1}}
         self.assertNotIn(MODULE, self.coordinator._confirmed_inventory(state()))
         self.assertIn(MODULE, self.coordinator._confirmed_inventory(state()))
         self.coordinator.modules[MODULE]["ha_jbc"]["jbc_link"] = False
-        for _ in range(2):
-            self.assertNotIn(MODULE, self.coordinator._confirmed_inventory(state()))
+        self.coordinator.specs = {}
+        self.assertNotIn(MODULE, self.coordinator._confirmed_inventory(state()))
+        self.assertIn(MODULE, self.coordinator._confirmed_inventory(state()))
+        self.coordinator.modules[MODULE]["ha_jbc"].pop("jbc_link")
+        self.assertNotIn(MODULE, self.coordinator._confirmed_inventory(state()))
 
     async def test_poll_error_breaks_inventory_confirmation(self):
         self.api.state.side_effect = [state(), state(definitions=[DEF]), api.ApiError("Disconnected")]

@@ -20,6 +20,45 @@ def definition(typ="number", mode="rw", **meta):
 
 
 class ModelTests(unittest.TestCase):
+    def test_confirmed_station_absence_ignores_all_cached_station_classes(self):
+        for family in ("SOLD", "HA", "CL", "PH", "FE", "SF", "UNKNOWN"):
+            module = {"type": 9, "jbc_usb_station_name": "Old station",
+                      "jbc_usb_ports": [{"counter_sleep_min": 77}],
+                      "ha_jbc": {"valid": True, "jbc_link": False, "jbc_family": family,
+                                 "jbc_port_count": 4, "jbc_p1_valid": True,
+                                 "jbc_p1_counter_sleep_min": 77, "jbc_cfg_0": 350,
+                                 "controls": [{"id": 0, "platform": "number", "name": "Old setpoint"}]}}
+            specs = self.module_specs(module)
+            station = {s.key for s in specs.values() if s.key.startswith("jbc_")}
+            self.assertEqual(station, {"jbc_link", "jbc_work_mask", "jbc_stand_mask"})
+            for key in station:
+                self.assertFalse(specs[MODULE + ":" + key].value)
+            self.assertIn(MODULE + ":online", specs)
+
+    def test_authoritative_empty_counter_projection_does_not_resurrect_raw_cache(self):
+        module = {"type": 9, "jbc_usb_ports": [{"counter_sleep_min": 123, "cl_counter_plug_min": 99}],
+                  "ha_jbc": {"valid": True, "jbc_link": True, "jbc_family": "CL", "jbc_port_count": 1,
+                             "jbc_p1_valid": True, "controls": []}}
+        specs = self.module_specs(module)
+        self.assertNotIn(MODULE + ":jbc_p1_counter_sleep_min", specs)
+        self.assertNotIn(MODULE + ":jbc_p1_cl_counter_plug_min", specs)
+
+    def test_station_counter_family_and_port_count_are_authoritative(self):
+        module = {"type": 9, "ha_jbc": {"valid": True, "jbc_link": True, "jbc_family": "CL",
+            "jbc_port_count": 1, "jbc_p1_valid": True, "controls": [],
+            "jbc_p1_cl_counter_plug_min": 99, "jbc_p1_counter_sleep_min": 123,
+            "jbc_p2_cl_counter_plug_min": 88}}
+        specs = self.module_specs(module)
+        self.assertIn(MODULE + ":jbc_p1_cl_counter_plug_min", specs)
+        self.assertNotIn(MODULE + ":jbc_p1_counter_sleep_min", specs)
+        self.assertNotIn(MODULE + ":jbc_p2_cl_counter_plug_min", specs)
+
+    def test_legacy_raw_counters_cannot_cross_station_families(self):
+        specs = self.module_specs({"type": 9, "jbc_link_flags": 1, "jbc_usb_model": "CLM",
+            "jbc_usb_port_count": 1, "jbc_usb_ports": [{"valid": True, "counter_sleep_min": 123,
+                                                       "cl_counter_plug_min": 99}]})
+        self.assertNotIn(MODULE + ":jbc_p1_counter_sleep_min", specs)
+        self.assertIn(MODULE + ":jbc_p1_cl_counter_plug_min", specs)
     def test_led_sensors_use_reported_events_and_web_styles(self):
         specs = model.build_specs(MASTER, {"ui_lang": "de", "master_led_ofe_event": 1,
             "master_led_evt_event": 10, "modules": [{"uid": MODULE, "online": True,
@@ -144,7 +183,9 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((level.value, level.options, level.option_values),
                          ("Level 3", ("Level 1", "Level 2", "Level 3"), ("0", "1", "2")))
         self.assertNotIn(MODULE + ":jbc_cfg_17", specs)
-        for changes in ({"jbc_link": False}, {"valid": False}, {"jbc_cfg_19": -1}, {"jbc_cfg_19": 3}):
+        specs = self.module_specs({"type": 9, "ha_jbc": {**core, "jbc_link": False}})
+        self.assertNotIn(MODULE + ":jbc_cfg_19", specs)
+        for changes in ({"valid": False}, {"jbc_cfg_19": -1}, {"jbc_cfg_19": 3}):
             specs = self.module_specs({"type": 9, "ha_jbc": {**core, **changes}})
             self.assertFalse(specs[MODULE + ":jbc_cfg_19"].valid)
 

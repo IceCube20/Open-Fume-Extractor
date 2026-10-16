@@ -198,6 +198,12 @@ def jbc_counter_metadata(key: str):
     return labels, unit
 
 
+def jbc_counter_matches_family(key: str, family: str) -> bool:
+    prefixes = {"SOLD": ("counter_", "sold_"), "HA": ("ha_",), "CL": ("cl_",),
+                "PH": ("ph_",), "FE": ("fe_",), "SF": ("sf_",)}
+    return key.startswith(prefixes.get(family, ()))
+
+
 def presentation(spec: Spec) -> None:
     """Mirror MQTT presentation without changing stable identities or raw scaling."""
     key = spec.key
@@ -537,7 +543,7 @@ def legacy_jbc_specs(uid: str, module: dict, online: bool):
         # Optional counters exist in /state only after the station supplied them.
         for key, value in port.items():
             metadata = jbc_counter_metadata(key)
-            if metadata:
+            if metadata and jbc_counter_matches_family(key, family):
                 labels, unit = metadata
                 try:
                     raw = int(value)
@@ -566,6 +572,12 @@ def jbc_specs(uid: str, module: dict, online: bool):
     linked = bool(core.get("jbc_link"))
     valid = online and bool(core.get("valid")) and linked
     family = core.get("jbc_family", "UNKNOWN")
+    if core.get("valid") is True and core.get("jbc_link") is False:
+        # An explicit module report of station absence supersedes cached ports.
+        for key, name in (("jbc_link", "Station connected"), ("jbc_work_mask", "Work"),
+                          ("jbc_stand_mask", "Stand")):
+            yield Spec(uid, key, "binary_sensor", name, False, online)
+        return
     for control in core.get("controls", []):
         ident = control.get("id")
         platform = control.get("platform")
@@ -663,14 +675,16 @@ def jbc_specs(uid: str, module: dict, online: bool):
                            valid and value is not None and value >= 0, "\u00b0C", diagnostic=key == "selected_temp")
     projected = {key: value for key, value in core.items()
                  if key.startswith("jbc_p") and jbc_counter_metadata(key.split("_", 2)[-1])}
-    if not projected:
+    if not projected and "controls" not in core:
         # Compatibility with masters predating the shared counter projection.
         for index, port in enumerate(module.get("jbc_usb_ports", [])[:count], 1):
             for key, value in port.items():
-                if jbc_counter_metadata(key):
+                if jbc_counter_metadata(key) and jbc_counter_matches_family(key, family):
                     projected[f"jbc_p{index}_{key}"] = value
     for key, raw in projected.items():
         index = int(key.split("_")[1][1:])
+        if not 1 <= index <= count or not jbc_counter_matches_family(key.split("_", 2)[2], family):
+            continue
         labels, unit = jbc_counter_metadata(key.split("_", 2)[2])
         try:
             value = int(raw)
