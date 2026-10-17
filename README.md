@@ -31,8 +31,17 @@ images, a browser-based USB flasher and English end-user documentation.
 - [Universal RS232 and Modbus RTU Profile Builder](docs/PROFILE-BUILDER.md)
 - [Display RS485/WiFi operation](docs/DISPLAYS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Native Home Assistant integration and dashboard cards](HomeAssistant/README.md)
+- [Native Home Assistant integration, HACS installation and dashboard cards](https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant)
 - [GitHub Pages web flasher setup](docs/GITHUB-PAGES.md)
+
+## Home Assistant via HACS
+
+Add [the dedicated integration repository](https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant)
+as a **Custom repository** in HACS, category **Integration**. Download it,
+restart Home Assistant, then add **Open Fume Extractor** under Devices & services.
+Use the master address and its web login; no MQTT broker is required.
+Existing manual installations can switch to HACS without deleting their
+integration configuration. This is a custom repository, not a default HACS listing.
 
 ## Source layout
 
