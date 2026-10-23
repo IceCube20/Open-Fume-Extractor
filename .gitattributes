@@ -14,3 +14,9 @@
 *.jpeg binary
 *.png binary
 
+# Preserve byte-verified shared sources and pinned upstream backport inputs.
+# Their provenance manifests cover exact bytes, including original line endings.
+**/Rs485PeripheralBus.cpp -text -eol
+Module/DisplayModule_P4_800x480/src/tinycrypt/** -text -eol
+tools/boards/elecrow_p4_5inch/tinycrypt/** -text -eol
+
