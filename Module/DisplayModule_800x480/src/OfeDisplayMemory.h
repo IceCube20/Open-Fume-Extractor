@@ -6,9 +6,8 @@
 namespace ofe_display_memory {
 // Leave room for WiFi RX/TX, task stacks, scans and controls after startup.
 // Preserve runtime headroom after the large widget tree and WiFi task start.
-// 104 KiB keeps a little more post-startup headroom while the smaller 32 KiB
-// internal LVGL pool gives the draw-tile selector room to step up from B20.
-// Expected balance on the measured board: roughly B24-B28 with ~80 KiB runtime heap.
+// The optional PSRAM widget-pool trial must pass these same allocation guards;
+// it must not obtain larger draw tiles by borrowing radio/runtime headroom.
 constexpr size_t RUNTIME_RESERVE = 104U * 1024U;
 constexpr size_t STARTUP_RESERVE = 112U * 1024U;
 inline bool fits(size_t free_bytes, size_t bytes, size_t reserve) {

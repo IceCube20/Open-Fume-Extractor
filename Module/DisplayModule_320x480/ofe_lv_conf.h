@@ -1,5 +1,5 @@
 // Project-local LVGL configuration for DisplayModule_800x480.
-// Keep a 48 KiB hot pool internal; setup adds 144 KiB in PSRAM before building widgets.
+// Keep a 32 KiB hot pool internal; setup adds 352 KiB in PSRAM before building widgets.
 // Based on the working lv_conf.h; the small display's configuration is unchanged.
 /**
  * @file lv_conf.h

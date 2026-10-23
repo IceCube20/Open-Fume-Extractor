@@ -14,6 +14,7 @@ const html = [...first.matchAll(/R"HTML\(([\s\S]*?)\)HTML"|OFE_WEB_TYPOGRAPHY_ST
 const styles = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => '<style>' + match[1] + '</style>').join('');
 assert.equal(html.match(/--ofe-font-ui:Arial/g).length, 1);
 const sync = source.slice(source.indexOf('function syncWellerFilterCard('), source.indexOf('const updateDetailsFilterTextCore='));
+const filterUi = source.match(/function wellerUiFilter\([^\n]+/)[0];
 const shell = fs.readFileSync(path.join(root, 'WebShell.inc.h'), 'utf8');
 const shellStrings = shell.match(/html \+= F\(("(?:\\.|[^"\\])*") OFE_WEB_TYPOGRAPHY_STYLE ("(?:\\.|[^"\\])*")\);/);
 assert(shellStrings, 'Shared typography must be included in the shell head');
@@ -48,15 +49,17 @@ const markup = `<div id="details" class="grid">
       await page.setViewportSize({width, height: 900});
       for (const de of [true, false]) {
         await page.setContent('<!doctype html><html><head>' + styles + '</head><body><main>' + markup + '</main></body></html>');
-        await page.evaluate(({sync, de}) => {
+        await page.evaluate(({sync, filterUi, de}) => {
           window.uiLang = de ? 'de' : 'en';
+          window.wellerFilterHoldUntil = {}; window.wellerFilterPending = {};
+          window.wellerUiFilter = new Function(filterUi + ';return wellerUiFilter;')();
           window.t = key => key === 'fan_reset_filter_runtime' ? (de ? 'Filterbetriebszeit zurücksetzen' : 'Reset filter operating time') : (de ? 'Filter-Wechselintervall' : 'Filter replacement interval');
           window.dhm = value => String(value);
           window.set = (id, text) => {document.getElementById(id).textContent = text;};
           window.syncWellerFilterCard = new Function(sync + ';return syncWellerFilterCard;')();
           document.querySelector('.fan-card .filter-actions button').textContent = t('fan_reset_filter_runtime');
           syncWellerFilterCard({addr: 48, online: true, weller_filter_runtime_minutes: 2430, weller_programmed_filter_minutes: 9600});
-        }, {sync, de});
+        }, {sync, filterUi, de});
         const measure = () => page.evaluate(() => {
           const props = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'minHeight', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight'];
           const buttons = [...document.querySelectorAll('.filter-actions button')];

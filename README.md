@@ -2,7 +2,7 @@
 
 Open Fume Extractor is a modular fume-extraction controller built around an
 ESP32-S3 master, a 250 kbaud OFE RS485 bus, interchangeable interface modules,
-three display variants, a web interface and Home Assistant integration through
+four display variants, a web interface and Home Assistant integration through
 MQTT or a direct local connection without a broker.
 
 This repository contains the complete project source, ready-to-flash firmware
@@ -19,7 +19,7 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.0.53 RC release notes](docs/RELEASE-2.0.53RC.md)
+- [2.0.75 RC release notes](docs/RELEASE-2.0.75RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [Master setup and configuration](docs/MASTER.md)
@@ -42,6 +42,9 @@ restart Home Assistant, then add **Open Fume Extractor** under Devices & service
 Use the master address and its web login; no MQTT broker is required.
 Existing manual installations can switch to HACS without deleting their
 integration configuration. This is a custom repository, not a default HACS listing.
+From integration 0.1.0rc25, dashboard resources are registered and versioned
+automatically in normal Lovelace UI/storage mode. Restart HA and fully reload
+the browser/app after updating; YAML resources remain user-managed.
 
 ## Source layout
 

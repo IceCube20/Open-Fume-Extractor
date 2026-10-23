@@ -33,7 +33,9 @@ class WellerMqttFilterTests(unittest.TestCase):
             self.assertIn(r'"Aus\n1 Stunde\n2 Stunden', display)
             self.assertIn("if (minutes == 0) return 0;", display)
             self.assertIn("selected == 0 ? 30 : (uint8_t)(selected - 1U)", display)
-            self.assertIn("lv_dropdown_set_options(ui_detail_weller_filter_dropdown, weller_filter_options());", display)
+            self.assertIn('#include "src/OfeDisplayControlsUi.inc.h"', display)
+            controls = (ROOT / f"Module/{name}/src/OfeDisplayControlsUi.inc.h").read_text(encoding="utf-8")
+            self.assertIn("lv_dropdown_set_options(ui_detail_weller_filter_dropdown, weller_filter_options());", controls)
 
     def test_weller_off_is_exposed_by_web_and_mqtt(self):
         self.assertIn("weller_filter_off_v1", MQTT)

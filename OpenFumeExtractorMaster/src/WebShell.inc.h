@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WebTypography.h"
+#include "WebTransportIcons.h"
 
 // Shared Web UI language helpers, CSRF script injection and page shell.
 static bool web_is_german() { return strcmp(web_lang, "de") == 0; }
@@ -11,6 +12,35 @@ static String web_csrf_script() {
   String js = F("<script>window.OFE_CSRF='");
   js += web_csrf_token;
   js += F("';(function(){var t=window.OFE_CSRF;var of=window.fetch;window.fetch=function(u,o){o=o||{};var m=String(o.method||'GET').toUpperCase();if(m!=='GET'&&m!=='HEAD'){var h=new Headers(o.headers||{});h.set('X-CSRF-Token',t);o.headers=h;}return of(u,o)};var xo=XMLHttpRequest.prototype.open,xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(m,u){this._ofe_m=String(m||'GET').toUpperCase();return xo.apply(this,arguments)};XMLHttpRequest.prototype.send=function(b){if(this._ofe_m&&this._ofe_m!=='GET'&&this._ofe_m!=='HEAD')this.setRequestHeader('X-CSRF-Token',t);return xs.apply(this,arguments)};function f(){document.querySelectorAll('form').forEach(function(x){if(!x.querySelector('input[name=csrf]')){var i=document.createElement('input');i.type='hidden';i.name='csrf';i.value=t;x.appendChild(i);}})}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',f);else f();})();</script>");
+  js += F(OFE_TRANSPORT_HEADER_SCRIPT);
+  js += F(R"JS(<script>
+function cpuCoreText(values){
+  if(!Array.isArray(values)||!values.length)return '-';
+  return values.map((value,core)=>'Core '+core+': '+(typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=100?Math.round(value)+'%':'-')).join(' · ');
+}
+function runtimeProfileHtml(s,de){
+  if(!s)return '';
+  const t=(g,e)=>de?g:e;
+  if(!s.active||!Number.isFinite(Number(s.window_ms))||Number(s.window_ms)<=0)return t('Warte auf Messfenster','Awaiting sample window');
+  const n=v=>Number.isFinite(Number(v))?Math.max(0,Number(v)):0;
+  const ms=v=>(n(v)/1000).toFixed(2)+' ms';
+  const labels={loop:t('Steuerloop','Control loop'),http:'HTTP / WLAN',mqtt:'MQTT',heap:t('Heap-Diagnose','Heap diagnostics')};
+  let html='<div>'+t('Task-CPU (100% = ein Kern)','Task CPU (100% = one core)')+' · '+t('Fenster','Window')+' '+n(s.window_ms)+' ms · '+t('Alter','Age')+' '+n(s.age_ms)+' ms</div>';
+  for(const task of s.tasks||[]){
+    if(!Object.hasOwn(labels,task.id))continue;
+    const core=Number.isInteger(task.core)&&task.core>=0?'Core '+task.core:t('flexibel / unbekannt','floating / unknown');
+    const cpu=typeof task.cpu_pct==='number'&&Number.isFinite(task.cpu_pct)&&task.cpu_pct>=0&&task.cpu_pct<=100?Math.round(task.cpu_pct)+'%':'-';
+    html+='<div>'+labels[task.id]+' ('+core+'): <strong>'+cpu+'</strong></div>';
+  }
+  html+='<div style="margin-top:6px">'+t('Loop-Abschnitte: Laufzeit inkl. Warten/Verdrängung, keine CPU-Prozente','Loop phases: elapsed time includes waits/preemption, not CPU percentages')+'</div>';
+  const phases={local:t('CLI / LEDs / lokaler Service','CLI / LEDs / local service'),command:t('Bedienbefehle','Commands'),ota:'OTA',scheduler:'Bus-Scheduler',logic:t('Logik','Logic'),maintenance:t('Nachbereitung','Maintenance')};
+  for(const [key,label] of Object.entries(phases)){
+    const p=s.phases&&s.phases[key];if(!p)continue;
+    html+='<div>'+label+': '+(n(p.calls)?'Ø '+ms(p.avg_us)+' · max '+ms(p.max_us)+' · '+(n(p.total_us)/n(s.window_ms)).toFixed(1)+' ms/s':'-')+'</div>';
+  }
+  return html;
+}
+</script>)JS");
   return js;
 }
 
@@ -23,7 +53,7 @@ static void web_shell_begin(String& html, const char* title, const char* section
   html += F("' onclick='toggleShellDevMode()'>");
   if (developer_override_active()) html += F("&#10003; ");
   html += web_text("Entwicklermodus", "Developer mode");
-  html += F("</button></div><nav class='nav'><select id='lang_sel' data-no-dirty='1' onchange='setShellLang(this.value)'><option value='de'");
+  html += F("</button>" OFE_TRANSPORT_HEADER_HTML "</div><nav class='nav'><select id='lang_sel' data-no-dirty='1' onchange='setShellLang(this.value)'><option value='de'");
   if (web_is_german()) html += F(" selected");
   html += F(">Deutsch</option><option value='en'");
   if (!web_is_german()) html += F(" selected");

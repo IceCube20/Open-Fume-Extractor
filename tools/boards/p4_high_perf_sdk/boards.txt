@@ -1,0 +1,64 @@
+menu.UploadSpeed=Upload Speed
+menu.DebugLevel=Core Debug Level
+menu.Renderer=LVGL Renderer
+
+ofep4.name=OFE Display P4 800x480 (High Performance, PRE-V3)
+ofep4.bootloader.tool=esptool_py
+ofep4.bootloader.tool.default=esptool_py
+ofep4.upload.tool=esptool_py
+ofep4.upload.tool.default=esptool_py
+ofep4.upload.tool.network=esp_ota
+ofep4.upload.maximum_size=3342336
+ofep4.upload.maximum_data_size=327680
+ofep4.upload.flags=
+ofep4.upload.erase_cmd=
+ofep4.upload.extra_flags=
+ofep4.upload.use_1200bps_touch=false
+ofep4.upload.wait_for_upload_port=false
+ofep4.serial.disableDTR=false
+ofep4.serial.disableRTS=false
+ofep4.build.tarch=riscv32
+ofep4.build.target=esp
+ofep4.build.mcu=esp32p4
+ofep4.build.core=esp32
+ofep4.build.variant=esp32p4
+ofep4.build.chip_variant=esp32p4_es
+ofep4.build.board=ESP32P4_DEV
+ofep4.build.bootloader_addr=0x2000
+ofep4.build.usb_mode=1
+ofep4.build.cdc_on_boot=1
+ofep4.build.msc_on_boot=0
+ofep4.build.dfu_on_boot=0
+ofep4.build.f_cpu=360000000L
+ofep4.build.flash_size=16MB
+ofep4.build.flash_freq=80m
+ofep4.build.img_freq=80m
+ofep4.build.flash_mode=dio
+ofep4.build.boot=qio
+# Preserve the layout verified on the owner's P4, including both OTA slots.
+ofep4.build.partitions=default_8MB
+ofep4.build.ppa_flags=-DOFE_P4_PPA=0
+ofep4.build.ppa_link_flags=
+ofep4.build.defines=-DBOARD_HAS_PSRAM -DOFE_REQUIRE_P4_CACHE256_SDK=1 {build.ppa_flags}
+ofep4.compiler.c.elf.extra_flags={build.ppa_link_flags}
+
+ofep4.menu.Renderer.software=Software (stable baseline)
+ofep4.menu.Renderer.software.build.ppa_flags=-DOFE_P4_PPA=0
+ofep4.menu.Renderer.software.build.ppa_link_flags=
+ofep4.menu.Renderer.ppa=PPA fills (experimental)
+ofep4.menu.Renderer.ppa.build.ppa_flags=-DOFE_P4_PPA=1
+ofep4.menu.Renderer.ppa.build.ppa_link_flags=-Wl,--wrap=ppa_do_fill
+ofep4.menu.Renderer.ppaimage=PPA fills + images (experimental)
+ofep4.menu.Renderer.ppaimage.build.ppa_flags=-DOFE_P4_PPA=1 -DOFE_P4_PPA_IMG=1
+ofep4.menu.Renderer.ppaimage.build.ppa_link_flags=-Wl,--wrap=ppa_do_fill -Wl,--wrap=ppa_do_blend
+
+ofep4.menu.UploadSpeed.921600=921600
+ofep4.menu.UploadSpeed.921600.upload.speed=921600
+ofep4.menu.UploadSpeed.115200=115200
+ofep4.menu.UploadSpeed.115200.upload.speed=115200
+ofep4.menu.DebugLevel.none=None
+ofep4.menu.DebugLevel.none.build.code_debug=0
+ofep4.menu.DebugLevel.error=Error
+ofep4.menu.DebugLevel.error.build.code_debug=1
+ofep4.menu.DebugLevel.info=Info
+ofep4.menu.DebugLevel.info.build.code_debug=3

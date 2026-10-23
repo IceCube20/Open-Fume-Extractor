@@ -31,7 +31,7 @@ out.write_text("\n\n".join(function(name) for name in names), encoding="utf-8")
 router = (root / "OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp").read_text(encoding="utf-8-sig")
 out.with_name("generated_master_route.inc.h").write_text(
     "\n\n".join(function("MasterDisplayWifi::" + name, router, "")
-                 for name in ("beginFirmware", "route")), encoding="utf-8")
+                 for name in ("beginFirmware", "route", "pollHook")), encoding="utf-8")
 
 out.with_name("generated_display_jbc.inc.h").write_text(
     "\n\n".join(function(name) for name in

@@ -3,11 +3,15 @@
 #include "MasterSettingsStore.h"
 #include "MasterBuildConfig.h"
 #include "EntityPresentation.h"
+#include "DisplayHomeMetrics.h"
+#include "DisplayValueSnapshot.h"
+#include "DisplayJbcCatalog.h"
 #include "ModulePowerSaveState.h"
 #include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
 #include <esp_heap_caps.h>
+#include <new>
 
 using namespace jbc_rs485;
 
@@ -20,6 +24,24 @@ static uint8_t displayUniversalProfileEntityCount(const ModuleRecord& rec);
 // nest several frame/payload buffers deeply enough to overflow the task stack.
 static constexpr size_t SCHEDULER_DESCRIPTOR_LINE_SCRATCH_SIZE = 1024;
 static char scheduler_descriptor_line_scratch[SCHEDULER_DESCRIPTOR_LINE_SCRATCH_SIZE];
+static ofe_display_values::SnapshotCache scheduler_display_values;
+
+static void sync_fanio_gpio_entities(ModuleRecord& rec, uint16_t physical_inputs) {
+  if (rec.type != MODULE_FAN_IO && rec.type != MODULE_FAN_IO_PRO) return;
+  // GET_IO is the fast authoritative readback for these same descriptor IDs.
+  // Do not create deleted channels or mark a partial entity cache as complete.
+  for (uint8_t i = 0; i < rec.universal_entity_count && i < ModuleRecord::UNIVERSAL_ENTITY_MAX; ++i) {
+    auto& entity = rec.universal_entities[i];
+    uint16_t mask;
+    uint8_t bit;
+    if (entity.id >= 20 && entity.id < 28) { mask = physical_inputs; bit = entity.id - 20; }
+    else if (entity.id >= 40 && entity.id < 48) { mask = rec.io_output_mask; bit = entity.id - 40; }
+    else continue;
+    entity.len = 1;
+    entity.data[0] = (mask >> bit) & 1U;
+    entity.age_ms = 0;
+  }
+}
 
 enum SchedulerJobId : uint8_t {
   SCHED_JOB_NONE = 0,
@@ -1057,6 +1079,7 @@ static void traceLocalText(uint8_t addr, MasterScheduler::TraceDirection directi
 }
 
 void MasterScheduler::begin() {
+  initBusDiagnostics();
   registry_.clear();
   if (!bus_mutex_) bus_mutex_ = xSemaphoreCreateMutex();
   link_.setPhysicalSendGuard(this, [](void* context) {
@@ -1347,8 +1370,30 @@ void MasterScheduler::noticeDiscoveryResponse(const Frame& resp) {
   pending_hotplug_scan_ms_ = millis();
 }
 
-int16_t MasterScheduler::busDiagIndex(uint8_t addr) {
-  if (addr < 0x10 || addr > 0x6F) return -1;
+bool MasterScheduler::initBusDiagnostics() {
+  if (bus_module_diag_) return true;
+  const size_t bytes = sizeof(BusModuleDiag) * BUS_DIAG_ADDR_COUNT;
+  bus_module_diag_ = static_cast<BusModuleDiag*>(
+      heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  const bool external = bus_module_diag_ != nullptr;
+  if (!bus_module_diag_) {
+    bus_module_diag_ = static_cast<BusModuleDiag*>(
+        heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (!bus_module_diag_) {
+    Serial.println(F("[MEM] Bus diagnostics allocation failed"));
+    return false;
+  }
+  // Preserve member defaults, including the 0xFF timeout sequence sentinels.
+  for (size_t i = 0; i < BUS_DIAG_ADDR_COUNT; ++i)
+    new (bus_module_diag_ + i) BusModuleDiag();
+  Serial.printf("[MEM] Bus diagnostics: %u bytes in %s\n",
+                (unsigned)bytes, external ? "PSRAM" : "internal RAM (fallback)");
+  return true;
+}
+
+int16_t MasterScheduler::busDiagIndex(uint8_t addr) const {
+  if (!bus_module_diag_ || addr < 0x10 || addr > 0x6F) return -1;
   return (int16_t)(addr - 0x10);
 }
 
@@ -1442,7 +1487,7 @@ void MasterScheduler::drainUnsolicitedFrames() {
   Frame frame;
   for (uint8_t i = 0; i < 6 && link_.poll(frame); ++i) {
     busDiagRecordRx(frame);
-    if (handleAsyncDisplayFrame(frame)) continue;
+    if (handleAsyncDisplayFrame(frame, link_.lastRxWasNetwork())) continue;
     noticeDiscoveryResponse(frame);
   }
 }
@@ -1613,7 +1658,7 @@ void MasterScheduler::waitForDiscoveryWindow() {
     Frame frame;
     for (uint8_t i = 0; i < 6 && link_.poll(frame); ++i) {
       busDiagRecordRx(frame);
-      if (!handleAsyncDisplayFrame(frame)) noticeDiscoveryResponse(frame);
+      if (!handleAsyncDisplayFrame(frame, link_.lastRxWasNetwork())) noticeDiscoveryResponse(frame);
     }
     serviceWhileWaiting();
     delay(1);
@@ -1841,14 +1886,15 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
   const uint32_t initial_bad_seq = diag_idx >= 0 ? bus_module_diag_[diag_idx].bad_seq : 0;
   const uint32_t initial_bad_cmd = diag_idx >= 0 ? bus_module_diag_[diag_idx].bad_cmd : 0;
   const uint32_t initial_late = diag_idx >= 0 ? bus_module_diag_[diag_idx].late_responses : 0;
-  while ((uint32_t)(millis() - start) < timeout_ms) {
+  RequestReceiveWindow receive_window(start, timeout_ms);
+  while (receive_window.pollDue(millis())) {
     wait_probe.sample(micros());
     if (link_.poll(resp)) {
       const bool rx_via_network = link_.lastRxWasNetwork();
       busDiagRecordRx(resp);
-      if (handleAsyncDisplayFrame(resp)) {
+      if (handleAsyncDisplayFrame(resp, rx_via_network, &req)) {
         unmatched_frame.record(resp, rx_via_network, WAIT_FRAME_ASYNC_DISPLAY);
-        serviceWhileWaiting();
+        if (!receive_window.draining()) serviceWhileWaiting();
         continue;
       }
       if (resp.dst == ADDR_MASTER && resp.src == dst) {
@@ -1873,7 +1919,7 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
               traceLog(dst, TRACE_INFO, resp.cmd, resp.len ? resp.payload[0] : 0xFF, resp.payload, resp.len, latency, msg, resp.seq);
             }
             noticeDiscoveryResponse(resp);
-            serviceWhileWaiting();
+            if (!receive_window.draining()) serviceWhileWaiting();
             continue;
           }
 
@@ -1898,6 +1944,7 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
             ok_rec->consecutive_timeouts = 0;
             ok_rec->last_seen_ms = millis();
           }
+          if (rx_via_network) master_display_wifi.responseProcessed(resp);
           return true;
         }
 
@@ -1944,7 +1991,7 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
       }
       noticeDiscoveryResponse(resp);
     }
-    serviceWhileWaiting();
+    if (!receive_window.draining()) serviceWhileWaiting();
   }
 
   // An absent cable is expected while a display is connected by WiFi.
@@ -2177,10 +2224,20 @@ void MasterScheduler::completeDisplayCacheResponse(ModuleRecord& display, uint8_
     default:
       break;
   }
-  display.display_cache_next_ms = millis() + 220UL;
+  const bool values = (cmd & 0x7F) == CMD_DISPLAY_DETAIL_PAGE && display.display_value_request.valid;
+  display.display_cache_next_ms = millis() + (values ? 80UL : 220UL);
 }
 
-bool MasterScheduler::handleAsyncDisplayFrame(const Frame& frame) {
+bool MasterScheduler::handleAsyncDisplayFrame(const Frame& frame, bool via_network,
+                                             const Frame* synchronous_request) {
+  // Only UDP replies belong to the asynchronous display queue. Wired display
+  // replies must reach request(), including immediately after a handover.
+  if (!via_network) return false;
+  // Infrequent synchronous WLAN commands also own their matching reply. Do
+  // not classify it as an unexpected async sequence or consume it twice.
+  if (synchronous_request && frame.dst == ADDR_MASTER &&
+      frame.src == synchronous_request->dst && frame.seq == synchronous_request->seq &&
+      frame.cmd == (uint8_t)(synchronous_request->cmd | 0x80)) return false;
   if (frame.dst != ADDR_MASTER || frame.src < 0x40 || frame.src > 0x4F || !(frame.cmd & 0x80)) return false;
   ModuleRecord* rec = registry_.find(frame.src);
   if (!rec || rec->type != MODULE_DISPLAY) return false;
@@ -2301,6 +2358,7 @@ void MasterScheduler::serviceAsyncDisplayRequests() {
     rec->last_seen_ms = now;
 
     const bool ok = frame.len >= 1 && frame.payload[0] == STATUS_OK;
+    master_display_wifi.responseProcessed(frame);
     if (request_cmd == CMD_GET_TELEMETRY) {
       // Reuse the normal telemetry decoder and the already allocated async
       // display frame slot. No additional queue/buffer/heap allocation is used.
@@ -4484,6 +4542,7 @@ bool MasterScheduler::readIoStatus(uint8_t addr, bool include_aliases) {
   rec->io_input_mask = physical_input_mask | rec->io_input_pulse_mask;
   rec->io_output_mask = get_u16_le(resp.payload + 3);
   rec->io_fault_mask = get_u16_le(resp.payload + 5);
+  sync_fanio_gpio_entities(*rec, physical_input_mask);
 
   // Alias strings are static configuration. Only a request that explicitly
   // asked for aliases may interpret bytes after the 7-byte base payload as
@@ -5268,6 +5327,12 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
       rec->display_language = resp.payload[19];
       rec->display_theme = resp.payload[20];
       if (resp.len >= 22) rec->display_screensaver_min = resp.payload[21];
+      rec->display_backlight_supported = resp.len >= 27;
+      if (rec->display_backlight_supported) {
+        rec->display_backlight_mode = resp.payload[24];
+        rec->display_backlight_timeout_min = resp.payload[25];
+        rec->display_backlight_on = resp.payload[26] != 0;
+      }
     }
     if ((rec->caps & CAP_FILTER_SENSOR) && resp.len >= 27) {
       rec->fanio_filter_saturation_permille = get_u16_le(resp.payload + 17);
@@ -5631,21 +5696,36 @@ void MasterScheduler::processDisplayStatusResponse(ModuleRecord& display, const 
     while (rp < resp.len) {
       const uint8_t marker = resp.payload[rp++];
       if (marker == 0xAC && rp < resp.len) {
+        display.display_value_request.valid = false;
         display.display_universal_entity_start = resp.payload[rp++];
         requested_universal_addr = display.display_view_arg;
         requested_universal_start = display.display_universal_entity_start;
         display_requested_universal_page = true;
       } else if (marker == 0xAD && rp + 1 < resp.len) {
+        display.display_value_request.valid = false;
         requested_universal_addr = resp.payload[rp++];
         requested_universal_start = resp.payload[rp++];
         display.display_universal_entity_start = requested_universal_start;
         display_requested_universal_page = true;
+      } else if (marker == ofe_jbc_detail::REQUEST || marker == ofe_jbc_detail::LEGACY_REQUEST || marker == ofe_jbc_detail::COMMAND) {
+        if (!consumeDisplayJbcExtension(display, resp, rp, marker)) break;
       } else if (marker == 0xAE && rp < resp.len) {
         requested_module_list_start = resp.payload[rp++];
         display_requested_module_list = true;
       } else if (marker == 0xAF && rp < resp.len) {
         requested_module_detail_addr = resp.payload[rp++];
         display_requested_module_detail = true;
+      } else if (marker == ofe_home_metrics::CAPABILITY && rp < resp.len) {
+        display.display_home_metrics_supported = resp.payload[rp++] == ofe_home_metrics::VERSION;
+      } else if (marker == ofe_display_values::CAPABILITY && rp < resp.len) {
+        display.display_values_supported = resp.payload[rp++] == ofe_display_values::CAP_VERSION;
+      } else if (marker == ofe_display_values::REQUEST && display.display_values_supported) {
+        const size_t used = ofe_display_values::decodeRequest(resp.payload + rp, resp.len - rp, display.display_value_request);
+        if (!used) break;
+        rp = uint8_t(rp + used);
+        requested_universal_addr = display.display_value_request.addr;
+        requested_universal_start = 0;
+        display_requested_universal_page = true;
       } else {
         break;
       }
@@ -5713,6 +5793,83 @@ void MasterScheduler::processDisplayStatusResponse(ModuleRecord& display, const 
     display.display_cache_universal_start = requested_universal_start;
     display.display_cache_pending_mask |= DISP_CACHE_UNIVERSAL;
   }
+}
+
+static ofe_home_metrics::State display_home_metrics(const ModuleRecord& rec, bool output_capable) {
+  using namespace ofe_home_metrics;
+  State s;
+  s.addr = rec.addr; s.type = rec.type;
+  if (rec.online) s.flags |= ONLINE;
+  if (output_capable) s.flags |= HAS_OUTPUT;
+  if (output_capable && rec.output_status_valid) s.flags |= OUTPUT_VALID | HAS_POWER;
+  if (output_capable && rec.output_status_valid && rec.output_enabled) s.flags |= OUTPUT_ON;
+  s.power = rec.output_power > 1000 ? 1000 : rec.output_power;
+  s.rpm = rec.output_rpm;
+  s.faults = rec.output_fault_mask | rec.io_fault_mask;
+  if (output_capable && (rec.caps & CAP_TACHO_INPUT) && rec.output_status_valid) s.flags |= HAS_RPM;
+  if (rec.type == MODULE_WELLER_ZERO_SMOG) {
+    s.flags |= LINK_KNOWN;
+    if (rec.weller_uart_age_sec <= 10) s.flags |= LINKED;
+    if (rec.telemetry_valid) s.flags |= HAS_POWER | HAS_RPM;
+    s.power = rec.weller_speed_percent > 100 ? 1000 : uint16_t(rec.weller_speed_percent) * 10;
+    s.rpm = rec.weller_fan_rpm;
+    s.flags |= HAS_FILTER;
+    s.filter = rec.weller_filter_status;
+    s.runtime = rec.weller_filter_runtime_minutes;
+    s.lifetime = rec.weller_programmed_filter_minutes;
+    if (s.lifetime) s.flags |= HAS_TIME;
+  } else if (rec.type == MODULE_FAN_IO_PRO) {
+    uint8_t mode = rec.fanio_filter_runtime_valid ? rec.fanio_filter_mode : 0;
+    if (!rec.fanio_filter_runtime_valid && rec.universal_descriptor_valid) {
+      const char* p = rec.universal_descriptor;
+      if (strncmp(p, "filter_mode=", 12)) {
+        p = strstr(p, "\nfilter_mode=");
+        if (p) ++p;
+      }
+      if (p) {
+        const unsigned long configured = strtoul(p + 12, nullptr, 10);
+        if (configured <= 3) mode = uint8_t(configured);
+      }
+    }
+    if (mode > 3) mode = 0;
+    if (mode) {
+      s.flags |= HAS_FILTER;
+      s.saturation = rec.fanio_filter_saturation_permille > 1000 ? 1000 : rec.fanio_filter_saturation_permille;
+      s.pressure = rec.fanio_filter_pressure_raw;
+      if ((mode & 2) && (rec.fanio_filter_flags & 2)) s.flags |= HAS_PRESSURE;
+      s.filter = s.faults & 4 ? 100 : s.faults & 2 ? 10 : 1;
+      if ((mode & 2) && !(rec.fanio_filter_flags & 2)) s.filter = 255;
+      if ((mode & 1) && rec.fanio_filter_runtime_valid) {
+        s.flags |= HAS_TIME;
+        s.runtime = rec.fanio_filter_runtime_minutes;
+        s.lifetime = rec.fanio_filter_lifetime_minutes;
+      }
+    }
+  } else if ((rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU) &&
+             rec.universal_descriptor_valid) {
+    // One bounded descriptor pass, rather than one full scan per entity.
+    const char* cursor = rec.universal_descriptor;
+    while (cursor && *cursor) {
+      const char* end = strchr(cursor, '\n');
+      const ofe_entity::Text line{cursor, end ? size_t(end - cursor) : strlen(cursor)};
+      cursor = end ? end + 1 : nullptr;
+      ofe_entity::Definition def;
+      if (!ofe_entity::parse(line, def)) continue;
+      const auto role = ofe_entity::metadata(def.line, "role");
+      if (rec.output_status_valid && ofe_entity::equal(role, "main_output_rpm")) s.flags |= HAS_RPM;
+      if (!ofe_entity::equal(role, "main_input") || (s.flags & HAS_INPUT)) continue;
+      for (uint8_t i = 0; i < rec.universal_entity_count; ++i) {
+        const auto& entity = rec.universal_entities[i];
+        if (entity.id != def.id || !entity.len) continue;
+        char raw[40];
+        ofe_entity::rawText(entity.data, entity.len, raw, sizeof(raw), ofe_entity::valueEncoding(def));
+        s.flags |= HAS_INPUT;
+        if (ofe_entity::boolValue(ofe_entity::text(raw))) s.flags |= INPUT_ON;
+        break;
+      }
+    }
+  }
+  return s;
 }
 
 bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
@@ -5926,7 +6083,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   // Current displays also receive the full alarm cache via CMD_DISPLAY_ALARMS.
   const uint8_t display_alarm_item_count = alarm_snapshot.item_count;
   const uint8_t display_alarm_critical_mask = alarm_snapshot.critical_mask;
-  if (!payload_write_u8(5) || // Display extension v5: v4 data plus afterrun power profile.
+  if (!payload_write_u8(display && display->display_values_supported ? 6 : 5) || // v6 opts into compact value requests.
       !payload_write_u8(preferred_output_addr_) || // 0 = Auto, otherwise manually selected output module.
       !payload_write_u16(jbc_present ? alarm_snapshot.jbc_error : 0) ||
       !payload_write_u8(0xA9) ||
@@ -5997,7 +6154,8 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
         // completes a full round in only a few DISPLAY_STATUS packets.
         uint16_t native_end = (uint16_t)payload_len + native_record_budget;
         if (native_end > budget_end) native_end = budget_end;
-        const uint8_t native_span = (uint8_t)(module_count * 2U);
+        const uint8_t slots_per_module = display->display_home_metrics_supported ? 3U : 2U;
+        const uint8_t native_span = (uint8_t)(module_count * slots_per_module);
         uint8_t native_cursor = native_span ? (uint8_t)(display->display_live_io_native_cursor % native_span) : 0;
         uint8_t native_visited = 0;
         uint8_t native_next = native_cursor;
@@ -6005,8 +6163,8 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
         while (native_visited < native_span) {
           const uint8_t slot = (uint8_t)((native_cursor + native_visited) % native_span);
           ++native_visited;
-          const uint8_t module_index = (uint8_t)(slot / 2U);
-          const uint8_t local_slot = (uint8_t)(slot & 0x01U);
+          const uint8_t module_index = (uint8_t)(slot / slots_per_module);
+          const uint8_t local_slot = (uint8_t)(slot % slots_per_module);
           const ModuleRecord& rec = registry_.at(module_index);
           if (!rec.online) continue;
 
@@ -6026,7 +6184,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             payload_write_u16(rec.io_input_mask);
             payload_write_u16(rec.io_output_mask);
             payload_write_u16(rec.io_fault_mask);
-          } else {
+          } else if (local_slot == 1) {
             if (!(rec.caps & CAP_JBC_ACTIVITY)) continue;
             if (!live_can_write_to(5U, native_end)) break;
             payload_write_u8(2);
@@ -6034,6 +6192,15 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             payload_write_u8(rec.jbc_link_flags);
             payload_write_u8(rec.jbc_work_mask);
             payload_write_u8(rec.jbc_stand_mask);
+          } else {
+            if (rec.type != MODULE_FAN_IO && rec.type != MODULE_FAN_IO_PRO &&
+                rec.type != MODULE_WELLER_ZERO_SMOG && rec.type != MODULE_UNIVERSAL_RS232 &&
+                rec.type != MODULE_MODBUS_RTU) continue;
+            if (!live_can_write_to(1U + ofe_home_metrics::WIRE_SIZE, native_end)) break;
+            const auto metrics = display_home_metrics(rec, moduleProvidesExtractorOutput(rec));
+            payload_write_u8(ofe_home_metrics::KIND);
+            ofe_home_metrics::encode(payload + payload_len, MAX_PAYLOAD - payload_len, metrics);
+            payload_len += ofe_home_metrics::WIRE_SIZE;
           }
 
           ++record_count;
@@ -6192,17 +6359,21 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
     while (rp < resp.len) {
       const uint8_t marker = resp.payload[rp++];
       if (marker == 0xAC && rp < resp.len) {
+        display->display_value_request.valid = false;
         // Legacy/current detail request: page belongs to the reported detail arg.
         display->display_universal_entity_start = resp.payload[rp++];
         requested_universal_addr = display->display_view_arg;
         requested_universal_start = display->display_universal_entity_start;
         display_requested_universal_page = true;
       } else if (marker == 0xAD && rp + 1 < resp.len) {
+        display->display_value_request.valid = false;
         // Background entity-cache request: does not change the Display view.
         requested_universal_addr = resp.payload[rp++];
         requested_universal_start = resp.payload[rp++];
         display->display_universal_entity_start = requested_universal_start;
         display_requested_universal_page = true;
+      } else if (marker == ofe_jbc_detail::REQUEST || marker == ofe_jbc_detail::LEGACY_REQUEST || marker == ofe_jbc_detail::COMMAND) {
+        if (!consumeDisplayJbcExtension(*display, resp, rp, marker)) break;
       } else if (marker == 0xAE && rp < resp.len) {
         // Background module-list request; keep the visible view untouched.
         requested_module_list_start = resp.payload[rp++];
@@ -6211,6 +6382,17 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
         // Background module-detail request; keep the visible view untouched.
         requested_module_detail_addr = resp.payload[rp++];
         display_requested_module_detail = true;
+      } else if (marker == ofe_home_metrics::CAPABILITY && rp < resp.len) {
+        display->display_home_metrics_supported = resp.payload[rp++] == ofe_home_metrics::VERSION;
+      } else if (marker == ofe_display_values::CAPABILITY && rp < resp.len) {
+        display->display_values_supported = resp.payload[rp++] == ofe_display_values::CAP_VERSION;
+      } else if (marker == ofe_display_values::REQUEST && display->display_values_supported) {
+        const size_t used = ofe_display_values::decodeRequest(resp.payload + rp, resp.len - rp, display->display_value_request);
+        if (!used) break;
+        rp = uint8_t(rp + used);
+        requested_universal_addr = display->display_value_request.addr;
+        requested_universal_start = 0;
+        display_requested_universal_page = true;
       } else {
         break;
       }
@@ -6759,6 +6941,72 @@ bool MasterScheduler::sendDisplayModuleDetail(uint8_t display_addr, uint8_t targ
   return resp.cmd == (CMD_DISPLAY_MODULE_DETAIL | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
 }
 
+bool MasterScheduler::consumeDisplayJbcExtension(ModuleRecord& display, const Frame& response,
+                                                uint8_t& cursor, uint8_t marker) {
+  using namespace ofe_jbc_detail;
+  const uint8_t size = marker == COMMAND ? 9 : 4;
+  if (uint16_t(cursor) + size > response.len) return false;
+  const uint8_t* p = response.payload + cursor; cursor += size;
+  ModuleRecord* target = registry_.find(p[0]);
+  if (display.display_view_mode != DISPLAY_VIEW_MODULE_DETAIL || display.display_view_arg != p[0] ||
+      !target || target->type != MODULE_JBC_USB) return true;
+  if (marker == REQUEST || marker == LEGACY_REQUEST) {
+    if (p[1] >= SECTION_COUNT || p[2] >= 4) return true;
+    display.display_jbc_section = p[1]; display.display_jbc_port = p[2];
+    display.display_jbc_window = marker == REQUEST ? WINDOW : LEGACY_WINDOW;
+    display.display_cache_universal_addr = p[0]; display.display_cache_universal_start = p[3];
+    display.display_cache_pending_mask |= 0x08; // existing paged-cache service slot
+  } else {
+    const uint32_t hash = fnv1a32_local(p, size);
+    if (hash != display.display_jbc_command_hash || display.display_jbc_command_status == 0xFF) {
+      uint8_t payload[23], len = 0;
+      const bool permitted = !firmwareUpdateActive() && target->online &&
+        u32(p + 4) == ofe_jbc_catalog::revision(*target) &&
+        ha_jbc_control_payload(*target, p[1], int16_t(u16(p + 2)) / 10.0f, payload, len);
+      const bool ok = permitted && setJbcUsbConfig(target->addr, payload, len);
+      if (ok) pending_jbc_usb_state_addr_ = target->addr;
+      display.display_jbc_command_hash = hash;
+      display.display_jbc_command_cookie = p[8];
+      display.display_jbc_command_status = ok ? STATUS_OK : STATUS_BAD_VALUE;
+    }
+    display.display_cache_universal_addr = p[0];
+    display.display_cache_pending_mask |= 0x08;
+    display.display_cache_next_ms = 0;
+  }
+  return true;
+}
+
+bool MasterScheduler::sendDisplayJbcPage(ModuleRecord& display, const ModuleRecord& target) {
+  using namespace ofe_jbc_detail;
+  if (display.display_view_mode != DISPLAY_VIEW_MODULE_DETAIL || display.display_view_arg != target.addr) return true;
+  const uint8_t section = display.display_jbc_section, port = display.display_jbc_port;
+  uint8_t start = display.display_cache_universal_start;
+  const bool german = display.display_language == 1;
+  Row row;
+  const uint8_t total = ofe_jbc_catalog::entry(target, section, port, german, start, row);
+  if (start >= total) { start = 0; ofe_jbc_catalog::entry(target, section, port, german, start, row); }
+  uint8_t payload[MAX_PAYLOAD] = {VERSION, target.addr, section, port, start, total};
+  put32(payload + 6, ofe_jbc_catalog::revision(target));
+  payload[10] = display.display_jbc_command_cookie; payload[11] = display.display_jbc_command_status;
+  payload[12] = jbc_usb_core_state(target).port_count;
+  payload[13] = (target.online ? 1 : 0) | (jbc_usb_core_state(target).linked ? 2 : 0);
+  uint8_t length = HEADER_SIZE, count = 0;
+  // Old six-row displays and new twelve-row displays share the bounded codec.
+  const uint8_t window = display.display_jbc_window == WINDOW ? WINDOW : LEGACY_WINDOW;
+  for (uint8_t index = start; index < total && index / window == start / window; ++index) {
+    if (index != start) ofe_jbc_catalog::entry(target, section, port, german, index, row);
+    const size_t used = encode(row, payload + length, MAX_PAYLOAD - length);
+    if (!used) break;
+    length = uint8_t(length + used); ++count;
+  }
+  payload[14] = count;
+  if (master_display_wifi.active(display.addr))
+    return startAsyncDisplayRequest(display.addr, CMD_DISPLAY_DETAIL_PAGE, payload, length, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
+  Frame response;
+  return request(display.addr, CMD_DISPLAY_DETAIL_PAGE, payload, length, response, 60) &&
+    response.cmd == (CMD_DISPLAY_DETAIL_PAGE | 0x80) && response.len && response.payload[0] == STATUS_OK;
+}
+
 static uint8_t displayUniversalProfileEntityCount(const ModuleRecord& rec) {
   uint8_t total_entities = 0;
   if (rec.universal_descriptor_valid && rec.universal_descriptor[0]) {
@@ -6784,11 +7032,38 @@ static uint8_t displayUniversalProfileEntityCount(const ModuleRecord& rec) {
 bool MasterScheduler::sendDisplayUniversalEntityPage(uint8_t display_addr, const ModuleRecord& rec, uint8_t start_entity) {
   if (!(rec.caps & CAP_DESCRIPTOR) || !rec.universal_descriptor_valid) return false;
 
+  uint8_t payload[MAX_PAYLOAD];
+  const ModuleRecord* display = registry_.find(display_addr);
+  const bool values_requested = display && display->display_values_supported && display->display_value_request.valid &&
+    display->display_value_request.addr == rec.addr && display->display_value_request.crc == rec.universal_descriptor_crc &&
+    display->display_value_request.count <= ofe_display_values::MAX_ENTITIES;
+  const auto snapshot_key = values_requested ? ofe_display_values::snapshotKey(rec, display->display_language) :
+    ofe_display_values::SnapshotKey{};
+  ofe_display_values::Snapshot* snapshot = values_requested ? scheduler_display_values.find(snapshot_key, millis()) : nullptr;
+  auto send_values = [&](const ofe_display_values::Snapshot& values) -> bool {
+    // Roles can change independently from the cached, formatted entity values.
+    const uint8_t flags = (values.flags & 0x18U) | (rec.online ? 1 : 0) |
+      (rec.role_jbc ? 2 : 0) | (rec.role_output ? 4 : 0);
+    const size_t bytes = ofe_display_values::encodePage(payload, sizeof(payload), rec.addr, rec.type,
+      flags, rec.universal_descriptor_crc, values.values, values.count, display->display_value_request);
+    if (!bytes) return false;
+    if (master_display_wifi.active(display_addr))
+      return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, uint8_t(bytes), DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
+    Frame response;
+    return request(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, uint8_t(bytes), response, 60) &&
+      response.cmd == (CMD_DISPLAY_DETAIL_PAGE | 0x80) && response.len && response.payload[0] == STATUS_OK;
+  };
+  if (snapshot && snapshot->count == display->display_value_request.count) return send_values(*snapshot);
+
   uint8_t total_entities = displayUniversalProfileEntityCount(rec);
+  const bool compact = display && display->display_values_supported && display->display_value_request.valid &&
+    display->display_value_request.addr == rec.addr && display->display_value_request.crc == rec.universal_descriptor_crc &&
+    display->display_value_request.count == total_entities && total_entities <= ofe_display_values::MAX_ENTITIES;
+  if (compact) snapshot = &scheduler_display_values.begin(snapshot_key, millis());
+  if (compact || (display && display->display_value_request.valid)) start_entity = 0;
   const char* scan = nullptr;
   if (start_entity >= total_entities) start_entity = 0;
 
-  uint8_t payload[MAX_PAYLOAD];
   uint8_t payload_len = 0;
   auto payload_can_write = [&](uint16_t n) -> bool {
     return (uint16_t)payload_len + n <= MAX_PAYLOAD;
@@ -6914,6 +7189,13 @@ bool MasterScheduler::sendDisplayUniversalEntityPage(uint8_t display_addr, const
       if (!(type_code == DISPLAY_UNI_TEXT || type_code == DISPLAY_UNI_SELECT || type_code == DISPLAY_UNI_BUTTON || type_code == DISPLAY_UNI_SENSOR || type_code == DISPLAY_UNI_BINARY_SENSOR)) {
         state_text[0] = 0;
       }
+      if (compact) {
+        if (written >= ofe_display_values::MAX_ENTITIES) return false;
+        auto& value = snapshot->values[written++];
+        value = {}; value.id = id; value.type = type_code; value.number = value_v;
+        memcpy(value.text, state_text, strlen(state_text) + 1);
+        continue;
+      }
       uint8_t label_len = (uint8_t)strlen(label);
       if (label_len > 31) label_len = 31;
       uint8_t unit_len = (uint8_t)strlen(unit);
@@ -6974,6 +7256,11 @@ bool MasterScheduler::sendDisplayUniversalEntityPage(uint8_t display_addr, const
   // retry once from zero instead of sending an empty page forever.
   if (!written && start_entity && !emitted_after_start) return sendDisplayUniversalEntityPage(display_addr, rec, 0);
   payload[count_pos] = written;
+
+  if (compact) {
+    scheduler_display_values.commit(*snapshot, written, payload[3]);
+    return send_values(*snapshot);
+  }
 
   if (master_display_wifi.active(display_addr))
     return startAsyncDisplayRequest(display_addr, CMD_DISPLAY_DETAIL_PAGE, payload, payload_len, DISPLAY_WIFI_ASYNC_TIMEOUT_MS);
@@ -7320,11 +7607,12 @@ bool MasterScheduler::pushDisplayCache() {
     if (rec.display_cache_next_ms && (int32_t)(now_ms - rec.display_cache_next_ms) < 0) continue;
 
     const bool wifi_display = master_display_wifi.active(rec.addr);
-    auto cache_attempt_done = [&](bool ok) {
+    auto cache_attempt_done = [&](bool ok, bool values = false) {
       // Successful cache pages do not need to be hammered back-to-back. After
       // a lost UDP sample use a longer retry gap so the display can drain its
       // socket/UI queue and a late ACK cannot collide with the next request.
-      const uint32_t gap_ms = wifi_display ? (ok ? 300UL : 550UL) : (ok ? 70UL : 150UL);
+      const uint32_t gap_ms = wifi_display ? (ok ? (values ? 80UL : 300UL) : 550UL) :
+        (ok ? (values ? 40UL : 70UL) : 150UL);
       rec.display_cache_next_ms = millis() + gap_ms;
     };
 
@@ -7369,10 +7657,11 @@ bool MasterScheduler::pushDisplayCache() {
     if (rec.display_view_mode == DISPLAY_VIEW_MODULE_DETAIL) {
       if (rec.display_cache_pending_mask & DISP_CACHE_UNIVERSAL) {
         const ModuleRecord* detail = registry_.find(rec.display_cache_universal_addr);
-        const bool ok = !detail || !(detail->caps & CAP_DESCRIPTOR) ||
-          sendDisplayUniversalEntityPage(rec.addr, *detail, rec.display_cache_universal_start);
+        const bool ok = !detail || (detail->type == MODULE_JBC_USB
+          ? sendDisplayJbcPage(rec, *detail) : !(detail->caps & CAP_DESCRIPTOR) ||
+            sendDisplayUniversalEntityPage(rec.addr, *detail, rec.display_cache_universal_start));
         if (ok && !rec.display_async_pending) rec.display_cache_pending_mask &= (uint8_t)~DISP_CACHE_UNIVERSAL;
-        cache_attempt_done(ok);
+        cache_attempt_done(ok, detail && detail->type != MODULE_JBC_USB && rec.display_values_supported && rec.display_value_request.valid);
         return true;
       }
       if (rec.display_cache_pending_mask & DISP_CACHE_DETAIL) {
@@ -7402,10 +7691,11 @@ bool MasterScheduler::pushDisplayCache() {
       if (slot == 2 && (rec.display_cache_pending_mask & DISP_CACHE_UNIVERSAL)) {
         rec.display_cache_service_rr = 0;
         const ModuleRecord* detail = registry_.find(rec.display_cache_universal_addr);
-        const bool ok = !detail || !(detail->caps & CAP_DESCRIPTOR) ||
-          sendDisplayUniversalEntityPage(rec.addr, *detail, rec.display_cache_universal_start);
+        const bool ok = !detail || (detail->type == MODULE_JBC_USB
+          ? sendDisplayJbcPage(rec, *detail) : !(detail->caps & CAP_DESCRIPTOR) ||
+            sendDisplayUniversalEntityPage(rec.addr, *detail, rec.display_cache_universal_start));
         if (ok && !rec.display_async_pending) rec.display_cache_pending_mask &= (uint8_t)~DISP_CACHE_UNIVERSAL;
-        cache_attempt_done(ok);
+        cache_attempt_done(ok, detail && detail->type != MODULE_JBC_USB && rec.display_values_supported && rec.display_value_request.valid);
         return true;
       }
     }
@@ -7767,7 +8057,7 @@ bool MasterScheduler::calibrateFanIoProFilter(uint8_t addr, uint8_t action, uint
   if (ok) readTelemetry(addr);
   return ok;
 }
-bool MasterScheduler::setDisplaySettings(uint8_t addr, uint8_t brightness, uint8_t language, uint8_t theme, uint8_t screensaver_min) {
+bool MasterScheduler::setDisplaySettings(uint8_t addr, uint8_t brightness, uint8_t language, uint8_t theme, uint8_t screensaver_min, uint8_t backlight_mode, uint8_t backlight_timeout_min) {
   if (module_fw_active_ && addr == module_fw_target_) return false;
   ModuleRecord* rec = registry_.find(addr);
   if (!rec || !rec->online || !(rec->caps & CAP_DISPLAY)) return false;
@@ -7778,22 +8068,28 @@ bool MasterScheduler::setDisplaySettings(uint8_t addr, uint8_t brightness, uint8
     screensaver_min == 5 || screensaver_min == 10;
   if (!screensaver_valid) return false;
 
-  uint8_t payload[4] = {
+  const bool backlight_requested = backlight_mode != 0xFF || backlight_timeout_min != 0xFF;
+  if ((backlight_mode != 0xFF && backlight_mode > 2) ||
+      (backlight_timeout_min != 0xFF && (backlight_timeout_min < 1 || backlight_timeout_min > 60)) ||
+      (backlight_requested && !rec->display_backlight_supported)) return false;
+  uint8_t payload[6] = {
     brightness > 100 ? 0xFF : (brightness < 10 ? 10 : brightness),
     language > 1 ? 0xFF : language,
     theme > 1 ? 0xFF : theme,
-    screensaver_requested ? screensaver_min : 0xFF
+    screensaver_requested ? screensaver_min : 0xFF,
+    backlight_mode, backlight_timeout_min
   };
 
   Frame resp;
-  if (!request(addr, CMD_SET_STATE, payload, sizeof(payload), resp, 100)) return false;
+  if (!request(addr, CMD_SET_STATE, payload, backlight_requested ? 6 : 4, resp, 100)) return false;
   bool ok = resp.cmd == (CMD_SET_STATE | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
 
   // Older display firmwares only understood brightness/language/theme (3 bytes).
   // Never use that compatibility fallback when the caller explicitly changes
   // the screensaver time; otherwise the Web UI can report success although the
   // Display never received the fourth byte.
-  if (!ok && !screensaver_requested && resp.cmd == (CMD_SET_STATE | 0x80) &&
+  if (ok && backlight_requested && resp.len < 7) return false;
+  if (!ok && !screensaver_requested && !backlight_requested && resp.cmd == (CMD_SET_STATE | 0x80) &&
       resp.len >= 1 && resp.payload[0] == STATUS_BAD_LEN) {
     if (!request(addr, CMD_SET_STATE, payload, 3, resp, 100)) return false;
     ok = resp.cmd == (CMD_SET_STATE | 0x80) && resp.len >= 1 && resp.payload[0] == STATUS_OK;
@@ -7813,6 +8109,10 @@ bool MasterScheduler::setDisplaySettings(uint8_t addr, uint8_t brightness, uint8
     if (applied_language != 0xFF) rec->display_language = applied_language;
     if (applied_theme != 0xFF) rec->display_theme = applied_theme;
     if (applied_screensaver != 0xFF) rec->display_screensaver_min = applied_screensaver;
+    if (resp.len >= 7) {
+      rec->display_backlight_mode = resp.payload[5];
+      rec->display_backlight_timeout_min = resp.payload[6];
+    }
     readTelemetry(addr);
   }
   return ok;
@@ -9012,8 +9312,11 @@ void MasterScheduler::pollOneBackgroundJob(uint32_t now) {
         }
         break;
 
-      case BG_DISPLAY_STATUS:
-        if ((uint32_t)(now - last_display_status_ms_) >= DISPLAY_STATUS_SLOT_MS) {
+      case BG_DISPLAY_STATUS: {
+        unsigned displays = 0;
+        for (uint8_t i = 0; i < registry_.count(); ++i)
+          if (registry_.at(i).online && (registry_.at(i).caps & CAP_DISPLAY)) ++displays;
+        if ((uint32_t)(now - last_display_status_ms_) >= ofe_display_values::statusSlot(displays, DISPLAY_STATUS_SLOT_MS)) {
           last_display_status_ms_ = now;
           const uint32_t job_us = micros();
           pushDisplayStatus();
@@ -9021,6 +9324,7 @@ void MasterScheduler::pollOneBackgroundJob(uint32_t now) {
           return;
         }
         break;
+        }
 
       case BG_DISPLAY_CACHE: {
         const uint32_t job_us = micros();

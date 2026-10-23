@@ -1,13 +1,14 @@
 {
   "domain": "open_fume_extractor",
   "name": "Open Fume Extractor",
-  "version": "0.1.0rc21",
+  "version": "0.1.0rc25",
+  "after_dependencies": ["lovelace"],
   "config_flow": true,
   "integration_type": "hub",
   "iot_class": "local_polling",
   "codeowners": ["@IceCube20"],
-  "documentation": "https://github.com/IceCube20/Open-Fume-Extractor",
-  "issue_tracker": "https://github.com/IceCube20/Open-Fume-Extractor/issues",
+  "documentation": "https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant",
+  "issue_tracker": "https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant/issues",
   "requirements": [],
   "zeroconf": [{"type": "_http._tcp.local.", "name": "open-fume-extractor-*"}]
 }

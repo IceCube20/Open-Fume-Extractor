@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <type_traits>
 
 // Growable text buffer for large, cold-path JSON/HTTP/MQTT payloads.
 // Unlike Arduino String::reserve(), this class explicitly selects PSRAM via
@@ -79,19 +80,38 @@ class OfePsramTextBuffer {
     return *this;
   }
 
-  OfePsramTextBuffer& operator+=(signed char value) { return appendSigned((long long)value); }
-  OfePsramTextBuffer& operator+=(unsigned char value) { return appendUnsigned((unsigned long long)value); }
-  OfePsramTextBuffer& operator+=(short value) { return appendSigned((long long)value); }
-  OfePsramTextBuffer& operator+=(unsigned short value) { return appendUnsigned((unsigned long long)value); }
-  OfePsramTextBuffer& operator+=(int value) { return appendSigned((long long)value); }
-  OfePsramTextBuffer& operator+=(unsigned int value) { return appendUnsigned((unsigned long long)value); }
-  OfePsramTextBuffer& operator+=(long value) { return appendSigned((long long)value); }
-  OfePsramTextBuffer& operator+=(unsigned long value) { return appendUnsigned((unsigned long long)value); }
-  OfePsramTextBuffer& operator+=(long long value) { return appendSigned(value); }
-  OfePsramTextBuffer& operator+=(unsigned long long value) { return appendUnsigned(value); }
+  OfePsramTextBuffer& operator+=(signed char value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(unsigned char value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(short value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(unsigned short value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(int value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(unsigned int value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(long value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(unsigned long value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(long long value) { return appendInteger(value); }
+  OfePsramTextBuffer& operator+=(unsigned long long value) { return appendInteger(value); }
 
   OfePsramTextBuffer& operator+=(float value) { return appendFloat((double)value, 2); }
   OfePsramTextBuffer& operator+=(double value) { return appendFloat(value, 2); }
+
+  // Same escaping as json_escape(), without an intermediate Arduino String.
+  OfePsramTextBuffer& appendJsonEscaped(const char* value) {
+    if (!value) return *this;
+    const char* run = value;
+    for (const char* p = value; *p; ++p) {
+      const unsigned char c = static_cast<unsigned char>(*p);
+      if (c >= 0x20 && c != '"' && c != '\\') continue;
+      append(run, size_t(p - run));
+      if (c == '"' || c == '\\') { const char escaped[] = {'\\', char(c)}; append(escaped, 2); }
+      else if (c == '\n') append("\\n", 2);
+      else if (c == '\r') append("\\r", 2);
+      else if (c == '\t') append("\\t", 2);
+      else append(" ", 1);
+      run = p + 1;
+    }
+    append(run, strlen(run));
+    return *this;
+  }
 
  private:
   char* buffer_ = nullptr;
@@ -181,17 +201,20 @@ class OfePsramTextBuffer {
     return true;
   }
 
-  OfePsramTextBuffer& appendSigned(long long value) {
-    char tmp[32];
-    const int n = snprintf(tmp, sizeof(tmp), "%lld", value);
-    if (n > 0) append(tmp, (size_t)n);
-    return *this;
-  }
-
-  OfePsramTextBuffer& appendUnsigned(unsigned long long value) {
-    char tmp[32];
-    const int n = snprintf(tmp, sizeof(tmp), "%llu", value);
-    if (n > 0) append(tmp, (size_t)n);
+  template <typename Integer>
+  OfePsramTextBuffer& appendInteger(Integer value) {
+    using Unsigned = typename std::make_unsigned<Integer>::type;
+    // Keep common 32-bit values in 32-bit arithmetic; unsigned magnitude also
+    // handles the most-negative signed value without signed overflow.
+    Unsigned magnitude = static_cast<Unsigned>(value);
+    const bool negative = std::is_signed<Integer>::value && value < 0;
+    if (negative) magnitude = Unsigned(Unsigned(0) - magnitude);
+    char tmp[sizeof(Integer) * 3 + 1];
+    char* const end = tmp + sizeof(tmp);
+    char* p = end;
+    do { *--p = char('0' + magnitude % 10); magnitude /= 10; } while (magnitude);
+    if (negative) *--p = '-';
+    append(p, size_t(end - p));
     return *this;
   }
 

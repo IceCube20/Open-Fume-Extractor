@@ -16,3 +16,13 @@ foreach ($resolution in @('320x480', '800x480', 'ST7796_320x480')) {
   if ($LASTEXITCODE -ne 0) { throw "Brightness regressions failed ($resolution)" }
   Write-Output "Verified display: $resolution"
 }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 "$PSScriptRoot\test_backlight_shutdown.cpp" "/Fo$build\" "/Fe$build\test_backlight_shutdown.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Backlight shutdown native build failed' }
+& "$build\test_backlight_shutdown.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Backlight shutdown regressions failed' }
+& $python "$PSScriptRoot\extract_backlight_settings.py" "$build\generated_backlight_settings.inc.h"
+if ($LASTEXITCODE -ne 0) { throw 'Backlight settings extraction failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 "/I$build" "$PSScriptRoot\test_backlight_settings.cpp" "/Fo$build\" "/Fe$build\test_backlight_settings.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Backlight settings native build failed' }
+& "$build\test_backlight_settings.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Backlight settings regressions failed' }

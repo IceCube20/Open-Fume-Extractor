@@ -205,6 +205,7 @@ enum Caps : uint32_t {
   CAP_DISPLAY_HYBRID = 1UL << 25,
   CAP_POWER_SAVE = 1UL << 26,
   CAP_DISPLAY_ST7796 = 1UL << 27,
+  CAP_DISPLAY_P4 = 1UL << 28,
 };
 
 static const uint32_t CAP_JBC_ACTIVITY = CAP_JBC_BUS | CAP_JBC_USB;
@@ -221,6 +222,7 @@ inline const char* ofe_module_default_name(uint8_t type, uint32_t caps = 0) {
     case MODULE_SENSOR_RESERVED: return "Sensor";
     case MODULE_WELLER_ZERO_SMOG: return "Weller Zero Smog Bus";
     case MODULE_DISPLAY:
+      if (caps & CAP_DISPLAY_P4) return "Display P4 800x480";
       if (caps & CAP_DISPLAY_ST7796) return "Display ST7796 320x480";
       if (caps & CAP_DISPLAY_800X480) return "Display 800x480";
       if (caps & CAP_DISPLAY_320X480) return "Display 320x480";

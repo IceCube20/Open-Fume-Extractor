@@ -2,6 +2,26 @@
 
 #include <stdint.h>
 
+// Drain a few already buffered packets after a preemption crossed the deadline.
+// Never sleep/retransmit in this phase; even continuous traffic is bounded.
+class RequestReceiveWindow {
+public:
+  RequestReceiveWindow(uint32_t started_ms, uint32_t timeout_ms)
+      : started_ms_(started_ms), timeout_ms_(timeout_ms) {}
+  bool pollDue(uint32_t now_ms) {
+    if (!draining_ && uint32_t(now_ms - started_ms_) < timeout_ms_) return true;
+    draining_ = true;
+    if (!final_polls_) return false;
+    --final_polls_;
+    return true;
+  }
+  bool draining() const { return draining_; }
+private:
+  uint32_t started_ms_, timeout_ms_;
+  uint8_t final_polls_ = 4;
+  bool draining_ = false;
+};
+
 enum RequestFrameDisposition : uint8_t {
   WAIT_FRAME_OTHER_ADDRESS = 1,
   WAIT_FRAME_SEQUENCE = 2,

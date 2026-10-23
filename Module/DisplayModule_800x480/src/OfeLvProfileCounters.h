@@ -5,6 +5,13 @@
 // Owned by the LVGL loop task only. Inclusive categories intentionally overlap.
 class OfeLvProfileCounters {
  public:
+  void reset() {
+    memset(samples_, 0, sizeof(samples_));
+    memset(start_, 0, sizeof(start_));
+    memset(depth_, 0, sizeof(depth_));
+    errors_ = 0;
+  }
+
   void begin(unsigned id, uint32_t now) {
     if (id >= OFE_LV_PROFILE_COUNT) return;
     if (depth_[id]++ == 0) start_[id] = now;

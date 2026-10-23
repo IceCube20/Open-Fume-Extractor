@@ -47,7 +47,7 @@ static uint32_t fw_update_last_draw_ms=0;
 static uint8_t response=255;
 static void send_status_response(const Frame&,uint8_t status) { response=status; }
 static void draw_update_progress_throttled(uint8_t,uint8_t,const char*,bool=false) {}
-static bool running_in_rs485_task() { return true; }
+static bool ui_needs_defer() { return true; }
 static void lvgl_timer_handler_profiled() {}
 static void lvgl_flush_canvas_if_dirty(bool) {}
 

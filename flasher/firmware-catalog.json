@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "2.0.53RC",
+    "version": "2.0.75RC",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.53RC-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.53RC.bin",
-    "mergedSha256": "6c2ecef65602dbdce42274f6954c983060ce5580b9efdde83d2c949c36d5f4c6"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.75RC-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.75RC.bin",
+    "mergedSha256": "8436d8c0ab34e2e5f870f6e686c60e5f07bbc3bc438fe39e65855e3a6b5914fe"
   },
   {
     "id": "JBC-FAE-Bus",
@@ -74,38 +74,50 @@
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.4.3RC",
+    "version": "1.4.31RC",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.4.3RC-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.4.3RC.bin",
-    "mergedSha256": "72f87be86dbd0f079ad6f246d07fb52178a6a066c7c213c7150cc968f21b6cb5"
+    "merged": "firmware/Display-320x480/Display-320x480-1.4.31RC-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.4.31RC.bin",
+    "mergedSha256": "51b2c0e7eacbabdb2d2be3b1c047dc7d93187c31e7f1ec342b0fdde0a1764735"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.4.10RC",
+    "version": "1.4.39RC",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.4.10RC-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.4.10RC.bin",
-    "mergedSha256": "920a3cb815430c25eabe8b5e915f057fc27f3c5d02be19dab269476c423f15a5"
+    "merged": "firmware/Display-800x480/Display-800x480-1.4.39RC-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.4.39RC.bin",
+    "mergedSha256": "1b1e36445ea87679ea9ea9b70cecd3bb507734241f5b635df2509a160c56f284"
+  },
+  {
+    "id": "Display-P4-800x480",
+    "label": "Display P4 800x480 (experimental, PRE-V3)",
+    "version": "1.0.7alpha-P4Prep",
+    "signatureTarget": "DISPLAY_P4_800X480",
+    "chipFamily": "ESP32-P4",
+    "flashSize": "16 MB",
+    "manifest": "flasher/manifests/Display-P4-800x480.json",
+    "merged": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.7alpha-P4Prep-merged.bin",
+    "ota": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.7alpha-P4Prep.bin",
+    "mergedSha256": "3535f84345e061c2510ef2dc176cf6899d852874f924741ed5193b2bf5b38711"
   },
   {
     "id": "Display-ST7796-320x480",
     "label": "Display ST7796 320x480",
-    "version": "1.0.13RC",
+    "version": "1.0.41RC",
     "signatureTarget": "DISPLAY_ST7796_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-ST7796-320x480.json",
-    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.13RC-merged.bin",
-    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.13RC.bin",
-    "mergedSha256": "07d62e05443dae296288ad77cafe52b0fe2e1df89348988336ca185d2d628c8d"
+    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.41RC-merged.bin",
+    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.41RC.bin",
+    "mergedSha256": "93b3e87319a7f9803f764ee0968fe69b7cc3dade1a51dbb320474eeda07c5a6f"
   },
   {
     "id": "Universal-RS232",

@@ -253,6 +253,8 @@ def presentation(spec: Spec) -> None:
         "main_input": "source-branch", "main_output": "fan", "main_power": "fan",
         "weller_speed": "fan", "brightness": "brightness-6", "display_language": "translate",
         "display_theme": "theme-light-dark", "display_screensaver_min": "monitor-screenshot",
+        "backlight_mode": "lightbulb-auto-outline", "backlight_timeout": "timer-outline",
+        "backlight_on": "lightbulb-outline",
         "jbc_usb_station_error": "alert-circle-outline", "error": "alert-circle-outline",
         "tool": "soldering-iron", "jbc_work_mask": "soldering-iron", "jbc_stand_mask": "car-brake-parking",
         "future_mode": "progress-clock", "countdown": "timer-sand", "time_to_stop": "timer-sand",
@@ -335,6 +337,9 @@ def mqtt_presentation(spec: Spec, state: dict, master_uid: str) -> None:
         "main_power": ("Leistung", "Power"), "brightness": ("Helligkeit", "Brightness"),
         "display_language": ("Sprache", "Language"), "display_theme": ("Farbschema", "Theme"),
         "display_screensaver_min": ("Ruhemodus", "Screensaver"), "restart": ("Neustart", "Restart"),
+        "backlight_mode": ("Beleuchtung ausschalten", "Backlight off"),
+        "backlight_timeout": ("Beleuchtung Wartezeit", "Backlight delay"),
+        "backlight_on": ("Hintergrundbeleuchtung", "Backlight"),
         "reboot": ("Neustart", "Restart"), "eco": ("Energiesparen", "Power saving"),
         "power_save_active": ("Energiesparen", "Power saving"),
         "work": ("Work", "Work"), "feedback_rpm": ("Lüfter RPM", "Fan RPM"),
@@ -378,6 +383,10 @@ def mqtt_presentation(spec: Spec, state: dict, master_uid: str) -> None:
             spec.name = (" ".join(prefix) + " " if prefix else "") + port_names[leaf][0 if german else 1]
     elif key.startswith("jbc_tc"):
         spec.name = key.split("_")[1].upper() + (" Solltemperatur" if german else " Set temperature") if key.endswith("selected_temp") else key.split("_")[1].upper() + (" Temperatur" if german else " Temperature")
+    if key == "backlight_mode" and german:
+        selected = spec.options.index(spec.value) if spec.value in spec.options else None
+        spec.options = ("Aus", "Nur im Energiesparmodus", "Immer")
+        spec.value = spec.options[selected] if selected is not None else None
     if key == "level" and german:
         selected = spec.option_values[spec.options.index(spec.value)] if spec.value in spec.options else None
         spec.options = ("Hoch", "Mittel", "Niedrig", "Benutzer")
@@ -711,6 +720,20 @@ def module_specs(uid: str, module: dict, online: bool, definitions: list):
             value = options[values.index(raw)] if raw in values else None
             yield Spec(uid, key, "select", name, value, valid, action="display", argument=argument,
                        options=options, option_values=values)
+        if module.get("display_backlight_supported"):
+            options = ("Off", "Only in power saving", "Always")
+            mode = module.get("display_backlight_mode")
+            value = options[mode] if isinstance(mode, int) and 0 <= mode < len(options) else None
+            yield Spec(uid, "backlight_mode", "select", "Backlight off", value, valid,
+                       action="display", argument="backlight_mode", options=options, option_values=("0", "1", "2"))
+            minutes = module.get("display_backlight_timeout_min")
+            yield Spec(uid, "backlight_timeout", "select", "Backlight delay",
+                       f"{minutes} min" if isinstance(minutes, int) and 1 <= minutes <= 60 else None, valid,
+                       action="display", argument="backlight_timeout",
+                       options=tuple(f"{i} min" for i in range(1, 61)),
+                       option_values=tuple(str(i) for i in range(1, 61)))
+            yield Spec(uid, "backlight_on", "binary_sensor", "Backlight",
+                       module.get("display_backlight_on"), valid=valid)
     if typ == 5:
         age = numeric(module.get("weller_uart_age_sec"))
         linked = age is not None and 0 <= age <= 10

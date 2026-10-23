@@ -170,6 +170,9 @@ def cases():
     for panel in ("320x480", "800x480", "ST7796 320x480"):
         add("Display " + panel, 6, caps=1 << 10, transport="wifi")
     add("Display stale telemetry", 6, caps=1 << 10, telemetry_valid=False)
+    add("Display legacy firmware", 6, caps=1 << 10, display_backlight_supported=False)
+    add("Display light off", 6, caps=1 << 10, display_backlight_on=False)
+    add("Display offline", 6, caps=1 << 10, online=False)
     profile = [definition(20 + i, "channel" + str(i), "switch", "rw", role="output_enable", icon="mdi:valve") for i in range(32)]
     for name, typ in (("Universal RS232", 7), ("Modbus RTU", 8)):
         add(name + " 32 entities", typ, definitions=profile, caps=1 << 17)

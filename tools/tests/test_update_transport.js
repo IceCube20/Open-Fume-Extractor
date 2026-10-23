@@ -98,6 +98,22 @@ async function exerciseMasterRestartVerification(state,oldVersion,oldUptime,expe
 }
 
 (async()=>{
+  const targets=vm.createContext({});
+  vm.runInContext(scripts.join('\n'),targets);
+  const p4Caps=8388608|268435456;
+  const sig=target=>'OFE_FW_SIG:v1;target='+target+';version=1.0.0alpha-P4Prep;';
+  for(const [caps,target] of [[4194304,'DISPLAY_320X480'],[8388608,'DISPLAY_800X480'],
+      [4194304|134217728,'DISPLAY_ST7796_320X480'],[p4Caps,'DISPLAY_P4_800X480']]) {
+    assert.equal(targets.fwTargetOk(6,target,caps,false),true);
+    assert.equal(targets.fwSigOk(6,sig(target),caps),true);
+    assert.equal(targets.fwExpectedSig(6,caps),'OFE_FW_SIG:v1;target='+target+';');
+    for(const wrong of ['MASTER','DISPLAY','DISPLAY_320X480','DISPLAY_800X480','DISPLAY_ST7796_320X480','DISPLAY_P4_800X480']) {
+      if(wrong===target)continue;
+      assert.equal(targets.fwTargetOk(6,wrong,caps,false),false);
+      assert.equal(targets.fwSigOk(6,sig(wrong),caps),false);
+    }
+  }
+  assert.equal(targets.fwSigTargetLabel(sig('DISPLAY_P4_800X480')),'Display P4 800x480');
   const abortRequests=[];
   const ownerContext=vm.createContext({fetch:async url=>{
     abortRequests.push(url);return {ok:true,text:async()=>''};

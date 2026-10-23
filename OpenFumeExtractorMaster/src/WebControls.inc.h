@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UniversalProfileValidation.h"
+
 // Web control handlers for extractor settings, routing, module actions and restart.
 
 static void web_handle_scan() {
@@ -539,7 +541,22 @@ static void web_handle_display_set() {
   const uint8_t language = web.hasArg("language") ? (uint8_t)web.arg("language").toInt() : 0xFF;
   const uint8_t theme = web.hasArg("theme") ? (uint8_t)web.arg("theme").toInt() : 0xFF;
   const uint8_t screensaver = web.hasArg("screensaver") ? (uint8_t)web.arg("screensaver").toInt() : 0xFF;
-  if (!master_cmd_set_display_settings(addr, brightness, language, theme, screensaver)) {
+  uint8_t backlight_mode = 0xFF, backlight_timeout = 0xFF;
+  for (uint8_t i = 0; i < 2; ++i) {
+    const char* key = i ? "backlight_timeout" : "backlight_mode";
+    if (!web.hasArg(key)) continue;
+    const String text = web.arg(key);
+    char* end = nullptr;
+    const unsigned long value = strtoul(text.c_str(), &end, 10);
+    if (!text.length() || text[0] < '0' || text[0] > '9' || !end || *end ||
+        value > (i ? 60UL : 2UL) || (i && value < 1)) {
+      web.send(400, "text/plain; charset=utf-8", "invalid backlight setting");
+      return;
+    }
+    if (i) backlight_timeout = (uint8_t)value;
+    else backlight_mode = (uint8_t)value;
+  }
+  if (!master_cmd_set_display_settings(addr, brightness, language, theme, screensaver, backlight_mode, backlight_timeout)) {
     web.send(500, "text/plain; charset=utf-8", "display settings failed");
     return;
   }
@@ -571,6 +588,51 @@ static void web_handle_universal_profile() {
     return;
   }
   const bool is_modbus = rec->type == MODULE_MODBUS_RTU;
+  if (profile_text_arg) {
+    const std::string_view text(profile_text.c_str(), profile_text.length());
+    const auto validation = is_modbus ? ofe_profile::validateModbusProfile(text)
+                                      : ofe_profile::validateRs232Access(text);
+    if (validation.error != ofe_profile::AccessError::None) {
+      const bool de = web_is_german();
+      const char* reason = "";
+      switch (validation.error) {
+        case ofe_profile::AccessError::MissingMatch:
+          reason = de ? "Leseregel (match) fehlt. Bei reinen Schreibbefehlen access=wo verwenden."
+                      : "Missing read rule (match). Use access=wo for write-only commands."; break;
+        case ofe_profile::AccessError::MissingCommand:
+          reason = de ? "Schreibbefehl (set, set_on oder set_off) fehlt." : "Missing write command (set, set_on or set_off)."; break;
+        case ofe_profile::AccessError::InvalidType:
+          reason = de ? "Unbekannter Entity-Typ (type)." : "Unknown entity type (type)."; break;
+        case ofe_profile::AccessError::InvalidFunction:
+          reason = de ? "Unbekannte Modbus-Funktion (func)." : "Unknown Modbus function (func)."; break;
+        case ofe_profile::AccessError::InvalidReadFunction:
+          reason = de ? "Unbekannte Modbus-Lesefunktion (read_func)." : "Unknown Modbus read function (read_func)."; break;
+        case ofe_profile::AccessError::MissingReadFunction:
+          reason = de ? "Lesbarer Zugriff braucht eine Lesefunktion (read_func, FC 01 bis 04)."
+                      : "Readable access requires a read function (read_func, FC 01 to 04)."; break;
+        case ofe_profile::AccessError::MissingWriteFunction:
+          reason = de ? "Schreibbarer Zugriff braucht write_coil oder write_holding (FC 05/06)."
+                      : "Writable access requires write_coil or write_holding (FC 05/06)."; break;
+        case ofe_profile::AccessError::InvalidRegister:
+          reason = de ? "Registeradresse (reg/register) fehlt oder ist ungültig. Bereich: 0 bis 65535."
+                      : "Register address (reg/register) is missing or invalid. Range: 0 to 65535."; break;
+        case ofe_profile::AccessError::InvalidSlave:
+          reason = de ? "Slave-Adresse muss eine Dezimalzahl von 1 bis 247 sein."
+                      : "Slave address must be a decimal number from 1 to 247."; break;
+        default:
+          reason = de ? "access muss ro, rw oder wo sein." : "access must be ro, rw or wo."; break;
+      }
+      char message[240];
+      if (validation.entity) {
+        snprintf(message, sizeof(message), "%s %u: %s", de ? "Profil-Entity" : "Profile entity",
+                 static_cast<unsigned>(validation.entity), reason);
+      } else {
+        snprintf(message, sizeof(message), "%s: %s", de ? "Profil" : "Profile", reason);
+      }
+      web.send(400, "text/plain; charset=utf-8", message);
+      return;
+    }
+  }
   if (!profile.length()) profile = is_modbus ? "Generic Modbus RTU" : "Generic RS232";
   if (!station.length()) station = is_modbus ? "Modbus device" : "Community device";
   if (!baud.length()) baud = "9600";

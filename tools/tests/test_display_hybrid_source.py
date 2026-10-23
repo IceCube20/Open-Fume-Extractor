@@ -70,7 +70,9 @@ class DisplayHybridIntegration(unittest.TestCase):
             self.assertIn("if (display_wifi.handleConfig(req)) return;", sketch)
             self.assertIn("CAP_DISPLAY_HYBRID", sketch)
             self.assertIn("OfeDisplayWifiUi::openEvent, LV_EVENT_CLICKED", sketch)
-            self.assertIn('lv_small_button(system_body', sketch)
+            self.assertIn('lv_create_display_settings(system_body,', sketch)
+            settings = read(display / "src/OfeDisplaySettingsUi.inc.h")
+            self.assertIn("OfeDisplayWifiUi::openEvent", settings)
             self.assertIn("OfeDisplayWifiUi::isOpen()", sketch)
             self.assertIn("pending_display_event = DISPLAY_EVENT_NONE;", setup)
 
@@ -101,7 +103,7 @@ class DisplayHybridIntegration(unittest.TestCase):
                                 setup.index("reserve_lvgl_draw_buffer_early("))
                 self.assertIn("#define LVGL_DRAW_BUFFER_ALLOW_PSRAM_FALLBACK 0", sketch)
                 self.assertIn("constexpr size_t pool_bytes = LV_MEM_SIZE;", sketch)
-                self.assertIn("static void* widget_pools[5]", sketch)
+                self.assertIn("static void* widget_pools[11]", sketch)
                 self.assertIn("lv_mem_add_pool(candidate, pool_bytes)", sketch)
                 self.assertIn("(32 * 1024U)", read(display / "ofe_lv_conf.h"))
                 self.assertIn("LV_CONF_PATH", read(display / "build_opt.h"))
@@ -232,8 +234,8 @@ class DisplayHybridIntegration(unittest.TestCase):
         self.assertIn("lv_obj_clear_flag(ui_module_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);", small)
         self.assertRegex(small, r"#define DISPLAY_RS485_TASK_PRIORITY\s+2\b")
         self.assertRegex(small, r"#define DISPLAY_RS485_ACTIVE_YIELD_MS\s+1\b")
-        loop = small.split("void loop() {", 1)[1]
-        self.assertRegex(loop, r"lvgl_timer_handler_profiled\(\);\s+lvgl_flush_canvas_if_dirty")
+        service = small.split("static void process_display_ui_once() {", 1)[1].split("void setup()", 1)[0]
+        self.assertRegex(service, r"lvgl_timer_handler_profiled\(\);\s+lvgl_flush_canvas_if_dirty")
 
     def test_large_renderer_and_ide_board(self):
         config = read(DISPLAYS[1] / "ofe_lv_conf.h")
@@ -275,6 +277,8 @@ class DisplayHybridIntegration(unittest.TestCase):
         large = DISPLAYS[1]
         config = read(large / "ofe_lv_conf.h")
         self.assertRegex(config, r"#define LV_USE_PROFILER\s+0\b")
+        self.assertIn("#if OFE_RGB_RENDER_DIAGNOSTICS", config)
+        self.assertIn("#define OFE_RGB_RENDER_DIAGNOSTICS 0", config)
         small = read(DISPLAYS[0] / (DISPLAYS[0].name + ".ino"))
         self.assertNotIn("ofe_lv_profile_take", small)
         counters = read(large / "src/OfeLvProfileCounters.h")
@@ -285,7 +289,37 @@ class DisplayHybridIntegration(unittest.TestCase):
         handler = sketch.split("static uint32_t lvgl_timer_handler_profiled() {", 1)[1].split("\n}", 1)[0]
         self.assertLess(handler.index("lv_timer_handler()"), handler.index("perf_finish_window_if_due()"))
         self.assertIn("#if defined(LV_USE_PROFILER) && LV_USE_PROFILER", sketch)
-        self.assertIn("DRAW inclusive ms/frame", sketch)
+        self.assertIn("LVGL DIAG inclusive ms/frame", sketch)
+        self.assertIn("instrumented FPS is not a production speed result", sketch)
+        start = sketch.split("static void display_benchmark_start_event", 1)[1].split("static void display_benchmark_back_event", 1)[0]
+        self.assertNotIn("ofe_lv_profile_start();", start)
+        tick = sketch.split("static void display_benchmark_tick()", 1)[1].split("static void lv_add_main_nav", 1)[0]
+        self.assertLess(tick.index("fw_update_active || status.update_active"), tick.index("ofe_lv_profile_start();"))
+        self.assertIn("OfeDisplayWifiUi::isOpen()", tick)
+
+    def test_large_font_cache_preserves_original_assets_and_backend_fallback(self):
+        large = DISPLAYS[1]
+        sketch = read(large / (large.name + ".ino"))
+        cache = read(large / "src/OfeRgbFontCache.h")
+        self.assertIn("FontCache rgb_font_14(&openfume_montserrat_14_de)", sketch)
+        self.assertIn("#define UI_FONT_14 (rgb_font_14.font())", sketch)
+        self.assertIn("#define OFE_RGB_FONT_CACHE 0", cache)
+        self.assertNotIn("-DOFE_RGB_FONT_CACHE=1", read(large / "build_opt.h"))
+        binding = sketch.split("#if OFE_RGB_FONT_CACHE", 1)[1].split("#endif", 1)[0]
+        self.assertIn("#else\n#define UI_FONT_14 (&openfume_montserrat_14_de)", binding)
+        init = sketch.split("static void lvgl_init_ui() {", 1)[1].split("// Keep the hot LVGL pool", 1)[0]
+        self.assertIn("#if OFE_RGB_FONT_CACHE", init)
+        self.assertIn("LVGL font cache: OFF (original font path)", init)
+        self.assertIn("font_ = *source_;", cache)
+        self.assertIn("descriptor_ = original;", cache)
+        self.assertIn("source_->get_glyph_bitmap(&input, &output)", cache)
+        self.assertIn("MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT", cache)
+        self.assertNotIn("MALLOC_CAP_INTERNAL", cache)
+        self.assertIn("return storage_ ? &font_ : source_;", cache)
+        self.assertIn("LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6", cache)
+        self.assertNotIn("-DOFE_RGB_RENDER_DIAGNOSTICS=1", read(large / "build_opt.h"))
+        for display in (DISPLAYS[0], ROOT / "Module/DisplayModule_ST7796_320x480"):
+            self.assertNotIn("OfeRgbFontCache", read(display / (display.name + ".ino")))
 
     def test_large_tiles_keep_scanout_and_sram_reserve(self):
         large = read(DISPLAYS[1] / (DISPLAYS[1].name + ".ino"))
@@ -306,7 +340,7 @@ class DisplayHybridIntegration(unittest.TestCase):
     def test_jbc_home_uses_station_list_without_intermediate_label(self):
         for display in DISPLAYS:
             sketch = read(display / (display.name + ".ino"))
-            self.assertIn("+ home_jbc_station_models() +", sketch)
+            self.assertIn("+ home_jbc_station_models())", sketch)
             self.assertNotIn("lv_set_text(ui_home_work, status.work_mask", sketch)
             self.assertIn("update_jbc_station_list(req, p);", sketch)
             self.assertIn("status.jbc_station_count != last_drawn_status.jbc_station_count", sketch)

@@ -15,6 +15,7 @@ static WebServer web(80);
 static DNSServer dns;
 static Preferences net_prefs;
 static TaskHandle_t web_service_task_handle = nullptr;
+static TaskHandle_t mqtt_service_task_handle = nullptr;
 
 static bool master_extmem_malloc_enabled = false;
 static uint32_t master_extmem_malloc_threshold = MASTER_EXTMEM_MALLOC_THRESHOLD;

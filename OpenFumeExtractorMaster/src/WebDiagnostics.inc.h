@@ -166,7 +166,7 @@ static bool diagnostics_descriptor_first_tokens(const char* line, uint8_t& id, S
   return next_token(type) && next_token(key) && next_token(mode);
 }
 
-static void diagnostics_append_trace_defs_json(String& json, const ModuleRecord& m) {
+static void diagnostics_append_trace_defs_json(OfePsramTextBuffer& json, const ModuleRecord& m) {
   json += F(",\"local_trace_defs\":[");
   if (m.universal_descriptor_valid && m.universal_descriptor[0]) {
     const char* p = m.universal_descriptor;
@@ -320,16 +320,57 @@ static String diagnostics_device_detail(const ModuleRecord& m) {
   }
 }
 
+static void diagnostics_append_wifi_timing_json(OfePsramTextBuffer& json, uint8_t addr) {
+  const auto stats = master_display_wifi.timingSnapshot(addr);
+  json += F(",\"wifi_timing\":{\"supported\":"); json += stats.supported ? F("true") : F("false");
+  json += F(",\"sent\":"); json += stats.sent;
+  json += F(",\"invalid\":"); json += stats.invalid;
+  json += F(",\"version\":"); json += stats.version;
+  json += F(",\"last_command\":"); json += stats.command;
+  json += F(",\"last_sequence\":"); json += stats.sequence;
+  json += F(",\"age_ms\":"); json += stats.rtt.count ? uint32_t(millis() - stats.last_ms) : 0;
+  const char* names[] = {"rtt", "display", "transport", "master_queue", "master_poll", "display_poll"};
+  const ofe_wifi_timing::Metric* metrics[] = {&stats.rtt, &stats.display, &stats.transport, &stats.master_queue, &stats.master_poll, &stats.display_poll};
+  for (uint8_t i = 0; i < 6; ++i) {
+    json += F(",\""); json += names[i]; json += F("\":{\"samples\":"); json += metrics[i]->count;
+    json += F(",\"last_us\":"); json += metrics[i]->last;
+    json += F(",\"avg_us\":"); json += metrics[i]->average();
+    json += F(",\"max_us\":"); json += metrics[i]->maximum;
+    json += '}';
+  }
+  json += F(",\"peak\":{\"rtt_us\":"); json += stats.peak.rtt_us;
+  json += F(",\"display_us\":"); json += stats.peak.display_us;
+  json += F(",\"transport_us\":"); json += stats.peak.transport_us;
+  json += F(",\"master_poll_us\":"); json += stats.peak.master_poll_us;
+  json += F(",\"display_poll_us\":");
+  if (stats.peak.display_poll_us == UINT32_MAX) json += F("null"); else json += stats.peak.display_poll_us;
+  json += F(",\"master_queue_us\":");
+  if (stats.peak.master_queue_us == UINT32_MAX) json += F("null"); else json += stats.peak.master_queue_us;
+  json += F(",\"command\":"); json += stats.peak.command;
+  json += F(",\"sequence\":"); json += stats.peak.sequence;
+  json += F("}}");
+}
 static void web_handle_diagnostics_state() {
   scheduler.traceTouch();
   String view = web.arg("view");
   view.toLowerCase();
   const bool local_view = view == "local";
   MasterScheduler::TraceStats st = scheduler.traceStats();
-  String json;
-  json.reserve(52000);
+  // Reuse only external RAM. On boards without PSRAM, release the temporary
+  // internal buffer after each response instead of retaining a large DRAM block.
+  static OfePsramTextBuffer external;
+  OfePsramTextBuffer temporary;
+  OfePsramTextBuffer* target = &temporary;
+  if (master_extmem_malloc_enabled && external.reservePsram(52000)) target = &external;
+  else temporary.reserveInternal(8192);
+  OfePsramTextBuffer& json = *target;
+  json.clear();
   json += F("{\"active\":"); json += st.active ? F("true") : F("false");
   json += F(",\"target_addr\":"); json += st.target_addr;
+  json += F(",\"developer_mode\":"); json += developer_mode_enabled ? F("true") : F("false");
+  if (developer_mode_enabled) {
+    json += F(",\"wifi_timing_enabled\":"); json += master_display_wifi.timingEnabled() ? F("true") : F("false");
+  }
   json += F(",\"view\":\""); json += local_view ? F("local") : F("rs485"); json += '"';
   json += F(",\"started_ms\":"); json += st.started_ms;
   json += F(",\"requests\":"); json += st.requests;
@@ -356,6 +397,8 @@ static void web_handle_diagnostics_state() {
   json += F(",\"io_compact_polls\":"); json += scheduler.compactIoPollCount();
   json += F(",\"io_full_polls\":"); json += scheduler.fullIoPollCount();
   json += F(",\"sample_ms\":"); json += millis();
+  append_cpu_load_json(json);
+  append_master_runtime_json(json);
   json += F(",\"ofe_baud\":250000");
   json += F(",\"power_save_enabled\":"); json += scheduler.powerSaveEnabled() ? F("true") : F("false");
   json += F(",\"power_save_active\":"); json += scheduler.powerSaveActive() ? F("true") : F("false");
@@ -418,7 +461,7 @@ static void web_handle_diagnostics_state() {
     json += F("{\"addr\":"); json += m.addr;
     json += F(",\"type\":"); json += m.type;
     json += F(",\"type_name\":\""); json += module_type_name_for(m); json += '"';
-    json += F(",\"name\":\""); { const String dn = module_display_name(m); json += json_escape(dn.c_str()); } json += '"';
+    json += F(",\"name\":\""); { const String dn = module_display_name(m); json.appendJsonEscaped(dn.c_str()); } json += '"';
     json += F(",\"online\":"); json += m.online ? F("true") : F("false");
     json += F(",\"eco_mode\":"); json += m.eco_mode ? F("true") : F("false");
     json += F(",\"light_sleep\":"); json += m.light_sleep ? F("true") : F("false");
@@ -428,7 +471,7 @@ static void web_handle_diagnostics_state() {
     json += F(",\"caps\":"); json += m.caps;
     json += F(",\"device_bus\":\""); json += diagnostics_device_bus_name(m.type); json += '"';
     json += F(",\"device_link_state\":"); json += (int)diagnostics_device_link_state(m);
-    json += F(",\"device_detail\":\""); json += json_escape(device_detail.c_str()); json += '"';
+    json += F(",\"device_detail\":\""); json.appendJsonEscaped(device_detail.c_str()); json += '"';
     if (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) {
       char v_profile[48], v_station[48], v_protocol[32], v_checksum[32], v_slave[12];
       diagnostics_descriptor_header_value(m, "profile", v_profile, sizeof(v_profile));
@@ -436,19 +479,19 @@ static void web_handle_diagnostics_state() {
       diagnostics_descriptor_header_value(m, "protocol", v_protocol, sizeof(v_protocol));
       diagnostics_descriptor_header_value(m, "checksum", v_checksum, sizeof(v_checksum));
       diagnostics_descriptor_header_value(m, "slave", v_slave, sizeof(v_slave));
-      json += F(",\"local_profile\":\""); json += json_escape(v_profile); json += '"';
-      json += F(",\"local_station\":\""); json += json_escape(v_station); json += '"';
-      json += F(",\"local_protocol\":\""); json += json_escape(v_protocol); json += '"';
-      json += F(",\"local_checksum\":\""); json += json_escape(v_checksum); json += '"';
-      json += F(",\"local_slave\":\""); json += json_escape(v_slave); json += '"';
+      json += F(",\"local_profile\":\""); json.appendJsonEscaped(v_profile); json += '"';
+      json += F(",\"local_station\":\""); json.appendJsonEscaped(v_station); json += '"';
+      json += F(",\"local_protocol\":\""); json.appendJsonEscaped(v_protocol); json += '"';
+      json += F(",\"local_checksum\":\""); json.appendJsonEscaped(v_checksum); json += '"';
+      json += F(",\"local_slave\":\""); json.appendJsonEscaped(v_slave); json += '"';
       diagnostics_append_trace_defs_json(json, m);
     }
     json += F(",\"local_trace\":"); json += (m.caps & CAP_LOCAL_TRACE) ? F("true") : F("false");
     if (m.type == MODULE_JBC_USB) {
       json += F(",\"jbc_local\":{");
       json += F("\"link_state\":"); json += m.jbc_usb_link_state;
-      json += F(",\"model\":\""); json += json_escape(m.jbc_usb_model_raw); json += '"';
-      json += F(",\"model_short\":\""); json += json_escape(m.jbc_usb_model); json += '"';
+      json += F(",\"model\":\""); json.appendJsonEscaped(m.jbc_usb_model_raw); json += '"';
+      json += F(",\"model_short\":\""); json.appendJsonEscaped(m.jbc_usb_model); json += '"';
       const uint8_t jbc_diag_family = jbc_usb_core_family_for_model(m.jbc_usb_model);
       json += F(",\"family\":\""); json += jbc_usb_core_family_name(jbc_diag_family); json += '"';
       json += F(",\"family_code\":"); json += jbc_diag_family;
@@ -496,6 +539,7 @@ static void web_handle_diagnostics_state() {
     json += F(",\"timeout_telemetry\":"); json += bd.timeout_telemetry;
     json += F(",\"timeout_io\":"); json += bd.timeout_io;
     if (developer_mode_enabled) {
+      if (m.type == MODULE_DISPLAY) diagnostics_append_wifi_timing_json(json, m.addr);
       json += F(",\"io_timeouts\":{\"get\":"); json += bd.timeout_get_io;
       json += F(",\"set\":"); json += bd.timeout_set_io;
       json += F(",\"other\":"); json += bd.timeout_io - bd.timeout_get_io - bd.timeout_set_io;
@@ -610,7 +654,14 @@ static void web_handle_diagnostics_state() {
     json += '}';
   }
   json += F("]}");
-  web.send(200, "application/json", json);
+  if (!json.ok() || json.empty()) {
+    web.send(503, "application/json", "{\"error\":\"diagnostics buffer allocation failed\"}");
+    return;
+  }
+  web.setContentLength(json.length());
+  web.send(200, "application/json", "");
+  web.sendContent(json.c_str(), json.length());
+  web.setContentLength(CONTENT_LENGTH_NOT_SET);
 }
 
 // Trace payload is intentionally split from /diagnostics/state. The ESP32
@@ -695,6 +746,13 @@ static void web_handle_diagnostics_events() {
 static void web_handle_diagnostics_control() {
   String action = web.arg("action");
   action.toLowerCase();
+  if (action == "wifi_timing_start" || action == "wifi_timing_stop" || action == "wifi_timing_clear") {
+    if (!developer_mode_enabled) { web.send(403, "text/plain; charset=utf-8", "developer mode required"); return; }
+    if (action == "wifi_timing_clear") master_display_wifi.resetTiming();
+    else master_display_wifi.setTimingEnabled(action == "wifi_timing_start");
+    web.send(200, "text/plain; charset=utf-8", "OK");
+    return;
+  }
   if (action == "start") {
     String addr_arg = web.arg("addr");
     uint8_t addr = 0;
@@ -744,6 +802,7 @@ static void web_handle_diagnostics() {
   html += F("</p></div><div class='diag-master-led-pair' title='Master Status LEDs'><span id='diag_master_led_ofe' class='diag-led-word'>OFE</span><span id='diag_master_eco_icon' class='diag-eco-sprout' hidden><svg viewBox='0 0 24 24' aria-hidden='true'><path d='M2 22v-2s5-2 10-2 10 2 10 2v2H2m9.3-12.9C10.1 5.2 4 6.1 4 6.1s.2 7.8 5.9 6.6C9.5 9.8 8 9 8 9c2.8 0 3 3.4 3 3.4V17h2v-4.2s0-3.9 3-4.9c0 0-2 3-2 5 7 .7 7-8.9 7-8.9s-8.9-1-9.7 5.1Z'/></svg></span><span id='diag_master_led_evt' class='diag-led-word'>EVT</span></div><span class='diag-badge'>OFE</span></div><div class='stat-grid diag-stat-grid'>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Zustand", "State"); html += F("</div><div id='diag_health' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Buslast", "Bus load"); html += F("</div><div id='diag_busload' class='v'>-</div></div>");
+  html += F("<div class='stat'><div class='k'>Master CPU</div><div id='diag_cpu' class='v'>-</div><div id='diag_cpu_cores' class='diag-rate-muted'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Energiesparmodus", "Power saving"); html += F("</div><div id='diag_power_save' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>TX / RX</div><div id='diag_rate' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>Frames/s</div><div id='diag_fps' class='v'>-</div></div>");
@@ -751,13 +810,23 @@ static void web_handle_diagnostics() {
   html += F("<div class='stat'><div class='k'>"); html += web_text("Transportfehler seit Boot", "Transport errors since boot"); html += F("</div><div id='diag_transport_errors' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Antworten seit Boot", "Responses since boot"); html += F("</div><div id='diag_bad' class='v'>-</div></div>");
   html += F("<div class='stat'><div class='k'>"); html += web_text("Trace-Puffer", "Trace buffer"); html += F("</div><div id='diag_buffer' class='v'>-</div></div>");
+  if (developer_mode_enabled) html += F("<div id='diag_runtime_wrap' style='grid-column:1/-1'><div class='k'>Master Runtime</div><div id='diag_runtime_profile' class='diag-rate-muted'>-</div></div>");
   html += F("</div></section>");
 
   html += F("<section class='panel'><div class='diag-panel-title'><div><h2>");
   html += web_text("Bus-Topologie", "Bus topology");
   html += F("</h2><p class='muted'>");
   html += web_text("OFE-Transport oben, modulspezifischer Gerätebus darunter. Raten sind Live-Werte, Zähler bleiben seit Boot erhalten.", "OFE transport on top, module-specific device bus below. Rates are live values; counters remain since boot.");
-  html += F("</p></div></div><div id='diag_module_cards' class='diag-module-grid'></div></section>");
+  html += F("</p></div></div>");
+  if (developer_mode_enabled) {
+    html += F("<div class='diag-wifi-timing-control' id='diag_wifi_timing_controls'><label><input type='checkbox' id='diag_wifi_timing_enabled' onchange='diagWifiTiming(this.checked)'>");
+    html += web_text("WLAN-Zeitmessung", "WiFi timing");
+    html += F("</label><button type='button' class='secondary' onclick='diagWifiTimingClear()' title='");
+    html += web_text("WLAN-Messwerte zurücksetzen", "Reset WiFi measurements");
+    html += F("' aria-label='"); html += web_text("Messwerte zurücksetzen", "Reset measurements");
+    html += F("'>&#8634;</button><span id='diag_wifi_timing_error' role='alert'></span></div>");
+  }
+  html += F("<div id='diag_module_cards' class='diag-module-grid'></div></section>");
 
   html += F("<section class='panel diag-session'><div class='diag-session-head'><div><div class='diag-title-row'><h2>");
   html += web_text("Diagnose-Modus", "Diagnostics Mode");
@@ -1190,6 +1259,16 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-mode-copy{display:flex;flex-direction:column;gap:2px;min-width:0}.diag-mode-copy strong{font-size:14px}.diag-mode-copy small{color:var(--muted);font-size:11px}
 .diag-mode-check{opacity:0;color:#74d989;font-weight:900;text-align:center}.diag-mode-card.active .diag-mode-check{opacity:1}
 .diag-control-row{display:grid;grid-template-columns:minmax(210px,1fr) auto auto;gap:10px;align-items:end;padding-top:12px;border-top:1px solid var(--line)}
+.diag-wifi-timing-control{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:10px 0}
+.diag-wifi-timing-control[hidden]{display:none}
+.diag-wifi-timing{margin:8px 14px 14px;min-width:0;max-width:calc(100% - 28px);box-sizing:border-box;overflow-wrap:anywhere;line-height:1.5}
+.diag-wifi-timing>div{min-width:0}
+body:not(.dev-mode) .diag-wifi-timing,body:not(.dev-mode) .diag-wifi-timing-control{display:none}
+.diag-wifi-timing-control>label{display:flex;align-items:center;gap:8px;margin:0}
+.diag-wifi-timing-control input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0}
+.diag-wifi-timing-control>button{width:36px;height:36px;padding:0;flex:0 0 36px}
+.diag-wifi-timing-control>[role=alert]{flex:1 1 180px;overflow-wrap:anywhere;color:#ff7676}
+.diag-wifi-timing-control>[role=alert]:empty{display:none}
 .diag-target-wrap label{display:block;margin-bottom:5px}.diag-target-wrap select{width:100%}
 .diag-session-actions,.diag-export-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 .diag-start-btn{display:inline-flex;align-items:center;gap:7px}.diag-btn-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
@@ -1578,6 +1657,26 @@ async function post(a){
 function diagStart(){post('start')}
 function diagStop(){post('stop')}
 function diagClear(){post('clear')}
+async function diagWifiTimingRequest(action){
+  if(diagControlPending)return;
+  diagControlPending=true;
+  const epoch=++diagStateEpoch,box=document.getElementById('diag_wifi_timing_enabled'),error=document.getElementById('diag_wifi_timing_error');
+  if(box)box.disabled=true;
+  if(error)error.textContent='';
+  try{
+    const body=new URLSearchParams({action});
+    const response=await fetch('/diagnostics/control',{method:'POST',body,cache:'no-store'});
+    if(!response.ok)throw new Error(await response.text());
+    await loadDiag(true,epoch);
+  }catch(ex){
+    if(error)error.textContent=u('WLAN-Messung fehlgeschlagen: ','WiFi measurement failed: ')+String(ex.message||ex);
+  }finally{
+    diagControlPending=false;
+    if(box){box.disabled=false;box.checked=!!(lastDiag&&lastDiag.wifi_timing_enabled)}
+  }
+}
+function diagWifiTiming(enabled){return diagWifiTimingRequest(enabled?'wifi_timing_start':'wifi_timing_stop')}
+function diagWifiTimingClear(){return diagWifiTimingRequest('wifi_timing_clear')}
 function diagClearSearch(){
   let el=document.getElementById('diag_filter');
   if(el){el.value='';el.focus();}
@@ -3461,8 +3560,39 @@ function diagTimeoutProbeHtml(m){
   }
   return html;
 }
+function diagWifiTimingHtml(m,enabled,developer){
+  const s=m.wifi_timing;
+  if(developer!==true||!s||m.transport!=='wifi'||(!enabled&&!Number(s.rtt&&s.rtt.samples)))return '';
+  let html='<div class="diag-rate-muted diag-wifi-timing"><strong>'+u('WLAN-Zeitmessung','WiFi timing')+' · '+u(enabled?'aktiv':'gestoppt',enabled?'active':'stopped')+'</strong>';
+  const samples=Number(s.rtt&&s.rtt.samples||0);
+  if(!samples)return html+'<div>'+u(s.supported?'Warte auf Messdaten':'Warte auf Display-Unterstützung',s.supported?'Awaiting samples':'Awaiting display support')+'</div></div>';
+  html+='<div>'+u('Messungen','Samples')+': '+samples+' / '+Number(s.sent||0)+' · '+u('Alter','Age')+': '+fmtAge(Number(s.age_ms||0))+'</div>';
+  const ms=value=>(Number(value||0)/1000).toFixed(2)+' ms';
+  function row(label,key){const metric=s[key];return '<div>'+label+': '+(metric&&Number(metric.samples)?ms(metric.last_us)+' · Ø '+ms(metric.avg_us)+' · max '+ms(metric.max_us):'—')+'</div>'}
+  html+=row('RTT','rtt');
+  html+=row(u('Display-Bearbeitung','Display processing'),'display');
+  html+=row(u('Transport + RX-Warteschlangen','Transport + RX queues'),'transport');
+  html+=row(u('Master bis Verarbeitung','Master until processing'),'master_queue');
+  html+=row(u('Master RX-Lücke im RTT','Master RX gap within RTT'),'master_poll');
+  html+=row(u('Display RX-Abstand vor Empfang','Display RX interval before reception'),'display_poll');
+  if(Number(s.version||0)<2)html+='<div>'+u('Display RX-Messung benötigt neue Display-Firmware','Display RX measurement requires newer display firmware')+'</div>';
+  const peak=s.peak;
+  if(peak&&Number(peak.rtt_us)>0){
+    const value=v=>v==null?'—':ms(v);
+    const hex=v=>'0x'+Number(v||0).toString(16).padStart(2,'0').toUpperCase();
+    html+='<div style="margin-top:5px"><strong>'+u('Langsamste Antwort','Slowest response')+' · CMD '+hex(peak.command)+' · SEQ '+hex(peak.sequence)+'</strong></div>';
+    html+='<div>RTT '+value(peak.rtt_us)+' · '+u('Display','Display')+' '+value(peak.display_us)+' · '+u('Transport','Transport')+' '+value(peak.transport_us)+'</div>';
+    html+='<div>Master RX '+value(peak.master_poll_us)+' · Display RX '+value(peak.display_poll_us)+' · '+u('Master nach RX','Master after RX')+' '+value(peak.master_queue_us)+'</div>';
+  }
+  if(Number(s.invalid))html+='<div>'+u('Ungültige Messungen','Invalid samples')+': '+Number(s.invalid)+'</div>';
+  return html+'</div>';
+}
 function diagModuleSignature(modules){return (modules||[]).map(m=>[Number(m.addr||0),Number(m.type||0),String(m.name||''),String(m.type_name||''),String(m.device_bus||''),String(m.transport||'rs485')].join('|')).join(';')}
 function diagRenderModules(d,sec){
+  const timingControls=document.getElementById('diag_wifi_timing_controls');
+  if(timingControls)timingControls.hidden=d.developer_mode!==true;
+  const timingBox=document.getElementById('diag_wifi_timing_enabled');
+  if(timingBox&&!diagControlPending)timingBox.checked=!!d.wifi_timing_enabled;
   let modules=d.modules||[],totalRate=0;
   modules.forEach(function(m){let p=modulePrevByAddr(prevDiag,m.addr);if(p&&sec>0)totalRate+=Math.max(0,(Number(m.tx_wire_bytes)-Number(p.tx_wire_bytes))/sec)+Math.max(0,(Number(m.rx_wire_bytes)-Number(p.rx_wire_bytes))/sec)});
   let signature=diagModuleSignature(modules),cards=document.getElementById('diag_module_cards');
@@ -3517,6 +3647,7 @@ function diagRenderModules(d,sec){
     function lcAdd(label,value){value=Number(value||0);if(value)lc.push(label+' '+value+'ms')}
     lcAdd('Fast',m.latency_fast_max_ms);lcAdd('State',m.latency_state_max_ms);lcAdd('Tel',m.latency_telemetry_max_ms);lcAdd('I/O',m.latency_io_max_ms);lcAdd('Uni',m.latency_universal_max_ms);lcAdd('D-Stat',m.latency_display_status_max_ms);lcAdd('D-Cache',m.latency_display_cache_max_ms);
     body+='<div class="diag-rate-muted" style="margin-top:4px">'+u('Erfolgs-Latenz max','Successful latency max')+': '+(lc.length?lc.join(' · '):'—')+'</div></div>';
+    body+=diagWifiTimingHtml(m,!!d.wifi_timing_enabled,d.developer_mode===true);
     let deviceState=Number(m.device_link_state??-1),deviceClass=!m.online?'is-offline':(deviceState===1?'is-online':(deviceState===0?'is-warning':''));
     let deviceText=!m.online?'offline':(deviceState===1?u('bereit','ready'):(deviceState===0?u('getrennt','disconnected'):u('unbekannt','unknown')));
     body+='<div class="diag-device-section"><div class="diag-device-head"><div class="diag-device-title">'+esc(m.device_bus)+'</div><span class="diag-mini-badge diag-online-pill '+deviceClass+'"><span class="diag-dot '+(!m.online?'err':(deviceState===1?'ok':(deviceState===0?'warn':'')))+'"></span>'+deviceText+'</span></div>';
@@ -3614,6 +3745,7 @@ async function loadDiag(force=false,epochOverride=null){
   let r=await fetch('/diagnostics/state?view='+encodeURIComponent(v),{cache:'no-store'});
   let d=await r.json();
   if(epoch!==diagStateEpoch)return;
+  if(typeof setShellDevMode==='function'&&typeof d.developer_mode==='boolean')setShellDevMode(d.developer_mode);
   diagSyncTraceCursor(d,v);
   d.events=diagEventCache.slice();
   let state=document.getElementById('diag_session_state');
@@ -3642,6 +3774,10 @@ async function loadDiag(force=false,epochOverride=null){
 
   document.getElementById('diag_health').innerHTML='<span class="diag-status '+(healthy?'ok':'warn')+'">'+(healthy?'OK':u('Live-Fehler','live errors'))+'</span>';
   document.getElementById('diag_busload').textContent=sec>0?'≈ '+busload.toFixed(busload<10?2:1)+' %':'-';
+  document.getElementById('diag_cpu').textContent=Number(d.cpu_load_pct||0)+'%';
+  document.getElementById('diag_cpu_cores').textContent=cpuCoreText(d.cpu_core_load_pct);
+  const runtime=document.getElementById('diag_runtime_profile');if(runtime)runtime.innerHTML=runtimeProfileHtml(d.runtime_profile,UI_DE);
+  const runtimeWrap=document.getElementById('diag_runtime_wrap');if(runtimeWrap)runtimeWrap.hidden=!d.runtime_profile;
   let ps=document.getElementById('diag_power_save');if(ps){let enabled=!!d.power_save_enabled,active=!!d.power_save_active,idle=Number(d.power_save_idle_min||0);ps.innerHTML=active?'<span class="diag-status ok">'+u('aktiv','active')+'</span>':(enabled?'<span class="diag-status warn">'+u('aktiviert','enabled')+'</span> <span class="diag-rate-muted">'+u('nach ','after ')+idle+' min</span>':'<span class="diag-status">'+u('aus','off')+'</span>')}
   document.getElementById('diag_rate').textContent=sec>0?fmtBytes(txRate)+' / '+fmtBytes(rxRate):'-';
   document.getElementById('diag_fps').textContent=sec>0?fmtFps(txFps)+' / '+fmtFps(rxFps):'-';

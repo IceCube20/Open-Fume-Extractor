@@ -108,7 +108,7 @@ static void master_setup() {
   // block web.handleClient(). Delay first MQTT connect a little so the page is
   // reachable directly after reboot.
   mqtt_next_connect_ms = millis() + 8000UL;
-  xTaskCreatePinnedToCore(mqtt_service_task, "mqtt", 8192, nullptr, 1, nullptr, 1);
+  xTaskCreatePinnedToCore(mqtt_service_task, "mqtt", 8192, nullptr, 1, &mqtt_service_task_handle, 1);
 #endif
   scheduler.requestScanKnownModules(false, false);
 #if WEB_ENABLE

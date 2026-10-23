@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/espressif/esp-idf",
+  "commit": "9fd7cb7e606a06111e1b14be7f4e00d77d9cf3dd",
+  "files": {
+    "ecc.inc.h": {
+      "path": "components/bt/common/tinycrypt/src/ecc.c",
+      "sha256": "025b237331acb4e800f4d6fdaee83ed263e41e4428e6233be9ad9f11dab5dc34"
+    },
+    "ecc_dh.inc.h": {
+      "path": "components/bt/common/tinycrypt/src/ecc_dh.c",
+      "sha256": "c0cb59554bb0a20f143b861441218d27a90289fc25dc3fe9c221819cd5d84a58"
+    },
+    "ecc_dsa.inc.h": {
+      "path": "components/bt/common/tinycrypt/src/ecc_dsa.c",
+      "sha256": "e6e876d13f1ebbafb439e4866cbc28a7c83b01dcdc32251745509717648748ed"
+    },
+    "esp_tinycrypt_port.inc.h": {
+      "path": "components/bt/common/tinycrypt/port/esp_tinycrypt_port.c",
+      "sha256": "79af032845f54e9e61091f01c6ffbbcb3b31c12e6281b0d2c77885de65b929d3"
+    },
+    "esp_tinycrypt_port.h": {
+      "path": "components/bt/common/tinycrypt/port/esp_tinycrypt_port.h",
+      "sha256": "56ba7201fea3a1b8dfdea283f42787190f29e6c3a1ef76b4517cd9276b0184f0"
+    },
+    "LICENSE": {
+      "path": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  }
+}

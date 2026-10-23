@@ -39,6 +39,8 @@ static_assert(MODULE_FW_DISPLAY_CHUNK_SIZE <= (MAX_PAYLOAD - 4),
 
 #include "src/MasterGlobals.inc.h"
 #include "src/MasterDisplayWifi.h"
+#include "src/OfeDisplayBle.h"
+static OfeDisplayBle master_display_ble;
 
 #if WEB_ENABLE
 #include "src/MasterPrototypes.inc.h"

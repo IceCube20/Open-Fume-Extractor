@@ -32,6 +32,8 @@ def fixture(typ=3, family="DDE"):
             "jbc_tool_enabled": True, **{f"jbc_tc{n}_temp_c": 100 for n in range(1, 5)}}
     module = {"uid": MODULE, "type": typ, "addr": 32, "online": True, "telemetry_valid": True, "caps": 4 | 8 | 32,
               "fw": "1.0RC", "transport": "rs485", "station_type": "DDE", "station_addr": 0x12, "jbc_link_flags": 1,
+              "display_backlight_supported": typ == 6, "display_backlight_mode": 1,
+              "display_backlight_timeout_min": 5, "display_backlight_on": True,
               "jbc_device_id": "41424300", "jbc_usb_model": family, "jbc_usb_port_count": 1,
               "jbc_usb_ports": [port], "ha_jbc": core if typ == 9 else None,
               "fanio_filter_mode": 3, "fanio_filter_runtime_valid": True,

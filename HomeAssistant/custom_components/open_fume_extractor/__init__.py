@@ -7,6 +7,7 @@ from homeassistant.helpers import device_registry as dr
 from .api import OfeApi
 from .const import DOMAIN, PLATFORMS, MASTER_DEVICE_NAME, MASTER_DEVICE_MODEL
 from .coordinator import OfeCoordinator
+from .frontend import async_register_card_resource
 
 
 async def async_setup_entry(hass, entry):
@@ -19,6 +20,7 @@ async def async_setup_entry(hass, entry):
                 StaticPathConfig("/open_fume_extractor/logo.png", str(root / "brand/logo.png"), True),
             ])
             domain_data["frontend_registered"] = True
+        await async_register_card_resource(hass)
     api = OfeApi(async_get_clientsession(hass), entry.data["host"], entry.data["username"], entry.data["password"])
     coordinator = OfeCoordinator(hass, entry, api)
     await coordinator.async_config_entry_first_refresh()

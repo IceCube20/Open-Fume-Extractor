@@ -1,6 +1,7 @@
 #pragma once
 #include "bus/OfeDisplayTunnel.h"
 #include "ModuleRegistry.h"
+#include "WifiTiming.h"
 #include <atomic>
 
 class MasterDisplayWifi {
@@ -13,6 +14,13 @@ public:
   bool restoreRoot(const char* text);
   bool provisioningDue(uint8_t addr);
   bool configuration(uint8_t addr, ofe_wifi::Config& config) const;
+  bool pairingConfiguration(uint64_t uid, ofe_wifi::Config& config) const {
+    if (!provider_ || (uid >> 60) != 4) return false;
+    provider_(config);
+    config.from_master=1;
+    config.mode=ofe_wifi::AUTOMATIC;
+    return derive(uid,config.key) && ofe_wifi::configured(config);
+  }
   bool probeDue(uint8_t addr);
   void probeResult(uint8_t addr, bool ok);
   void forcePhysical(bool enabled) { physical_ = enabled; }
@@ -27,6 +35,11 @@ public:
   }
   bool firmwareBulkChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint16_t len);
   bool rebindAddress(uint64_t uid, uint8_t new_addr);
+  bool timingEnabled() const { return timing_enabled_.load(); }
+  void setTimingEnabled(bool enabled);
+  void resetTiming();
+  ofe_wifi_timing::Snapshot timingSnapshot(uint8_t addr);
+  void responseProcessed(const jbc_rs485::Frame& frame);
 private:
   struct Peer {
     uint64_t uid=0, client=0, server=0;
@@ -35,12 +48,23 @@ private:
     uint32_t rx=0, tx=0, seen=0, pending_ms=0, probe_ms=0;
     uint8_t addr=0, mode=0, wired_probes=0;
     bool connected=false;
+    bool timing_capable=false;
+    bool timing_probe_v2=false;
+    uint8_t timing_version=0;
+    uint32_t timing_cap_generation=0;
+    ofe_wifi_timing::Tracker timing;
   };
   Peer peers_[16];
+  std::atomic<bool> timing_enabled_{false};
+  std::atomic<uint32_t> timing_generation_{1};
+  uint32_t timing_token_=0;
+  portMUX_TYPE timing_mux_=portMUX_INITIALIZER_UNLOCKED;
+  ofe_wifi_timing::Snapshot timing_stats_[16];
   std::atomic<uint32_t> published_seen_[16]{};
   uint8_t root_[16]={};
   uint32_t provision_ms_[16]={};
   bool ready_=false, physical_=false;
+  bool received_packet_=false;
   std::atomic<uint8_t> firmware_addr_{0};
   uint64_t firmware_uid_=0;
   bool firmware_wifi_=false;
@@ -56,6 +80,7 @@ private:
   bool receive(jbc_rs485::Frame& frame);
   bool route(const jbc_rs485::Frame& frame);
   bool send(Peer& peer, uint8_t kind, const jbc_rs485::Frame* frame=nullptr);
+  void resetPeerTiming(Peer& peer);
   static bool routeHook(void* self, const jbc_rs485::Frame& frame);
   static bool pollHook(void* self, jbc_rs485::Frame& frame);
 };

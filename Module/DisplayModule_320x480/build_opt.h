@@ -1,3 +1,4 @@
 -O3
+-include "OfeBleBuildConfig.h"
 -DLV_CONF_PATH=\"ofe_lv_conf.h\"
 -DESP32QSPI_MAX_PIXELS_AT_ONCE=4096

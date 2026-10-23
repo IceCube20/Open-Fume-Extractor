@@ -1,0 +1,50 @@
+{
+  "production_file": "Module/DisplayModule_800x480/DisplayModule_800x480.ino",
+  "production_defaults": {
+    "DISPLAY_RGB_WIDTH": 800,
+    "DISPLAY_RGB_HEIGHT": 480,
+    "DISPLAY_RGB_PCLK_HZ": 16000000,
+    "DISPLAY_RGB_BOUNCE_BUFFER_LINES": 12,
+    "DISPLAY_RGB_INVERT_COLORS": 0,
+    "DISPLAY_ROTATION": 2
+  },
+  "production_panel_sha256": "679370e476d94046f0f7b4c5467cdc32860b0c19ac7ed3bb2c50d2f5e956e052",
+  "production_lv_config_sha256": "49ac6769413467d4fd1ed9a5d281d158723a72071e71bd6185209ef08a187c78",
+  "upstream_lvgl": "9.6.x",
+  "upstream_sources_sha256": {
+    "demos/lv_demos.c": "0288929a29c93c59b48cd3ecce7c0c0e7387694f203dc1e64b28de7da4d3782e",
+    "demos/benchmark/lv_demo_benchmark.c": "b76c85e35b4b17723c25b5aa4c64282f92563ef284ee4064fdcddc69fa5ad130",
+    "demos/benchmark/assets/img_benchmark_avatar.c": "8c8465843a9201c3553137d188842b8c9d30f782dbab9d0696e7e5e308383220",
+    "demos/benchmark/assets/img_benchmark_lvgl_logo_argb.c": "a867c91e1179969e07b5a0e460861ca808a3125785f2816b58b839633d8cf385",
+    "demos/benchmark/assets/img_benchmark_lvgl_logo_rgb.c": "b5837035a968a7c084e84c388f892c98626e63cf2d0971ba7b72ac7aa1da33ce",
+    "demos/widgets/assets/img_clothes.c": "2c7201b863b11cf7d0b7c5fd9a22cbf109bce8f67dc114bc14a73597652b69b7",
+    "demos/widgets/assets/img_demo_widgets_avatar.c": "d623349b5153d273fced714e13f32ad103e687461afc8411eb3bfd362d0031a6",
+    "demos/widgets/assets/img_demo_widgets_needle.c": "929b6c8abdff9e179065db149b5465898de72121fdae6504315cb093e8d31151",
+    "demos/widgets/assets/img_lvgl_logo.c": "84a697cd70bb8823c87c34938359afcfa5b6998b57b17717d8dc381e5ba9d86b",
+    "demos/widgets/lv_demo_widgets.c": "4a35ca2236ec3381465bce8b2619f210374f757baeb1476ca4c015cf2d851258",
+    "demos/widgets/lv_demo_widgets_analytics.c": "935943cda1f830083c6e657bd24bc02b3a332df1a6e94e2daae273f9d983bb3a",
+    "demos/widgets/lv_demo_widgets_components.c": "869784f3b66eccd4c0ec795d446d2fab241e56f4fce33237a43e3c18f057bc6b",
+    "demos/widgets/lv_demo_widgets_profile.c": "936d33dfba999abe8185024eb95037493f03a12eaac04ff2632642ed0b1ac6a8",
+    "demos/widgets/lv_demo_widgets_shop.c": "6e14c5d97049128b124ef1d2b7824ddb873466f4c73d1445e3b14ec52497ca5d"
+  },
+  "generated_sha256": {
+    "src/OfeReferenceDefaults.h": "12abb362acd764e221a783c43a6ef11acf79e9ff7b57aaee7695ce82343edd23",
+    "src/OfeReferencePanel.h": "4d0567a519c7b702d980731a3c5d3672c1056bb62ac51c91fa70ee2273af87e6",
+    "src/OfeRgbTileCopy.h": "7e5d6e7be7787e64c021d6aae22a046bdf32c45f5689ee058018a722a561974a",
+    "ofe_reference_base.h": "49ac6769413467d4fd1ed9a5d281d158723a72071e71bd6185209ef08a187c78",
+    "src/upstream_lv_demos.c": "0bf2540e2874d25aa06167b1e81767527851e1987d6bf3ec1613c8d0bcdcf3d2",
+    "src/upstream_lv_demo_benchmark.c": "ecb77a4df299f2032587561975f635ad019fccfafec8b736637388e08a5742ff",
+    "src/upstream_img_benchmark_avatar.c": "a35e2db4b2c6ce7ef2684fbfea206293e995b745ffbc74095b94f09331fe1dfc",
+    "src/upstream_img_benchmark_lvgl_logo_argb.c": "4435f27a19230c2baf98635d509d261bf234009844e31b29441bf95f0d14a03d",
+    "src/upstream_img_benchmark_lvgl_logo_rgb.c": "4e3b7f7576a0d1d06664949404879ea07e9ebef43841b6a91a7a6ec5c0e1ce1b",
+    "src/upstream_img_clothes.c": "7f8fe816fc196c77fb98f766ef69a24553a844a3bc00edcee6ccc322f7b0fc96",
+    "src/upstream_img_demo_widgets_avatar.c": "dfb00df128813733f2fa587b07bd1176fe6400b3e917d4c40353a4f1ff5b3864",
+    "src/upstream_img_demo_widgets_needle.c": "6c29b73b12e29a23fc1d6e2931c4fc2199898c5b0b4b4bdcf6fa879f7d137ef7",
+    "src/upstream_img_lvgl_logo.c": "070bf325018bc991cd534b3455da0ccbf1931e8547b8b756ee5ea284163cac35",
+    "src/upstream_lv_demo_widgets.c": "c8256fed9cdfc1d44d767d5887d49e52a71b4281871a761c1244fb9e1a61c90c",
+    "src/upstream_lv_demo_widgets_analytics.c": "daa8ef58a3fbf74c3cee033b5a6b72a17b6ad7a49b92b8a1057f279303b2982b",
+    "src/upstream_lv_demo_widgets_components.c": "5dff5f498a9e35314fa4d98dad219c569121fb9959d8591283cd6ea71b735c5a",
+    "src/upstream_lv_demo_widgets_profile.c": "2f48b53d99d2e14c58a5689cd567bc52ff37bacf9b6dc9d43a37c8bc5ed5ca00",
+    "src/upstream_lv_demo_widgets_shop.c": "0581e231be34e882b9214ff83ef71953fbe34a4781ba03bca8c0a5c91f199922"
+  }
+}

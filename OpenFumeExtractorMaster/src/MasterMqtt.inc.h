@@ -184,6 +184,7 @@ static void web_handle_developer_mode() {
     return;
   }
   developer_mode_enabled = enabled;
+  if (!enabled) master_display_wifi.setTimingEnabled(false);
   Preferences prefs;
   prefs.begin(MasterSettingsStore::NS_CFG, false);
   prefs.putBool(MasterSettingsStore::KEY_DEV_MODE, enabled);
@@ -486,7 +487,8 @@ static uint8_t mqtt_manifest_static_key(const char* suffix) {
     "heap_min", "loop_max", "eco", "transport", "reboot", "serial_number",
     "jbc_station_name", "jbc_port_count", "jbc_p1_set_flow_permille", "jbc_p2_set_flow_permille",
     "jbc_p3_set_flow_permille", "jbc_p4_set_flow_permille", "jbc_tc1_set_temp_c", "jbc_tc2_set_temp_c",
-    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval"
+    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval",
+    "backlight_mode", "backlight_timeout", "backlight_on"
   };
   for (uint8_t i = 1; i < sizeof(keys) / sizeof(keys[0]); ++i) {
     if (!strcmp(keys[i], suffix)) return i;
@@ -527,7 +529,8 @@ static const char* mqtt_manifest_static_suffix(uint8_t key) {
     "heap_min", "loop_max", "eco", "transport", "reboot", "serial_number",
     "jbc_station_name", "jbc_port_count", "jbc_p1_set_flow_permille", "jbc_p2_set_flow_permille",
     "jbc_p3_set_flow_permille", "jbc_p4_set_flow_permille", "jbc_tc1_set_temp_c", "jbc_tc2_set_temp_c",
-    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval"
+    "jbc_tc3_set_temp_c", "jbc_tc4_set_temp_c", "reset_filter", "filter_interval",
+    "backlight_mode", "backlight_timeout", "backlight_on"
   };
   return key < sizeof(keys) / sizeof(keys[0]) ? keys[key] : nullptr;
 }
@@ -1765,7 +1768,7 @@ static uint8_t mqtt_universal_descriptor_entity_count(const ModuleRecord& m) {
 static String mqtt_module_discovery_signature_now() {
   String sig;
   sig.reserve(160);
-  sig += F("schema:mqtt_short_entity_names_v3|weller_filter_off_v1|");
+  sig += F("schema:mqtt_short_entity_names_v3|weller_filter_off_v1|backlight_select_v2|");
   sig += F("developer:"); sig += developer_mode_enabled ? '1' : '0';
   sig += F("lang:");
   sig += web_lang;
@@ -1789,6 +1792,7 @@ static String mqtt_module_discovery_signature_now() {
     sig += m.label[0] ? m.label : m.name;
     sig += ':';
     sig += mqtt_fw_string(m);
+    if (m.type == MODULE_DISPLAY) { sig += ':'; sig += m.display_backlight_supported ? '1' : '0'; }
     if (m.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT | CAP_DIGITAL_OUTPUT | CAP_INPUT_KEYS)) {
       sig += ':'; sig += m.io_main_alias;
       sig += ':'; sig += m.io_in1_alias;
@@ -2591,6 +2595,17 @@ static void mqtt_publish_module_discovery(const ModuleRecord& m) {
     mqtt_publish_module_entity(m, "select", "language", base + String(mqtt_txt(" Sprache", " Language")), "{{ value_json.language }}", ",\"options\":[\"English\",\"Deutsch\"],\"icon\":\"mdi:translate\"", mqtt_module_command_leaf(addr, "display_language"));
     mqtt_publish_module_entity(m, "select", "theme", base + String(mqtt_txt(" Farbschema", " Theme")), "{{ value_json.theme }}", ",\"options\":[\"Dark\",\"Light\"],\"icon\":\"mdi:theme-light-dark\"", mqtt_module_command_leaf(addr, "display_theme"));
     mqtt_publish_module_entity(m, "select", "screensaver", base + String(mqtt_txt(" Ruhemodus", " Screensaver")), "{{ value_json.screensaver }}", ",\"options\":[\"Off\",\"1 min\",\"2 min\",\"5 min\",\"10 min\"],\"icon\":\"mdi:monitor-screenshot\"", mqtt_module_command_leaf(addr, "display_screensaver"));
+    if (m.display_backlight_supported) {
+      mqtt_publish_module_entity(m, "select", "backlight_mode", base + String(mqtt_txt(" Beleuchtung ausschalten", " Backlight off")), "{{ value_json.backlight_mode }}", mqtt_txt(",\"options\":[\"Aus\",\"Nur im Energiesparmodus\",\"Immer\"],\"icon\":\"mdi:lightbulb-auto-outline\"", ",\"options\":[\"Off\",\"Only in power saving\",\"Always\"],\"icon\":\"mdi:lightbulb-auto-outline\""), mqtt_module_command_leaf(addr, "display_backlight_mode"));
+      String delay_options = ",\"options\":[";
+      for (uint8_t minutes = 1; minutes <= 60; ++minutes) {
+        if (minutes > 1) delay_options += ',';
+        delay_options += '\"'; delay_options += minutes; delay_options += " min\"";
+      }
+      delay_options += "],\"icon\":\"mdi:timer-outline\"";
+      mqtt_publish_module_entity(m, "select", "backlight_timeout", base + String(mqtt_txt(" Beleuchtung Wartezeit", " Backlight delay")), "{{ value_json.backlight_timeout }}", delay_options.c_str(), mqtt_module_command_leaf(addr, "display_backlight_timeout"));
+      mqtt_publish_module_entity(m, "binary_sensor", "backlight_on", base + String(mqtt_txt(" Hintergrundbeleuchtung", " Backlight")), "{{ 'ON' if value_json.backlight_on else 'OFF' }}", ",\"icon\":\"mdi:lightbulb-outline\"");
+    }
   }
 
   // Universal/Modbus profile changes are reconciled by the persisted manifest:
@@ -3133,6 +3148,12 @@ static void mqtt_publish_module_state(const ModuleRecord& m) {
     json += ",\"language\":\""; json += mqtt_display_language_text(m.display_language); json += "\"";
     json += ",\"theme\":\""; json += mqtt_display_theme_text(m.display_theme); json += "\"";
     json += ",\"screensaver\":\""; json += mqtt_display_screensaver_text(m.display_screensaver_min); json += "\"";
+    if (m.display_backlight_supported) {
+      json += ",\"backlight_mode\":\"";
+      json += m.display_backlight_mode == 2 ? mqtt_txt("Immer", "Always") : m.display_backlight_mode == 1 ? mqtt_txt("Nur im Energiesparmodus", "Only in power saving") : mqtt_txt("Aus", "Off");
+      json += "\",\"backlight_timeout\":\""; json += m.display_backlight_timeout_min; json += " min\"";
+      json += ",\"backlight_on\":"; json += m.display_backlight_on ? "true" : "false";
+    }
     json += ",\"view_mode\":"; json += m.display_view_mode;
   }
 
@@ -3255,6 +3276,22 @@ static bool mqtt_apply_module_command(const String& leaf, const String& value) {
         if (value == duration_text_minutes(minutes)) { master_cmd_set_weller_filter_runtime(addr, minutes); break; }
       }
     }
+  } else if (action == "display_backlight_mode") {
+    if (m->type != MODULE_DISPLAY || !m->display_backlight_supported) return false;
+    uint8_t mode;
+    if (value == "Off" || value == "Aus") mode = 0;
+    else if (value == "Only in power saving" || value == "Nur im Energiesparmodus") mode = 1;
+    else if (value == "Always" || value == "Immer") mode = 2;
+    else return false;
+    if (!master_cmd_set_display_settings(addr, 0xFF, 0xFF, 0xFF, 0xFF, mode)) return false;
+  } else if (action == "display_backlight_timeout") {
+    char* end = nullptr;
+    const double minutes = strtod(value.c_str(), &end);
+    if (end && strcmp(end, " min") == 0) end += 4;
+    if (m->type != MODULE_DISPLAY || !m->display_backlight_supported ||
+        !value.length() || value[0] < '0' || value[0] > '9' || !end || *end ||
+        !(minutes >= 1 && minutes <= 60) || minutes != (uint8_t)minutes) return false;
+    if (!master_cmd_set_display_settings(addr, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, (uint8_t)minutes)) return false;
   } else if (action == "display_brightness") {
     uint16_t brightness = (uint16_t)strtoul(value.c_str(), nullptr, 10);
     if (brightness < 10) brightness = 10;
@@ -3374,11 +3411,15 @@ static void mqtt_publish_state(bool force = false) {
   // every MASTER_MQTT_MODULE_PUBLISH_GAP_MS instead of serializing/publishing
   // all module JSON documents in this one call. This keeps MQTT state fresh
   // while removing the large periodic CPU/allocator burst.
-  mqtt_state_module_count = mqtt_sorted_module_indices(
-    mqtt_state_module_order, (uint8_t)sizeof(mqtt_state_module_order));
-  mqtt_state_module_cursor = 0;
-  mqtt_state_module_last_ms = 0;
-  mqtt_state_module_cycle_pending = mqtt_state_module_count != 0;
+  // A busy/large installation may need longer than one master-state interval.
+  // Restarting that unfinished cycle would starve modules near its end.
+  if (!mqtt_state_module_cycle_pending) {
+    mqtt_state_module_count = mqtt_sorted_module_indices(
+      mqtt_state_module_order, (uint8_t)sizeof(mqtt_state_module_order));
+    mqtt_state_module_cursor = 0;
+    mqtt_state_module_last_ms = 0;
+    mqtt_state_module_cycle_pending = mqtt_state_module_count != 0;
+  }
   heap_diag_sample("mqtt_state_end");
   heap_diag_clear_context(HEAP_DIAG_CTX_MQTT);
 }

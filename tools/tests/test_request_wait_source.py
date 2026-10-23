@@ -6,6 +6,38 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "OpenFumeExtractorMaster" / 
 
 
 class RequestWaitIntegrationTests(unittest.TestCase):
+    def test_async_dispatch_requires_network_origin_and_preserves_sync_owner(self):
+        source = (SRC / "MasterScheduler.cpp").read_text(encoding="utf-8")
+        dispatch = source.split("bool MasterScheduler::handleAsyncDisplayFrame(", 1)[1].split(
+            "void MasterScheduler::serviceAsyncDisplayRequests()", 1)[0]
+        self.assertLess(dispatch.index("if (!via_network) return false;"), dispatch.index("registry_.find(frame.src)"))
+        self.assertLess(dispatch.index("if (synchronous_request &&"), dispatch.index("rec->display_async_pending"))
+        self.assertIn("frame.seq == synchronous_request->seq", dispatch)
+        self.assertIn("frame.cmd == (uint8_t)(synchronous_request->cmd | 0x80)", dispatch)
+        self.assertEqual(source.count("handleAsyncDisplayFrame(frame, link_.lastRxWasNetwork())"), 2)
+        self.assertIn("handleAsyncDisplayFrame(resp, rx_via_network, &req)", source)
+
+    def test_deadline_drain_is_bounded_and_does_not_run_background_work(self):
+        source = (SRC / "MasterScheduler.cpp").read_text(encoding="utf-8")
+        request = source.split("bool MasterScheduler::request(", 1)[1].split(
+            "bool MasterScheduler::startAsyncDisplayRequest(", 1)[0]
+        self.assertIn("RequestReceiveWindow receive_window(start, timeout_ms);", request)
+        self.assertIn("while (receive_window.pollDue(millis()))", request)
+        loop = request.split("while (receive_window.pollDue(millis()))", 1)[1].split(
+            "// An absent cable", 1)[0]
+        self.assertEqual(loop.count("serviceWhileWaiting();"), 3)
+        self.assertEqual(loop.count("if (!receive_window.draining()) serviceWhileWaiting();"), 3)
+
+    def test_wlan_control_packets_do_not_hide_a_buffered_response(self):
+        source = (SRC / "MasterDisplayWifi.cpp").read_text(encoding="utf-8")
+        hook = source.split("bool MasterDisplayWifi::pollHook(", 1)[1].split(
+            "bool MasterDisplayWifi::route(", 1)[0]
+        self.assertIn("i<4", hook)
+        self.assertIn("if (!wifi->received_packet_) break;", hook)
+        receive = source.split("bool MasterDisplayWifi::receive(", 1)[1]
+        self.assertIn("received_packet_=false;", receive)
+        self.assertIn("received_packet_=n>=0;", receive)
+
     def test_discovery_guard_covers_physical_path_not_successful_network_route(self):
         bus = (SRC / "bus/Rs485PeripheralBus.cpp").read_text(encoding="utf-8")
         send = bus.split("void Link::send(", 1)[1].split("void Link::sendPhysical(", 1)[0]
@@ -82,7 +114,7 @@ class RequestWaitIntegrationTests(unittest.TestCase):
         self.assertIn("RequestUnmatchedFrame unmatched_frame;", request)
         for reason in ("ASYNC_DISPLAY", "COMMAND", "LATE", "SEQUENCE", "OTHER_ADDRESS"):
             self.assertIn("WAIT_FRAME_" + reason, request)
-        self.assertLess(request.index("const bool rx_via_network"), request.index("handleAsyncDisplayFrame(resp)"))
+        self.assertLess(request.index("const bool rx_via_network"), request.index("handleAsyncDisplayFrame(resp, rx_via_network, &req)"))
         parser = (SRC / "bus/Rs485PeripheralBus.cpp").read_text(encoding="utf-8")
         self.assertIn("last_physical_frame_ = {out.dst, out.src, out.seq, out.cmd, out.len, filtered};", parser)
         self.assertLess(parser.index("last_physical_frame_ ="), parser.index("if (filtered) continue;"))

@@ -1,0 +1,12 @@
+#pragma once
+#define LV_CONF_H
+#define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565
+#define LV_MEM_SIZE (32 * 1024U)
+#define LV_ASSERT_CUSTOM_INCLUDE <stdlib.h>
+#define LV_ASSERT_HANDLER abort();
+#define LV_USE_OS LV_OS_NONE
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_18 1
+#define LV_USE_LOG 0
+#define LV_BUILD_EXAMPLES 0
+#define LV_BUILD_DEMOS 0

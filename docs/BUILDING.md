@@ -1,6 +1,6 @@
 # Building from Source
 
-The repository contains Arduino sketches for the master, modules and all three
+The repository contains Arduino sketches for the master, modules and all four
 display variants. Generated build directories and the private release-signing key are
 deliberately excluded.
 
@@ -32,6 +32,7 @@ Open the matching sketch folder directly in Arduino IDE:
 - `Module/DisplayModule_320x480/DisplayModule_320x480.ino`
 - `Module/DisplayModule_800x480/DisplayModule_800x480.ino`
 - `Module/DisplayModule_ST7796_320x480/DisplayModule_ST7796_320x480.ino`
+- `Module/DisplayModule_P4_800x480/DisplayModule_P4_800x480.ino` (experimental)
 
 The master uses the included 16 MB partition CSV. A partition-layout change
 requires a complete merged USB flash and normally an erase.
@@ -49,6 +50,30 @@ repository does not duplicate the large SDK archive. Run:
 The scripts download pinned official Espressif archives, verify SHA-256 hashes
 and build in `Documents\Arduino\ofe-high-performance-sdk`. Restart Arduino IDE
 and select `OFE RGB High Performance > OFE Display 800x480`.
+
+## P4 High-Performance Profile (Experimental)
+
+The ELECROW 5-inch RGB port is separate from the S3 port and uses the
+**Arduino-ESP32 3.3.12 / ESP-IDF 5.5.5 PRE-V3** SDK. A later chip revision
+requires a compatible build, not a forced PRE-V3 setting.
+
+The [P4 profile guide](../tools/boards/p4_high_perf_sdk/README.md) documents the
+pinned builder, cache configuration and validation steps. Build and validate
+the SDK outside the repository first. Then run
+`tools/install_display_p4_arduino.ps1` with paths to that validated SDK and
+runtime. This installer does not create a missing SDK or replace the stock one.
+Restart Arduino IDE and select **OFE P4 High Performance > OFE Display P4
+800x480 (High Performance, PRE-V3)**.
+
+The separate board menu offers Software, PPA fills and PPA fills + images.
+Unsupported drawing still uses software; PPA does not accelerate every LVGL
+operation. The owner's exported alpha uses the fills + images profile and
+24 MHz panel clock. Keep the matching partition layout for OTA.
+
+`tools/boards/prepare_elecrow_p4.py --check` verifies the generated P4 sketch
+against the RGB source and P4 templates. Do not regenerate over local changes
+without reviewing them. SDK archives, build caches and device flash backups
+must stay outside the public repository.
 
 ## Firmware signing
 

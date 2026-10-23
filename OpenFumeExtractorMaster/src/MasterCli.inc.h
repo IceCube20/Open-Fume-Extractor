@@ -71,6 +71,11 @@ static void serial_cli_print_status() {
   }
   Serial.print(F("Heap      : ")); Serial.print(ESP.getFreeHeap() / 1024); Serial.print(F(" KB free, min ")); Serial.print(ESP.getMinFreeHeap() / 1024); Serial.println(F(" KB"));
   Serial.print(F("CPU/Loop  : ")); Serial.print(cpu_load_pct); Serial.print(F("% / ")); Serial.print(loop_max_ms); Serial.println(F(" ms"));
+  for (BaseType_t core = 0; core < configNUMBER_OF_CORES; ++core) {
+    Serial.print(F("  Core ")); Serial.print(core); Serial.print(F(": "));
+    if (cpu_core_load_valid) { Serial.print(cpu_core_load_pct[core]); Serial.println('%'); }
+    else Serial.println('-');
+  }
   Serial.println();
 }
 

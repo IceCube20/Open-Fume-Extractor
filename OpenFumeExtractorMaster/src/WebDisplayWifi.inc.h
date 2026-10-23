@@ -1,4 +1,5 @@
 #pragma once
+#include "WebDisplayBle.inc.h"
 #if WEB_ENABLE
 static void web_handle_display_link() {
   if (!web_require_auth()) return;
@@ -14,6 +15,7 @@ static void web_handle_display_link() {
   }
   String html;
   web_shell_begin(html,web_text("Display-Verbindung","Display connection"),web_text("Netzwerk","Network"),"config");
+  append_ble_pairing_ui(html);
   html+=F("<section class='panel'><h2>");
   html+=web_text("Display koppeln","Pair display");
   html+=F("</h2><form method='post' action='/display-link'><label for='display_serial'>");

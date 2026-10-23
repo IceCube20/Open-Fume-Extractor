@@ -26,7 +26,7 @@
 #define OFE_STATUS_LED_SYNC_PERIOD_MS 3200
 #endif
 
-#if OFE_STATUS_LED_ENABLE
+#if OFE_STATUS_LED_ENABLE && OFE_STATUS_LED_PIN >= 0 && OFE_STATUS_LED_COUNT > 0
 #include <Adafruit_NeoPixel.h>
 #ifndef OFE_STATUS_LED_PIXEL_TYPE
 #define OFE_STATUS_LED_PIXEL_TYPE (NEO_GRBW + NEO_KHZ800)
@@ -111,7 +111,7 @@ public:
   void begin(uint8_t brightness = OFE_STATUS_LED_BRIGHTNESS) {
     brightness_ = brightness;
 
-#if OFE_STATUS_LED_ENABLE
+#if OFE_STATUS_LED_ENABLE && OFE_STATUS_LED_PIN >= 0 && OFE_STATUS_LED_COUNT > 0
     if (OFE_STATUS_LED_PIN < 0 || OFE_STATUS_LED_COUNT < 1) return;
     pixels_.begin();
     pixels_.setBrightness(255);
@@ -123,7 +123,7 @@ public:
   void setBrightness(uint8_t brightness) {
     brightness_ = brightness;
 
-#if OFE_STATUS_LED_ENABLE
+#if OFE_STATUS_LED_ENABLE && OFE_STATUS_LED_PIN >= 0 && OFE_STATUS_LED_COUNT > 0
     pixels_.setBrightness(255);
 #endif
   }
@@ -170,7 +170,7 @@ public:
 
   void tick() {
 
-#if OFE_STATUS_LED_ENABLE
+#if OFE_STATUS_LED_ENABLE && OFE_STATUS_LED_PIN >= 0 && OFE_STATUS_LED_COUNT > 0
     const uint32_t now = millis() + phase_offset_ms_;
     bool changed = false;
     for (uint8_t led = 0; led < 2 && led < OFE_STATUS_LED_COUNT; ++led) {
@@ -298,7 +298,7 @@ private:
   }
 
 
-#if OFE_STATUS_LED_ENABLE
+#if OFE_STATUS_LED_ENABLE && OFE_STATUS_LED_PIN >= 0 && OFE_STATUS_LED_COUNT > 0
   Adafruit_NeoPixel pixels_{OFE_STATUS_LED_COUNT, OFE_STATUS_LED_PIN, OFE_STATUS_LED_PIXEL_TYPE};
 #endif
   OfeLedStyle styles_[OFE_LED_EVENT_COUNT];

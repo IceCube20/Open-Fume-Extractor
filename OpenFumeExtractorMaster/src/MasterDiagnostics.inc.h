@@ -1,10 +1,13 @@
 #pragma once
 #include "MqttPerformance.h"
+#include "MasterRuntimeProfile.h"
 
 // CPU load and developer heap diagnostics helpers.
 static uint32_t loop_window_ms = 0;
 static uint32_t loop_max_us = 0;
 static uint8_t cpu_load_pct = 0;
+static uint8_t cpu_core_load_pct[configNUMBER_OF_CORES] = {};
+static bool cpu_core_load_valid = false;
 static uint16_t loop_max_ms = 0;
 // Developer phase maxima make the next latency report actionable. The phase
 // timers include time spent pre-empted while that phase was active, which is
@@ -400,21 +403,23 @@ static configRUN_TIME_COUNTER_TYPE cpu_runtime_counter_now() {
 }
 
 static void sample_cpu_load() {
+  cpu_core_load_valid = false;
 #if defined(configGENERATE_RUN_TIME_STATS) && (configGENERATE_RUN_TIME_STATS == 1)
   configRUN_TIME_COUNTER_TYPE idle_now[configNUMBER_OF_CORES] = {};
+  configRUN_TIME_COUNTER_TYPE idle_delta[configNUMBER_OF_CORES] = {};
   uint64_t idle_delta_sum = 0;
 
   for (BaseType_t core = 0; core < configNUMBER_OF_CORES; ++core) {
     TaskHandle_t idle = cpu_idle_handle_for_core(core);
-    if (!idle) return;
+    if (!idle) { cpu_runtime_valid = false; return; }
 
     TaskStatus_t info = {};
     vTaskGetInfo(idle, &info, pdFALSE, eInvalid);
     idle_now[core] = info.ulRunTimeCounter;
 
     if (cpu_runtime_valid) {
-      idle_delta_sum +=
-        (configRUN_TIME_COUNTER_TYPE)(idle_now[core] - cpu_prev_idle[core]);
+      idle_delta[core] = (configRUN_TIME_COUNTER_TYPE)(idle_now[core] - cpu_prev_idle[core]);
+      idle_delta_sum += idle_delta[core];
     }
   }
 
@@ -430,6 +435,12 @@ static void sample_cpu_load() {
       cpu_load_pct = (uint8_t)(
         ((capacity - idle_delta_sum) * 100ULL + capacity / 2ULL) / capacity);
       if (cpu_load_pct > 100) cpu_load_pct = 100;
+      for (BaseType_t core = 0; core < configNUMBER_OF_CORES; ++core) {
+        const uint64_t idle = idle_delta[core] > elapsed ? elapsed : idle_delta[core];
+        cpu_core_load_pct[core] = (uint8_t)(
+          (((uint64_t)elapsed - idle) * 100ULL + elapsed / 2ULL) / elapsed);
+      }
+      cpu_core_load_valid = true;
     }
   }
 
@@ -440,5 +451,92 @@ static void sample_cpu_load() {
   cpu_runtime_valid = true;
 #else
   cpu_load_pct = 0;
+  cpu_runtime_valid = false;
 #endif
+}
+
+template <typename JsonBuffer>
+static void append_cpu_load_json(JsonBuffer& json) {
+  json += F(",\"cpu_load_pct\":"); json += cpu_load_pct;
+  json += F(",\"cpu_core_load_pct\":[");
+  for (BaseType_t core = 0; core < configNUMBER_OF_CORES; ++core) {
+    if (core) json += ',';
+    if (cpu_core_load_valid) json += cpu_core_load_pct[core];
+    else json += F("null");
+  }
+  json += ']';
+}
+
+static ofe_runtime::PhaseWindow master_runtime_window;
+static ofe_runtime::TaskCounter<configRUN_TIME_COUNTER_TYPE> master_runtime_tasks[ofe_runtime::TaskCount];
+static ofe_runtime::Snapshot master_runtime_last;
+static portMUX_TYPE master_runtime_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void master_runtime_begin(uint32_t now_ms) {
+  if (!master_runtime_window.sync(now_ms, developer_mode_enabled)) return;
+  for (auto& counter : master_runtime_tasks) counter.reset();
+  portENTER_CRITICAL(&master_runtime_mux);
+  master_runtime_last = {};
+  portEXIT_CRITICAL(&master_runtime_mux);
+}
+
+static void master_runtime_sample(uint32_t now_ms) {
+  if (!developer_mode_enabled) return;
+  auto next = master_runtime_window.take(now_ms);
+#if defined(configGENERATE_RUN_TIME_STATS) && (configGENERATE_RUN_TIME_STATS == 1)
+  TaskHandle_t handles[ofe_runtime::TaskCount] = {master_loop_task_handle, nullptr, nullptr, heap_diag_task_handle};
+#if WEB_ENABLE
+  handles[ofe_runtime::HttpTask] = web_service_task_handle;
+  handles[ofe_runtime::MqttTask] = mqtt_service_task_handle;
+#endif
+  const auto now = cpu_runtime_counter_now();
+  for (uint8_t i = 0; i < ofe_runtime::TaskCount; ++i) {
+    if (!handles[i]) { master_runtime_tasks[i].reset(); continue; }
+    TaskStatus_t info = {};
+    vTaskGetInfo(handles[i], &info, pdFALSE, eInvalid);
+    next.tasks[i] = master_runtime_tasks[i].sample(reinterpret_cast<uintptr_t>(handles[i]), info.ulRunTimeCounter, now);
+  }
+#endif
+  portENTER_CRITICAL(&master_runtime_mux);
+  master_runtime_last = next;
+  portEXIT_CRITICAL(&master_runtime_mux);
+}
+
+template <typename JsonBuffer>
+static void append_master_runtime_json(JsonBuffer& json) {
+  if (!developer_mode_enabled) return;
+  ofe_runtime::Snapshot out;
+  portENTER_CRITICAL(&master_runtime_mux);
+  out = master_runtime_last;
+  portEXIT_CRITICAL(&master_runtime_mux);
+  json += F(",\"runtime_profile\":{\"active\":"); json += out.active ? F("true") : F("false");
+  json += F(",\"window_ms\":"); json += out.window_ms;
+  json += F(",\"age_ms\":"); json += out.active ? uint32_t(millis() - out.sampled_ms) : 0;
+  json += F(",\"tasks\":[");
+  const char* tasks[] = {"loop", "http", "mqtt", "heap"};
+  for (uint8_t i = 0; i < ofe_runtime::TaskCount; ++i) {
+    if (i) json += ',';
+    json += F("{\"id\":\""); json += tasks[i]; json += F("\",\"core\":");
+    int core = 1;
+#if defined(CONFIG_ARDUINO_RUNNING_CORE)
+    if (i == ofe_runtime::LoopTask) core = CONFIG_ARDUINO_RUNNING_CORE;
+#else
+    if (i == ofe_runtime::LoopTask) core = -1;
+#endif
+    json += core;
+    json += F(",\"cpu_pct\":");
+    if (out.tasks[i].valid) json += out.tasks[i].percent; else json += F("null");
+    json += '}';
+  }
+  json += F("],\"phases\":{");
+  const char* phases[] = {"local", "command", "ota", "scheduler", "logic", "maintenance"};
+  for (uint8_t i = 0; i < ofe_runtime::PhaseCount; ++i) {
+    if (i) json += ',';
+    json += '"'; json += phases[i]; json += F("\":{\"calls\":"); json += out.phases[i].calls;
+    json += F(",\"avg_us\":"); json += out.phases[i].averageUs();
+    json += F(",\"max_us\":"); json += out.phases[i].max_us;
+    json += F(",\"total_us\":"); json += out.phases[i].total_us;
+    json += '}';
+  }
+  json += F("}}");
 }

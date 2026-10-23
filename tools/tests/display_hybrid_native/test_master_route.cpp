@@ -18,6 +18,17 @@ public:
   std::atomic<uint8_t> firmware_addr_{0};
   uint64_t firmware_uid_=0;
   unsigned sends=0;
+  unsigned receives=0, queued_controls=0;
+  bool queued_reply=false, received_packet_=false;
+  bool receive(Frame&) {
+    ++receives;
+    received_packet_=queued_controls || queued_reply;
+    if (queued_controls) { --queued_controls; return false; }
+    const bool response=queued_reply;
+    queued_reply=false;
+    return response;
+  }
+  static bool pollHook(void*, Frame&);
   bool active(uint8_t addr) const { return online && addr==peers_[0].addr; }
   Peer* peer(uint8_t addr) { return addr==peers_[0].addr ? &peers_[0] : nullptr; }
   bool send(Peer&,uint8_t,const Frame*) { ++sends; return send_ok; }
@@ -37,6 +48,13 @@ int main() {
   assert(strcmp(ofe_module_default_name(MODULE_MODBUS_RTU), "Modbus RTU Bridge")==0);
   MasterDisplayWifi master;
   Frame frame; frame.dst=0x40; frame.cmd=CMD_FW_CHUNK;
+  assert(!MasterDisplayWifi::pollHook(&master, frame) && master.receives==1);
+  master.receives=0; master.queued_controls=2; master.queued_reply=true;
+  assert(MasterDisplayWifi::pollHook(&master, frame) && master.receives==3);
+  master.receives=0; master.queued_controls=10; master.queued_reply=true;
+  assert(!MasterDisplayWifi::pollHook(&master, frame) && master.receives==4);
+  assert(!MasterDisplayWifi::pollHook(&master, frame) && master.receives==8);
+  assert(MasterDisplayWifi::pollHook(&master, frame) && master.receives==11);
   master.beginFirmware(0x40);
   assert(master.firmware_wifi_ && master.route(frame) && master.sends==1);
   master.online=false; master.peers_[0].connected=false;

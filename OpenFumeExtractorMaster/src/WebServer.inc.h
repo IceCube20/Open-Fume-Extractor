@@ -75,6 +75,8 @@ static void web_begin() {
   build_master_hostname();
   netcfg_load();
   web.on("/display-link", HTTP_GET, web_handle_display_link);
+  web.on("/display-link/ble", HTTP_GET, web_handle_ble_pairing);
+  web.on("/display-link/ble", HTTP_POST, web_handle_ble_pairing);
   web.on("/display-link", HTTP_POST, web_handle_display_link);
   // The ESP32 default modem-sleep can add very noticeable latency to small
   // HTTP requests. The master is mains-powered, so prefer deterministic web UI
@@ -87,6 +89,9 @@ static void web_begin() {
     strlcpy(config.ssid, wifi_ssid, sizeof(config.ssid));
     strlcpy(config.password, wifi_password, sizeof(config.password));
     WiFi.localIP().toString().toCharArray(config.host, sizeof(config.host));
+  });
+  master_display_ble.configure(0,0,[](uint64_t uid, ofe_wifi::Config& config) {
+    return master_display_wifi.pairingConfiguration(uid,config);
   });
   web.collectHeaders(WEB_COLLECT_HEADERS, sizeof(WEB_COLLECT_HEADERS) / sizeof(WEB_COLLECT_HEADERS[0]));
   web.on("/favicon.png", HTTP_GET, web_handle_logo);

@@ -20,6 +20,7 @@ struct FakeLink {
   std::vector<Frame> incoming;
   unsigned position = 0;
   bool flooded = false;
+  bool lastRxWasNetwork() const { return true; }
   bool poll(Frame& frame) {
     if (position < incoming.size()) { frame = incoming[position++]; return true; }
     frame = Frame{};
@@ -36,7 +37,7 @@ public:
   void reserveDiscoveryWindow();
   void waitForDiscoveryWindow();
   void busDiagRecordRx(const Frame&) { ++received; ++frames_this_tick; }
-  bool handleAsyncDisplayFrame(const Frame& frame) {
+  bool handleAsyncDisplayFrame(const Frame& frame, bool) {
     if (!frame.async) return false;
     ++async;
     return true;

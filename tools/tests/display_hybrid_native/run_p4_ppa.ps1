@@ -1,0 +1,17 @@
+$ErrorActionPreference = 'Stop'
+$vc = 'C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207'
+$sdk = 'C:/Program Files (x86)/Windows Kits/10'
+$version = '10.0.26100.0'
+$env:INCLUDE = "$vc/include;$sdk/Include/$version/ucrt;$sdk/Include/$version/shared;$sdk/Include/$version/um"
+$env:LIB = "$vc/lib/x64;$sdk/Lib/$version/ucrt/x64;$sdk/Lib/$version/um/x64"
+$root = (Resolve-Path "$PSScriptRoot/../../..").Path
+foreach ($mode in @(0, 1, 2)) {
+  $ppa = [int]($mode -ne 0)
+  $images = [int]($mode -eq 2)
+  $build = "$root/tools/tests/build-checks/p4-ppa-native-$mode"
+  New-Item -ItemType Directory -Force -Path $build | Out-Null
+  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/DOFE_P4_PPA=$ppa" "/DOFE_P4_PPA_IMG=$images" "/I$PSScriptRoot/p4_ppa_stubs" "$PSScriptRoot/test_p4_ppa.cpp" "/Fo$build/" "/Fe$build/test_p4_ppa.exe"
+  if ($LASTEXITCODE -ne 0) { throw "P4 PPA native build failed (mode $mode)" }
+  & "$build/test_p4_ppa.exe"
+  if ($LASTEXITCODE -ne 0) { throw "P4 PPA native tests failed (mode $mode)" }
+}

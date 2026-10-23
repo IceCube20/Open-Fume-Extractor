@@ -11,6 +11,13 @@ $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
 if ($LASTEXITCODE -ne 0) { throw 'Native test build failed' }
 & "$build\test_tunnel.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
+$python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+& $python "$PSScriptRoot\extract_wifi_timing.py" "$build\generated_wifi_timing.inc.h"
+if ($LASTEXITCODE -ne 0) { throw 'WiFi timing source extraction failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_wifi_timing.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_wifi_timing.exe"
+if ($LASTEXITCODE -ne 0) { throw 'WiFi timing native build failed' }
+& "$build\test_wifi_timing.exe"
+if ($LASTEXITCODE -ne 0) { throw 'WiFi timing regressions failed' }
 
 # Exercise the installed allocator with exactly the large display's LVGL config.
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "$PSScriptRoot\test_lvgl_profile.cpp" "/Fo$build\" "/Fe$build\test_lvgl_profile.exe"
@@ -21,9 +28,11 @@ if ($LASTEXITCODE -ne 0) { throw 'LVGL profile tests failed' }
 $lvgl = Join-Path $env:USERPROFILE 'Documents\Arduino\libraries\lvgl'
 $display = Join-Path $root 'Module\DisplayModule_800x480'
 $configFlag = '/DLV_CONF_PATH=<ofe_lv_conf.h>'
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /TC /std:c11 /utf-8 /W3 $configFlag "/I$display" "/I$lvgl" /c "$lvgl\src\stdlib\builtin\lv_tlsf.c" "/Fo$build\lv_tlsf.obj"
+# Forced test-only include keeps old configuration aliases compatible with MSVC.
+$colorFlag = "/FI$PSScriptRoot/lvgl_msvc_compat.h"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /TC /std:c11 /utf-8 /W3 $configFlag $colorFlag "/I$display" "/I$lvgl" /c "$lvgl\src\stdlib\builtin\lv_tlsf.c" "/Fo$build\lv_tlsf.obj"
 if ($LASTEXITCODE -ne 0) { throw 'LVGL allocator build failed' }
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 $configFlag "/I$display" "/I$lvgl" "$PSScriptRoot\test_lvgl_pool.cpp" "$build\lv_tlsf.obj" "/Fo$build\" "/Fe$build\test_lvgl_pool.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 $configFlag $colorFlag "/I$display" "/I$lvgl" "$PSScriptRoot\test_lvgl_pool.cpp" "$build\lv_tlsf.obj" "/Fo$build\" "/Fe$build\test_lvgl_pool.exe"
 if ($LASTEXITCODE -ne 0) { throw 'LVGL pool test build failed' }
 & "$build\test_lvgl_pool.exe"
 if ($LASTEXITCODE -ne 0) { throw 'LVGL pool tests failed' }

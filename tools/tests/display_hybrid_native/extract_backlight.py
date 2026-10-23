@@ -36,4 +36,5 @@ if not deferred:
 parts.append("static void process_display_settings() {\n"
              "  const uint32_t flags = deferred_flags; deferred_flags = 0;\n"
              + deferred[0] + "\n}\n")
+parts.append(function("lvgl_touch_cb"))
 Path(sys.argv[2]).write_text("\n\n".join(parts), encoding="utf-8")

@@ -4,11 +4,21 @@
 #include <cstdio>
 #include <atomic>
 #include <algorithm>
+#include "../../../Module/DisplayModule_320x480/src/OfeDisplayBacklight.h"
+static OfeDisplayBacklight display_backlight;
 
 #define BACKLIGHT_PWM_BITS 12
 #define ST7796_PERCEPTUAL_BACKLIGHT 1
 static uint8_t display_brightness_pct = 85;
 static bool screensaver_active = false;
+static bool screensaver_wait_release = false, fw_update_active = false;
+static bool touch_down = false, lvgl_touch_pressed = false;
+static uint16_t last_touch_x = 0, last_touch_y = 0;
+static uint32_t lvgl_last_touch_ms = 0;
+using lv_indev_t = void;
+enum { LV_INDEV_STATE_RELEASED, LV_INDEV_STATE_PRESSED };
+struct lv_indev_data_t { int state; struct { int x, y; } point; };
+static bool get_touch_point(uint16_t& x, uint16_t& y) { x = 10; y = 20; return touch_down; }
 static bool bus_task = false;
 static uint32_t written_duty = 0, writes = 0, widget_updates = 0, deferred_flags = 0;
 static const uint32_t UI_DEFER_DISPLAY_SETTINGS = 1U << 9;
@@ -22,7 +32,7 @@ static uint32_t millis() { return 456; }
 static long map(long x, long low, long high, long out_low, long out_high) {
   return (x - low) * (out_high - out_low) / (high - low) + out_low;
 }
-static bool running_in_rs485_task() { return bus_task; }
+static bool ui_needs_defer() { return bus_task; }
 static void ui_defer_flags(uint32_t flags) { deferred_flags |= flags; }
 static void write_backlight_duty(uint32_t duty) { written_duty = duty; ++writes; }
 static void lv_update_display_settings_widgets(bool) { assert(!bus_task); ++widget_updates; }
@@ -40,6 +50,42 @@ struct PreferencesStub {
 #include "generated_backlight.inc.h"
 
 int main() {
+  display_backlight.configure(2, 1);
+  display_backlight.tick(0, false, false);
+  display_backlight.tick(60000, false, false);
+  assert(display_backlight.isOff());
+  screensaver_active = true;
+  lv_indev_data_t touch{};
+  touch_down = true;
+  lvgl_touch_cb(nullptr, &touch);
+  assert(!display_backlight.isOff() && screensaver_active);
+  assert(touch.state == LV_INDEV_STATE_RELEASED && screensaver_wait_release);
+  for (int sample = 0; sample < 10; ++sample) lvgl_touch_cb(nullptr, &touch);
+  assert(screensaver_active); // Holding the first touch must not count as a second tap.
+  touch_down = false;
+  lvgl_touch_cb(nullptr, &touch);
+  assert(!screensaver_wait_release);
+  touch_down = true;
+  lvgl_touch_cb(nullptr, &touch);
+  assert(!screensaver_active && touch.state == LV_INDEV_STATE_RELEASED);
+  lvgl_touch_cb(nullptr, &touch);
+  assert(touch.state == LV_INDEV_STATE_RELEASED);
+  touch_down = false;
+  lvgl_touch_cb(nullptr, &touch);
+  touch_down = true;
+  lvgl_touch_cb(nullptr, &touch);
+  assert(touch.state == LV_INDEV_STATE_PRESSED);
+  touch_down = false;
+  lvgl_touch_cb(nullptr, &touch);
+  screensaver_active = true; // With light already on, one tap still exits the saver.
+  touch_down = true;
+  lvgl_touch_cb(nullptr, &touch);
+  assert(!screensaver_active && touch.state == LV_INDEV_STATE_RELEASED);
+  touch_down = false;
+  lvgl_touch_cb(nullptr, &touch);
+  display_backlight.configure(0, 5);
+  display_backlight.tick(456, false, false);
+  last_user_activity_ms = 123;
   for (unsigned value = 0; value <= 255; ++value) {
     const uint8_t clamped = (uint8_t)std::clamp(value, 10U, 100U);
     for (bool saver : {false, true}) {

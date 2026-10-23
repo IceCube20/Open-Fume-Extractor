@@ -63,6 +63,17 @@ class FirmwareSignAppTest(unittest.TestCase):
             self.post("/api/verify", bytes(tampered))
         self.assertEqual(caught.exception.code, 400)
 
+    def test_p4_target_is_preserved_by_signer(self) -> None:
+        header = bytearray(24)
+        header[0], header[1], header[12] = 0xE9, 4, 0x12
+        # Validator string fragments must not be mistaken for a build version.
+        raw = bytes(header) + b"OFE_FW_SIG:v1;\x00target=DISPLAY_P4_800X480;version=\x00"
+        raw += b"OFE_FW_SIG:v1;target=DISPLAY_P4_800X480;version=1.0.0alpha-P4Prep;\x00"
+        signed = self.post("/api/sign", raw)
+        info = json.loads(self.post("/api/verify", signed))["firmware"]
+        self.assertEqual(info["target"], "DISPLAY_P4_800X480")
+        self.assertEqual(info["version"], "1.0.0alpha-P4Prep")
+
 
 if __name__ == "__main__":
     unittest.main()

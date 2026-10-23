@@ -67,6 +67,6 @@ entity.7.type=switch
 entity.7.name=Lüfter
 entity.7.key=fan
 entity.7.role=main_output_enable
-entity.7.access=rw
+entity.7.access=wo
 entity.7.set_on=N
 entity.7.set_off=M

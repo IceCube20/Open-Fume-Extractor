@@ -65,12 +65,16 @@ public:
   void finishUpdate() { update_transport_.store(0); }
   bool updateWireless() const { return update_transport_.load()==2; }
   bool save(const ofe_wifi::Config& c) {
-    if (!worker_ || !ofe_wifi::valid(c) ||
+    if (!ofe_wifi::valid(c) ||
         (!c.from_master && c.mode!=ofe_wifi::WIRED && !ofe_wifi::configured(c))) return false;
-    portENTER_CRITICAL(&mux_);
-    bool ok=!save_pending_ && !update_transport_.load();
-    if (ok) { pending_=c; save_pending_=true; shared_.result=1; }
-    portEXIT_CRITICAL(&mux_); return ok;
+    return queueSave(c);
+  }
+  bool forgetPairing() {
+    auto c=view().config;
+    c.from_master=0;
+    memset(c.host,0,sizeof(c.host));
+    memset(c.key,0,sizeof(c.key));
+    return queueSave(c);
   }
   void scan() {
     portENTER_CRITICAL(&mux_);
@@ -108,6 +112,14 @@ public:
     return jbc_rs485::get_u32_le(digest);
   }
 private:
+  bool queueSave(const ofe_wifi::Config& c) {
+    if (!worker_ || !ofe_wifi::valid(c)) return false;
+    portENTER_CRITICAL(&mux_);
+    const bool ok=!save_pending_ && !update_transport_.load();
+    if (ok) { pending_=c; save_pending_=true; shared_.result=1; }
+    portEXIT_CRITICAL(&mux_);
+    return ok;
+  }
   portMUX_TYPE mux_=portMUX_INITIALIZER_UNLOCKED;
   View shared_;
   ofe_wifi::Config pending_,active_config_;
@@ -149,6 +161,8 @@ private:
   void resetSession(bool leave) {
     if (leave && connected_) send(ofe_wifi::LEAVE);
     connected_=false; client_=0; server_=0; tx_=rx_=0; hello_ms_=0;
+    timing_enabled_=false; timing_token_=0;
+    timing_version_=1; timing_reply_version_=1; timing_rx_polls_.reset();
     bulk_last_request_=bulk_last_offset_=bulk_last_accepted_=0;
     bulk_last_status_=ofe_wifi::STATUS_BUSY;
     setActive(false);
@@ -159,6 +173,15 @@ private:
     Packet p; p.kind=kind; p.uid=uid_; p.mode=active_config_.mode; p.client=client_; p.server=server_;
     p.counter=(kind==DATA || kind==LEAVE || kind==KEEPALIVE) ? ++tx_ : 0;
     if (frame) setFrame(p,*frame);
+    if (kind==KEEPALIVE && timing_enabled_) {
+      p.length=3; p.body[0]='W'; p.body[1]='T'; p.body[2]=timing_version_;
+    }
+    if (kind==DATA && frame && timing_token_ && frame->seq==timing_sequence_ &&
+        frame->cmd==uint8_t(timing_command_|0x80)) {
+      setTimedFrame(p,*frame,timing_token_,uint32_t(micros()-timing_received_us_),
+                    timing_reply_version_,timing_request_poll_gap_us_);
+      timing_token_=0;
+    }
     return sendPacket(fd_,endpoint_,p,active_config_.key);
   }
   static bool sendHook(void* self,const jbc_rs485::Frame& f) {
@@ -232,6 +255,8 @@ private:
     }
     uint8_t raw[BULK_PACKET_MAX]; sockaddr_in from={}; socklen_t size=sizeof(from);
     int n=recvfrom(fd_,raw,sizeof(raw),MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&from),&size);
+    const uint32_t received_us=micros();
+    if (timing_enabled_) timing_rx_polls_.sample(received_us);
     if (n<=0 || !samePeer(from,endpoint_)) return false;
     if (n >= (int)(BULK_HEADER + TAG) && (!memcmp(raw,"OFB1",4) || !memcmp(raw,"OFA1",4))) {
       BulkPacketView bulk;
@@ -273,18 +298,37 @@ private:
       setActive(true); return false;
     }
     if (!connected_ || !inSession(p,uid_,client_,server_,active_config_.mode,rx_)) return false;
-    if (p.kind==KEEPALIVE && !p.length) { rx_=p.counter; seen_=millis(); return false; }
+    if (p.kind==KEEPALIVE && (!p.length || timingOffer(p.body,p.length))) {
+      timing_enabled_=timingOffer(p.body,p.length);
+      timing_version_=timing_enabled_ ? p.body[2] : 1;
+      if (!timing_enabled_) timing_rx_polls_.reset();
+      rx_=p.counter; seen_=millis(); return false;
+    }
     if (p.kind==LEAVE) {
       last_wired_ms_=millis(); resetSession(false); return false;
     }
-    if (p.kind!=DATA || !getFrame(p,frame) || frame.src!=ADDR_MASTER ||
+    uint32_t token=0,display_us=0,request_poll_gap=0;
+    uint8_t timing_version=1;
+    const bool timed=p.kind==TIMED_DATA;
+    if (!(timed ? (timing_enabled_ && getTimedFrame(p,frame,token,display_us,&request_poll_gap,&timing_version) &&
+        display_us==0 && (timing_version==1 || request_poll_gap==0)) :
+        (p.kind==DATA && getFrame(p,frame))) || frame.src!=ADDR_MASTER ||
         (frame.dst!=*address_ && frame.dst!=ADDR_BROADCAST)) return false;
+    timing_token_=timed ? token : 0;
+    timing_reply_version_=timing_version; timing_request_poll_gap_us_=timing_rx_polls_.gap;
+    timing_received_us_=received_us; timing_sequence_=frame.seq; timing_command_=frame.cmd;
     rx_=p.counter; seen_=millis(); network_origin_=true;
     last_transport_wireless_.store(true, std::memory_order_relaxed);
     // OTA uses the same handlers after authentication/replay checks above.
     return true;
   }
   static void workerHook(void* arg) { static_cast<OfeDisplayWifi*>(arg)->worker(); }
+  bool timing_enabled_=false;
+  uint32_t timing_token_=0,timing_received_us_=0;
+  uint8_t timing_sequence_=0,timing_command_=0;
+  uint8_t timing_version_=1,timing_reply_version_=1;
+  uint32_t timing_request_poll_gap_us_=UINT32_MAX;
+  ofe_wifi::RxPollGap timing_rx_polls_;
   void sampleMemory() {
     constexpr uint32_t caps=MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     uint32_t free=heap_caps_get_free_size(caps), largest=heap_caps_get_largest_free_block(caps);

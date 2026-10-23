@@ -134,6 +134,26 @@ Target: ST7796 SPI panel with FT63x6 touch.
 
 GPIO16 remains unused because it is connected to SD-CS on this display board.
 
+## Display P4 800x480 (Experimental)
+
+Target: ELECROW CrowPanel Advanced 5-inch V1.0, RGB/ST7262 + GT911,
+with the PRE-V3 ESP32-P4 build profile. These are onboard connections, not spare
+GPIOs for external devices. Check your exact board revision before wiring.
+
+| Function | GPIO / connection |
+|---|---:|
+| OFE RS485 UART RX / TX | 48 / 47 |
+| shared I2C SDA / SCL | 45 / 46 |
+| touch RESET / INT | 36 / 42 |
+| DE / VSYNC / HSYNC / PCLK | 2 / 41 / 40 / 3 |
+| RGB data, driver D0..D15 order | 8, 7, 6, 5, 4, 14, 13, 12, 11, 10, 9, 19, 18, 17, 16, 15 |
+| backlight controller | STC8, I2C `0x2F`; no direct PWM GPIO |
+| onboard C6 hosted-radio pins | reserved by `OfeP4Board.h`; do not reassign |
+
+The board UART connector is not an RS485 transceiver. Use a suitable 3.3 V UART
+to RS485 interface and follow its direction-control and electrical requirements.
+Do not connect RS485 A/B directly to MCU GPIOs.
+
 ## Mechanical envelope
 
 The current cartridge concept uses the same **30 x 100 x 100 mm** enclosure size

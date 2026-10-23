@@ -1,410 +1,123 @@
 # Open Fume Extractor for Home Assistant
 
-An initial local, broker-free custom integration. Master firmware **2.0.31 or
-later** is required; use **2.0.53+** with **0.1.0rc21** for the aligned MQTT/native
-catalogue, station parameter controls and developer-only diagnostics. No module firmware changes are required.
-This version is ready for a Home Assistant test installation, not a claim of
-certification or full feature parity with the existing MQTT discovery.
+Local Home Assistant integration and dashboard cards for
+[Open Fume Extractor](https://github.com/IceCube20/Open-Fume-Extractor).
+Connect directly to your master over the local network; no MQTT broker or cloud
+account is required. MQTT can continue to run independently for other clients.
 
-## Installation
+This is the dedicated Home Assistant repository. Master and module firmware,
+hardware documentation and the USB flasher remain in the
+[firmware project](https://github.com/IceCube20/Open-Fume-Extractor).
 
-1. Update the master and complete its Wi-Fi and web-password setup.
-2. Place `custom_components/open_fume_extractor` in the Home Assistant
-   configuration directory under `custom_components`.
-3. Restart Home Assistant.
-4. Open **Settings > Devices & services > Add integration > Open Fume Extractor**.
-5. Enter the master's IP/hostname, web username and your current web password.
+## Requirements
 
-Use **Reconfigure** on the integration's menu to change the host or web login.
-Changed credentials also trigger a reauthentication flow rather than requiring
-you to delete the integration. Entity IDs remain tied to hardware identities.
+- Home Assistant **2026.10 or newer** (tested on 2026.10.1).
+- Open Fume Extractor Master **2.0.53RC or newer** is recommended.
+- The master's IP/hostname and current web username/password.
+- Local network access from Home Assistant to the master.
+- HACS **2.x** for HACS installation, or filesystem access for manual installation.
 
-mDNS discovery is available for the default `open-fume-extractor-*` hostname.
-Custom master hostnames can be added manually. The master and modules use hardware
-identities; changing an alias or bus address does not create new entities.
+The integration is a community release candidate, not an official Home Assistant
+integration or a default HACS listing. It can be installed as a **custom HACS
+repository**.
 
-## Included entities and controls
+## Install with HACS
 
-- Master power, output feedback, activity, alarms, afterrun and power-saving status.
-- Suction level, custom power, work/stand afterrun, stand intakes and Continuous.
-- Main input/output selection and global status-LED enable/brightness controls.
-- One master device and child devices for modules, with connection, firmware,
-  CPU, uptime and transport diagnostics. Heap (KiB), minimum heap and maximum
-  loop time are exposed only while the master's developer mode is enabled.
-- Display brightness, language, theme, screensaver and master/module restart.
-- JBC FAE station connection, work/stand and identity.
-- JBC USB station identity/error, connection mode and class-specific port values:
-  soldering temperatures/power/sleep countdown, hot-air flow/stop countdown,
-  cleaner motors/door/counters, preheater thermocouples/heater/power,
-  extractor intakes and feeder speed/length/program. Unsupported values disappear
-  from the registry after two matching, complete online snapshots confirm a
-  station-class change. Explicit station absence, reported twice by an online
-  JBC USB module, also removes station-specific entities. An offline module or
-  failed poll does not authorize deletion.
-- JBC USB supported station settings: port temperature and hot-air flow, global
-  and individual temperature-level enable switches, selected level and level
-  setpoints, preheater thermocouple setpoints and extractor flow. Read-back
-  confirmation uses the same queued write transaction as the web UI; a request
-  does not optimistically replace the displayed station value. Unsupported
-  classes/settings are omitted, including temperature levels on JTSE/CAP v1+.
-- Weller fan/light/power, RPM and filter condition, operating time, replacement
-  interval and remaining time; interval dropdown and filter reset. Cached readings
-  and filter totals remain visible when the local Weller is disconnected but its
-  OFE module is online. Live controls and filter reset still require the Weller.
-- Fan/IO main output controls where not already descriptor-backed, RPM/faults,
-  and Fan/IO Pro derived filter lifetime/remaining time and filter-runtime reset
-  when runtime tracking is on.
-- Descriptor-backed Fan/IO, Fan/IO Pro, Universal RS232 and Modbus profile entities:
-  sensors, inputs, switches, numbers, selects, text controls and buttons, respecting RO/RW/WO.
-- Values use the master's builder-postprocessed text and selection mapping;
-  numeric scales are not applied a second time.
-- Dynamic profile/channel changes add entities without restarting Home Assistant.
-  Confirmed removed entities are deleted from the native entity registry.
-  Profile entities include their machine key in the identity: reusing a profile
-  slot for a different key does not silently redirect an existing automation.
+1. Open HACS and select **three-dot menu > Custom repositories**.
+2. Add `https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant`.
+3. Select type **Integration**, then add the repository.
+4. Search HACS for **Open Fume Extractor** and download it.
+5. To select a release candidate, enable **Show beta versions** in HACS and
+   choose the desired RC release. The default branch can also be downloaded.
+6. **Restart Home Assistant**, not just the integration.
+7. Open **Settings > Devices & services > Add integration > Open Fume Extractor**.
+8. Enter the master's IP/hostname and its **web** login, not a developer password.
 
-Hardware/profile editing and firmware OTA remain in the web UI. The automated MQTT/native catalogue comparison covers
-the supported master/module cases; it is not a full web-control parity claim.
+The master and supported modules are created automatically. The native polling
+interval is configurable from **1 to 60 seconds** in the integration options.
+MQTT Discovery does not need to be enabled for this native integration.
 
-## Updating from earlier versions
+### Existing manual installations
 
-RC21 removes JBC USB station-specific entities after two matching successful
-polls explicitly report no station connected. Module diagnostics, station
-connection, Work and Stand remain; supported station entities return on reconnect.
-This also ignores stale cached ports and controls in a disconnected report.
-MQTT uses the same policy with Master 2.0.53, confirming two discovery snapshots
-(normally about 15-30 seconds, followed by incremental retained-topic cleanup).
-No JBC USB module update is required.
+Do not delete your integration, devices or entities. Add this repository in
+HACS, download it over the existing `custom_components/open_fume_extractor`
+folder, then restart Home Assistant. The integration domain and entity unique
+IDs are unchanged, so existing setup, automations and dashboard references can
+be reused. Back up your Home Assistant configuration before updating.
 
-For MQTT discovery and cleanup, enable **Home Assistant Discovery** under the
-master's **Network/System > MQTT** settings and save. The normal discovery
-prefix is `homeassistant`. MQTT live state publishing continues even with
-discovery disabled, but new devices and retained entity removals do not.
+## Manual installation
 
-RC20 repairs stale devices and entities. Modules removed from the master's
-inventory are removed from this integration after two complete matching lists;
-modules still listed as offline are preserved. Cleanup also covers registry
-entries left from before a Home Assistant restart. It is paused during the
-master's first 30 seconds, firmware updates, failed polls and incomplete lists.
-The master and devices owned/shared by other integrations are not deleted.
+Download the integration ZIP from
+[Releases](https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant/releases).
+Extract it and place its `open_fume_extractor` folder at:
 
-JBC station changes remove unsupported entities after two matching connected
-snapshots. The authoritative master counter projection no longer falls back to
-old raw counter caches when the current station exposes no counters; counter
-families and port counts are checked before creating entities. This prevents
-obsolete counters being created again immediately after cleanup.
-
-The native cleanup works with the existing Master 2.0.51 firmware. The separate
-MQTT retained-discovery repair requires Master 2.0.52; no module flash is needed.
-
-RC19 adds **Off** to the Weller filter replacement interval selector.
-Use **Master 2.0.51+** and **Weller module 1.1.83+**: selecting Off queues
-`f000` followed by `g000`, each with the Weller checksum, as in the original
-ESPHome configuration. This disables the programmed interval and resets its
-operating-time counter. Select a positive interval to enable it again.
-The independently reported filter condition is not changed or hidden.
-The observed `r001`/`r000` commands have an unconfirmed purpose and are not
-automatically sent during connection.
-
-Replace the component folder with **0.1.0rc21** and restart Home Assistant. Do not
-delete and recreate the integration: existing hardware-based entity IDs remain
-unchanged. This update fixes unavailable entities caused by a collision with HA's
-reserved `platform` attribute and removes the deprecated device-link parameter.
-The original project logo is included in `brand/`; local logos require Home
-Assistant **2026.3 or later**. Reload the browser after restarting if the icon
-is still cached.
-
-RC16 with **Master 2.0.41+** removes repeated addresses from module entity captions.
-Address and alias remain on the device/card header; entity IDs and user overrides
-are preserved. Cards have one header, larger OFE/EVT indicators and the master's
-module icons. MQTT state publishing reuses descriptor views instead of repeatedly
-allocating discovery metadata; the publishing interval is unchanged. No module
-firmware update is required.
-
-Device pages and OFE cards show short entity captions such as `Power`. Home
-Assistant may still prepend the device name in global entity lists; this is its
-standard device-based naming behavior, shared by MQTT and the native integration.
-
-RC13 adds device summaries, connection/transport/Eco indicators and a power bar
-to the included dashboard cards. Click a summary value for HA's more-info dialog.
-Controls remain native HA rows, and value updates preserve their focus. This is
-an integration-only update; it does not require another firmware update.
-
-RC12 with **Master 2.0.40+** uses matching input/output icons for all eight
-configurable Fan/IO and Fan/IO Pro channels, not just IN1/IN2 and OUT1/OUT2.
-Explicit descriptor icons and user icon overrides remain unchanged.
-
-RC11 requires **Master 2.0.39+** for the Fan/IO Pro filter-runtime reset button,
-complete default icon catalogue, whole-percent output feedback, and automatic Eco
-resynchronization after a fast module reboot. No module firmware update is needed.
-JBC USB time counters display days/hours/minutes; their raw minute count remains in
-the `counter_minutes` state attribute in MQTT and the native integration. Non-time
-counters remain numeric. Existing statistics for the old numeric time sensors are
-not converted; automations relying on their numeric state should use this attribute.
-User-defined icons and Home Assistant display-precision overrides are preserved.
-
-RC10 requires **Master 2.0.38+** for JBC parameter metadata and writes. It restores
-the Weller replacement-interval dropdown (1-23 hours, 1-6 days, or 6 days 16 hours)
-and retains cached Weller readings on local disconnect. Switching developer mode
-off removes the owned heap/maximum-loop entities in both integrations; switching
-it back on recreates them. MQTT discovery refreshes automatically after the
-master update. Existing obsolete number entities for the Weller interval are
-replaced by select entities, so dashboard references to that old number may need
-updating. CPU and module count use whole-number display precision.
-
-RC3 aligns built-in icons and device classes with MQTT, adds sensor display
-precision (RC6 also rounds the heap state to whole KiB, matching MQTT),
-and uses number boxes for afterrun seconds instead of 0-3600 sliders. JBC tools
-and errors now use the same friendly mappings as the master/MQTT. Station class,
-cleaner/preheater/feeder port state and descriptorless Fan/IO Pro pressure and
-filter mode are included. Profile roles/icons are respected; a pressure entity
-already supplied by a descriptor is not duplicated.
-
-RC4 introduced module entity captions such as `0x20 Ventil`, with the module alias
-only on the device/card header. JBC FAE and USB Stand both use the parking icon.
-Master and module uptime display as text like `1d 2h 3m`, using the same rounding
-as MQTT. Raw uptime remains available in the `uptime_seconds` attribute; numeric
-automations should read that attribute instead of the now-formatted state.
-Uptime no longer has a numeric unit or statistics state class.
-
-Existing entity IDs are retained. MQTT and the direct integration still have
-separate entity registries. Update the master to **2.0.33+** for the corresponding
-MQTT captions and FAE Stand icon; no module firmware update is required. The
-direct integration also works with the existing **2.0.31+** HA API. User-defined
-HA name/icon overrides are not overwritten; clear those overrides on individual
-entities if you want the new defaults.
-
-RC5 keeps JBC Work/Stand available while the OFE module is online, even when the
-station is unplugged: both show off rather than unavailable. Station-specific
-details still become unavailable on disconnect. FAE Stand is derived from a
-connected station handshake and inactive Work, matching the master web UI; USB
-Stand uses the actual station mask. An offline module remains unavailable.
-
-Master and module hardware UIDs are included as diagnostic serial-number sensors
-as well as device information. **Master 2.0.34+** also shows the master serial
-number in the web status overview and supplies serial numbers through MQTT
-device discovery and state/sensor topics. These are OFE controller identities,
-not the separate JBC station device ID. Existing MQTT/HA identities are unchanged.
-
-RC6 compares built-in names, platforms, icons, units and diagnostic categories
-against the firmware's MQTT discovery definitions. Built-in names follow the
-master's German/English UI language; user-defined aliases remain unchanged.
-JBC USB values use the same cache-only core projection as MQTT, including
-class-specific ports, power/flow scaling and countdown formatting. Afterrun and
-filter times share MQTT's text formatting; `afterrun_seconds` retains the raw
-remaining time for numeric automations. Writable profile text is a text control,
-not a read-only sensor. Filter functions disabled in Fan/IO Pro are omitted.
-
-Update the master to **2.0.35+** for the corresponding MQTT metadata and native
-routing/LED controls. Older supported masters keep the legacy readout fallback.
-MQTT is still independent and can remain enabled. These are shared defaults,
-not a promise that user overrides or historical registry entries will match.
-
-RC7 fixes the concrete FAE MQTT/native comparison: module CPU, firmware, heap,
-uptime, connection, minimum heap, maximum loop time, transport and restart belong
-to Diagnostics on both paths. Power saving is an operational binary sensor with
-the sprout icon. MQTT now exposes the five previously native-only common module
-entities (minimum heap, loop time, transport, power saving and restart).
-FAE station text is `-` when disconnected; the cached station device ID remains
-visible while the OFE module is online. This overrides RC5's blanket rule for
-these two FAE identity fields; an offline OFE module is still unavailable.
-German diagnostic captions and profile icons are also supplied correctly.
-The FAE regression test executes the firmware's discovery publisher and compares
-the full module inventory, metadata and connection transitions with native specs.
-Other station-class-specific extras described above are not yet guaranteed to
-have identical inventories. No user name/icon overrides are overwritten.
-
-Use **Master 2.0.37+** with RC9 for the aligned MQTT/native entities and descriptor icons.
-
-RC8 adds the missing MQTT master diagnostics, output feedback and restart,
-Weller filter reset/interval controls, and class-specific JBC counters and selected
-flow/thermocouple temperatures. Both paths use the same cached JBC projection;
-there are no additional device-bus polls. Disconnected/stale readings are marked
-unavailable, while the module connection sensor remains usable to report offline.
-Temporary disconnections keep the MQTT inventory; removing a module or changing
-station capabilities reconciles retained discovery through the manifest.
-
-The native descriptor RPM and dedicated filter-pressure sensor replace duplicate
-Fan/IO readings. Their surviving unique IDs are unchanged. Previously created
-duplicate native sensors are removed automatically once their module reports a
-confirmed, complete inventory. Update dashboards/automations referencing these
-obsolete duplicates to use the surviving entity. Native IDs remain hardware-based;
-existing MQTT IDs remain address-based.
-These naming schemes are deliberately not rekeyed by this update.
-Flash only the master, update the HA component, and restart Home Assistant.
-The master republishes MQTT discovery after connecting; no MQTT entity deletion
-or module firmware update is required. Disabled profile time formatting (`none`)
-keeps the native value numeric with its original unit, matching MQTT.
-
-RC9 aligns device names/models (including `0x01 Open Fume Extractor Master`) and
-updates existing device metadata without overwriting user device names. CPU and
-module counts use integer states and zero suggested decimals. Old suggested
-display precision is updated; explicit HA user precision settings take priority.
-Registry cleanup covers removed channels, component changes, obsolete duplicates
-and unsupported JBC station entities, including disabled entries. Offline, missing,
-updating or incomplete modules are never deletion authorities. Reappearing channels
-can be added again using their original unique IDs; current entities keep their IDs.
-This is an integration-only update: no further master/module flash is needed if
-Master 2.0.37 is already installed.
-
-## Alarm lists
-
-With **Master 2.0.47+** and **integration 0.1.0rc18**, both the **Alarm Count** and
-**Alarm Text** sensors expose `alarms` as a JSON list of complete messages and `alarm_count` as an
-attribute on both MQTT and the direct integration. Each message includes its
-module or source. An empty list means there are no active alarms. The **Alarm Count**
-state remains the numeric count. **Alarm Text** is a separate, visible sensor on
-the master device in both integrations, using the same bell icon. It shows `OK`
-with no active alarms or messages separated by semicolons. Its state is limited
-to 255 characters to fit HA's state limit; the `alarms` attribute retains every
-complete message. RC18 restores this sensor after its removal in RC17, reusing
-its previous identity. The web alarm display remains unchanged.
-
-The OFE Master and Overview cards display active alarms as a separate list and
-hide it when the list is empty or the master is unavailable. The additional
-**OFE Alarms** card works with **MQTT or native** sensors: select your Alarm Count
-sensor in its graphical editor. It displays each message separately, shows
-"No active alarms" for an empty list and "Unavailable" for an offline master.
-It consumes HA states without extra network polling. Use the same JavaScript
-resource as the other OFE cards. Example:
-
-```yaml
-type: custom:ofe-alarms-card
-entity: sensor.your_master_alarm_count
+```text
+/config/custom_components/open_fume_extractor/
 ```
 
-For an ordinary HA dashboard, a Markdown card can read the same attribute:
-
-```yaml
-type: markdown
-title: Active alarms
-content: |-
-  {% for alarm in state_attr('sensor.your_master_alarm_count', 'alarms') or [] %}
-  - {{ alarm }}
-  {% else %}
-  No active alarms.
-  {% endfor %}
-```
-
-Replace the example entity ID with your actual **Alarm Count** sensor.
+Restart Home Assistant and add the integration through **Devices & services**.
+Do not create a second nested `custom_components/custom_components` directory.
 
 ## Dashboard cards
 
-The integration includes **OFE Master**, **OFE Module**, **OFE Overview** and
-**OFE Alarms** cards. The Alarms card also supports MQTT entities.
-Each device has a header, connection/transport/Eco indicators and up to four
-device-specific summary values. Master cards show requested power, feedback RPM,
-afterrun and alarms; module summaries adapt to fan/filter, JBC station, display
-or profile values. Click a value to open its HA more-info dialog. A power bar
-is shown directly below the power value when a valid percentage is available.
-Compact device headers and separated summary values follow HA's light/dark theme.
-OFE and EVT indicators mirror the master's LED event colors/effects, including
-the white/purple OFE power-saving effect. Two read-only LED sensors per device
-also expose the event as text, with color/effect metadata for dashboards and
-automations. These sensors do not require developer mode. Missing/invalid LED
-telemetry and offline devices are shown without animation; global LED disable
-turns the indicators off. Click an indicator to open the corresponding sensor.
-Animations are browser-side, respect reduced-motion settings, and do not add
-HTTP polling. Their phase is not synchronized with the physical LEDs; short
-activity pulses between HA polls cannot be captured. Missing values are not invented.
-They use native Home Assistant entity rows for controls, with no MQTT, Mushroom
-or other card dependency. Overview groups the master and every module; Module
-groups controls, filters and JBC ports. Cards follow hardware identities and
-aliases rather than hard-coded entity IDs. Offline devices remain visible;
-removed or no-longer-supported entities are excluded. Diagnostics are optional.
+The integration includes **OFE Overview**, **OFE Master**, **OFE Module** and
+alarm cards, with module controls and animated OFE/EVT indicators.
 
-1. After updating the integration and restarting HA, open **Settings > Dashboards
-   > Resources** (enable Advanced Mode in your user profile if necessary).
-2. Add `/open_fume_extractor/ofe-cards.js?v=0.1.0rc21` as a **JavaScript module**.
-3. Reload the browser. Edit your dashboard, add a card and choose **OFE Overview**,
-   **OFE Master** or **OFE Module**. The graphical editor selects master/module
-   and controls whether diagnostics and summary values are shown. Update the
-   existing resource URL instead of adding the same resource a second time.
+From **0.1.0rc25**, the integration automatically registers the bundled
+**JavaScript module** when Lovelace resources use normal UI/storage mode.
+Existing OFE resource entries are updated to the new version and duplicates
+of that exact local bundle are removed. No dashboard layouts or entity IDs
+are changed. No separate frontend repository or card download is needed.
 
-For a manual card, an overview needs only:
+After installation or an update, **restart Home Assistant and fully reload the
+browser/app**. Then edit a dashboard and choose an OFE card. Already open pages
+cannot replace registered JavaScript custom elements without a full reload.
+
+For YAML-managed resources, add this **once** yourself (your YAML is never edited):
 
 ```yaml
-type: custom:ofe-overview-card
-show_diagnostics: false
-show_summary: true
+lovelace:
+  resource_mode: yaml
+  resources:
+    - url: /open_fume_extractor/ofe-cards.js
+      type: module
 ```
 
-With multiple masters, select a master in the editor or specify `master_uid`.
-For a module card, specify its hardware `module_uid` (the editor lists its alias):
+Use the unversioned URL there and fully reload the browser after updates.
+If automatic registration fails, a manual storage-mode fallback is available
+under **Settings > Dashboards > Resources** (Advanced Mode): add/update
+`/open_fume_extractor/ofe-cards.js?v=0.1.0rc25` as a JavaScript module, not a second
+duplicate entry. Check HA logs for the underlying resource-registration error.
 
-```yaml
-type: custom:ofe-module-card
-master_uid: "0000000012345678"
-module_uid: "2000000012345678"
-show_diagnostics: false
-show_summary: true
+## Documentation and support
+
+- [Entity catalogue, controls and card examples](docs/REFERENCE.md)
+- [Release notes](CHANGELOG.md)
+- [Report integration issues](https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant/issues)
+- [Firmware, hardware and installation](https://github.com/IceCube20/Open-Fume-Extractor)
+- [Official HACS custom-repository instructions](https://www.hacs.xyz/docs/faq/custom_repositories/)
+
+Use a trusted local network. The master currently uses HTTP Basic authentication
+without HTTPS: credentials and traffic are **not encrypted**. Do not expose the
+master directly to the internet. Protect Home Assistant configuration/backups,
+which contain the saved web login. Diagnostics omit credentials and tokens.
+
+## Development
+
+```sh
+python -m pip install -r requirements-test.txt
+python -m unittest discover -s tests -v
+python tools/build_package.py
 ```
 
-Use your actual UIDs, not these example values. Optional `title` changes a card's
-heading. German/English section titles follow the HA frontend language; native
-control rendering follows HA. Built-in entity labels follow the master language;
-module/profile aliases are retained. Your existing dashboards
-and resources are not automatically overwritten.
+The unit tests use lightweight Home Assistant stubs and do not replace testing
+in a running HA installation. Cross-firmware MQTT/API contract tests remain in
+the main firmware repository. Integration runtime code is self-contained under
+`custom_components/open_fume_extractor/`.
 
-For existing **MQTT** heap discovery warnings, separately rebuild/flash master
-**2.0.32**. Master and module heap discovery now uses `KiB`, matching its 1024-byte
-conversion. The same retained discovery topics/unique IDs are republished when
-MQTT reconnects; MQTT itself is not removed or disabled by this integration.
+Tags must match the integration manifest version, for example `v0.1.0rc25`.
+CI tests the component and HACS layout before publishing a manual-install ZIP.
+No firmware binaries, credentials or signing keys belong in this repository.
 
-## Polling and availability
-
-A shared status coordinator polls cached master state every **5 seconds** by
-default (configurable from 1 to 60 seconds in the integration's options).
-Saving the options reloads the integration and applies the new interval.
-A 1-second interval increases HTTP traffic compared with the 5-second default.
-Entities do not trigger individual reads or
-extra RS485 polling. Descriptor definitions are refreshed when their CRC or the
-master UI language changes. Losing the master makes entities unavailable; losing one module affects
-that module only. Commands are serialized with polling. A wrong-CSRF rejection
-is retried once after session renewal; ambiguous timeouts are never retried.
-
-After a successful command, the coordinator requests an immediate refresh.
-Dashboard cards only consume HA states; they do not create additional requests,
-polling timers or service writes. MQTT currently publishes master state every
-350 ms, and module state is staggered by at least 25 ms between modules. These
-are publication intervals, not guarantees about device-wire sampling or response
-time; bus polling, network conditions and update/discovery activity still matter.
-
-Continuous is a runtime setting: Home Assistant does not restore it on startup.
-The integration sends only deliberately changed settings, not periodic writes.
-
-## Security and migration from MQTT
-
-Use this only on a trusted local network. The current master uses HTTP Basic
-authentication without HTTPS: traffic, including web credentials, is **not
-encrypted**. Do not expose the master to the public internet. Diagnostics omit
-passwords, CSRF tokens, hosts, serial numbers and aliases. Home Assistant still
-stores the web login in its config entry, so protect its configuration and backups.
-
-MQTT can remain enabled for other applications. To avoid duplicate Home Assistant
-entities, disable the master's Home Assistant MQTT discovery and remove old MQTT
-devices only after confirming that automations have been migrated.
-
-## HACS packaging
-
-This folder is a HACS-ready repository root: it contains `hacs.json` and one
-integration under `custom_components/`. It must be published as an integration
-repository (or moved to the root of the public repository) before a HACS custom
-repository URL will work. It has not been published or submitted to HACS yet.
-
-## Testing
-
-Run `python -m unittest discover -s tests -v` with `aiohttp` installed for local
-transport/model tests and coordinator contract tests with lightweight HA stubs.
-These stubs do not replace an actual Home Assistant installation. Live installation and automation tests in Home Assistant
-are still required before publishing a stable release.
-
-`node tests/test_cards.cjs` runs Playwright card/editor contracts using native-card
-test doubles and captures desktop/mobile screenshots. Install Playwright and its
-Chromium browser first; `OFE_BROWSER_EXECUTABLE` may point to an installed Chromium
-browser instead. These tests do not substitute for the actual HA frontend.
-
-On the development Windows workstation, `tests/native/run.ps1` runs the actual
-Master HA API handlers against test doubles using MSVC. Rebuild the installation
-ZIP with `tools/build_package.ps1`; it excludes tests, caches and firmware/private
-build settings.
+Licensed under GPL-3.0; see [LICENSE](LICENSE). Open Fume Extractor is a community
+project by IceCube20 and is not an official JBC or Weller product.

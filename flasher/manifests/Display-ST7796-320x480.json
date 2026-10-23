@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Display ST7796 320x480",
-  "version": "1.0.13RC",
+  "version": "1.0.41RC",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.13RC-merged.bin",
+          "path": "../../firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.41RC-merged.bin",
           "offset": 0
         }
       ]

@@ -209,7 +209,7 @@ static void master_command_execute(MasterCommandRequest& r) {
       break;
 
     case MASTER_CMD_SET_DISPLAY_SETTINGS:
-      r.result = scheduler.setDisplaySettings(r.addr, r.a, r.b, r.c, r.d);
+      r.result = scheduler.setDisplaySettings(r.addr, r.a, r.b, r.c, r.d, r.e, (uint8_t)r.w1);
       break;
 
     case MASTER_CMD_SET_UNIVERSAL_PROFILE:
@@ -541,7 +541,8 @@ static bool master_cmd_set_weller_filter_runtime(uint8_t addr, uint16_t minutes)
 
 static bool master_cmd_set_display_settings(
     uint8_t addr, uint8_t brightness, uint8_t language,
-    uint8_t theme, uint8_t screensaver_min) {
+    uint8_t theme, uint8_t screensaver_min, uint8_t backlight_mode = 0xFF,
+    uint8_t backlight_timeout_min = 0xFF) {
   MasterCommandRequest r;
   r.type = MASTER_CMD_SET_DISPLAY_SETTINGS;
   r.addr = addr;
@@ -549,6 +550,8 @@ static bool master_cmd_set_display_settings(
   r.b = language;
   r.c = theme;
   r.d = screensaver_min;
+  r.e = backlight_mode;
+  r.w1 = backlight_timeout_min;
   return master_command_submit(r);
 }
 

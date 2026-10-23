@@ -3,10 +3,12 @@
 #include <cstdio>
 
 static unsigned begins, ends;
+extern "C" { uint8_t ofe_lv_profile_enabled = 1; }
 extern "C" void ofe_lv_profile_begin(unsigned id) { assert(id == OFE_LV_DRAW); ++begins; }
 extern "C" void ofe_lv_profile_end(unsigned id) { assert(id == OFE_LV_DRAW); ++ends; }
 
 int main() {
+  static_assert(sizeof(OfeLvProfileCounters) <= 256, "Profiler must remain a small fixed counter block");
   OfeLvProfileCounters p;
   OfeLvProfileSample samples[OFE_LV_PROFILE_COUNT] = {};
   uint32_t errors = 0;
@@ -44,7 +46,14 @@ int main() {
   OFE_LV_PROFILE_BEGIN_TAG("unselected_hot_function");
   OFE_LV_PROFILE_END_TAG("unselected_hot_function");
   assert(begins == 1 && ends == 1);
+  ofe_lv_profile_enabled = 0;
+  OFE_LV_PROFILE_BEGIN_TAG("execute_drawing");
+  OFE_LV_PROFILE_END_TAG("execute_drawing");
+  assert(begins == 1 && ends == 1);
   assert(OFE_LV_PROFILE_ID("lv_obj_redraw") == OFE_LV_OBJECTS);
   assert(OFE_LV_PROFILE_ID("layout") == OFE_LV_LAYOUT);
+  p.begin(OFE_LV_DRAW, 200);
+  p.reset();
+  assert(p.take(samples, &errors) && !errors && !samples[OFE_LV_DRAW].calls);
   puts("LVGL profile: inclusive nesting, reset, rollover, invalid hooks and filtering passed");
 }

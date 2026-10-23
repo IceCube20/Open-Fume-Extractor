@@ -82,7 +82,74 @@ bool MasterDisplayWifi::send(Peer& p, uint8_t kind, const Frame* frame) {
   Packet packet; packet.kind=kind; packet.mode=p.mode; packet.uid=p.uid;
   packet.client=p.client; packet.server=p.server; packet.counter=++p.tx;
   if (frame) setFrame(packet,*frame);
-  uint8_t key[16]; return derive(p.uid,key) && sendPacket(fd_,p.endpoint,packet,key);
+  if (kind==KEEPALIVE && timingEnabled()) {
+    packet.length=3; packet.body[0]='W'; packet.body[1]='T'; packet.body[2]=1;
+    // V1 peers ignore a V2 offer. Alternate with V1 until a V2 peer confirms,
+    // using the existing heartbeat ACK rather than extra negotiation packets.
+    if (p.timing_version==2) packet.body[2]=2;
+    else if (p.timing_version==1) {
+      p.timing_probe_v2=!p.timing_probe_v2; packet.body[2]=p.timing_probe_v2 ? 1 : 2;
+    } else p.timing_probe_v2=false;
+    // An older peer disables timing on an unknown offer. Use ordinary DATA
+    // until the next heartbeat confirms which format it actually accepted.
+    if (packet.body[2]!=p.timing_version) p.timing_cap_generation=0;
+  }
+  // Only normal addressed readback is sampled. Broadcasts, pairing and OTA
+  // retain their original wire format and transaction ownership.
+  const bool timed=kind==DATA && frame && frame->dst==p.addr && timingEnabled() && p.timing_capable &&
+    p.timing_cap_generation==timing_generation_.load() &&
+    !firmware_addr_.load() && (frame->cmd==CMD_DISPLAY_STATUS || frame->cmd==CMD_GET_TELEMETRY ||
+    frame->cmd==CMD_DISPLAY_ALARMS || frame->cmd==CMD_DISPLAY_MODULE_LIST ||
+    frame->cmd==CMD_DISPLAY_MODULE_DETAIL || frame->cmd==CMD_DISPLAY_DETAIL_PAGE);
+  if (timed) {
+    if (!++timing_token_) ++timing_token_;
+    setTimedFrame(packet,*frame,timing_token_,0,p.timing_version==2 ? 2 : 1);
+    p.timing.begin(timing_token_,frame->seq,frame->cmd,micros(),timing_generation_.load());
+  }
+  uint8_t key[16];
+  const bool ok=derive(p.uid,key) && sendPacket(fd_,p.endpoint,packet,key);
+  if (timed) {
+    if (!ok) p.timing.reset();
+    else if (p.addr>=0x40 && p.addr<=0x4f) {
+      portENTER_CRITICAL(&timing_mux_);
+      auto& stats=timing_stats_[p.addr-0x40]; stats.supported=true; ++stats.sent;
+      portEXIT_CRITICAL(&timing_mux_);
+    }
+  }
+  return ok;
+}
+void MasterDisplayWifi::resetTiming() {
+  portENTER_CRITICAL(&timing_mux_);
+  timing_generation_.fetch_add(1);
+  for (auto& stats:timing_stats_) stats={};
+  portEXIT_CRITICAL(&timing_mux_);
+}
+void MasterDisplayWifi::setTimingEnabled(bool enabled) {
+  const bool previous=timing_enabled_.exchange(enabled);
+  if (enabled && !previous) resetTiming();
+  else if (!enabled && previous) timing_generation_.fetch_add(1);
+}
+ofe_wifi_timing::Snapshot MasterDisplayWifi::timingSnapshot(uint8_t addr) {
+  ofe_wifi_timing::Snapshot out;
+  if (addr>=0x40 && addr<=0x4f) {
+    portENTER_CRITICAL(&timing_mux_); out=timing_stats_[addr-0x40]; portEXIT_CRITICAL(&timing_mux_);
+  }
+  return out;
+}
+void MasterDisplayWifi::resetPeerTiming(Peer& p) {
+  p.timing_capable=false; p.timing.reset();
+  p.timing_version=0; p.timing_probe_v2=false; p.timing_cap_generation=0;
+  if (p.addr>=0x40 && p.addr<=0x4f) {
+    portENTER_CRITICAL(&timing_mux_); timing_stats_[p.addr-0x40]={}; portEXIT_CRITICAL(&timing_mux_);
+  }
+}
+void MasterDisplayWifi::responseProcessed(const Frame& frame) {
+  if (!timingEnabled()) return;
+  Peer* p=peer(frame.src);
+  if (!p || p->addr<0x40 || p->addr>0x4f) return;
+  portENTER_CRITICAL(&timing_mux_);
+  p->timing.dispatched(frame.seq,frame.cmd,micros(),timing_generation_.load(),timing_stats_[p->addr-0x40]);
+  portEXIT_CRITICAL(&timing_mux_);
 }
 bool MasterDisplayWifi::routeHook(void* self,const Frame& f) {
   return static_cast<MasterDisplayWifi*>(self)->route(f);
@@ -159,13 +226,21 @@ bool MasterDisplayWifi::rebindAddress(uint64_t uid, uint8_t new_addr) {
     if (p.addr>=0x40 && p.addr<=0x4f)
       published_seen_[p.addr-0x40].store(0,std::memory_order_relaxed);
     p.addr=new_addr;
+    resetPeerTiming(p);
     publish(p);
     return true;
   }
   return false;
 }
 bool MasterDisplayWifi::pollHook(void* self,Frame& f) {
-  return static_cast<MasterDisplayWifi*>(self)->receive(f);
+  auto* wifi=static_cast<MasterDisplayWifi*>(self);
+  // Keepalive/handshake packets are consumed without producing an OFE frame.
+  // Look behind them before the scheduler expires an already queued response.
+  for (uint8_t i=0;i<4;++i) {
+    if (wifi->receive(f)) return true;
+    if (!wifi->received_packet_) break;
+  }
+  return false;
 }
 bool MasterDisplayWifi::route(const Frame& frame) {
   if (firmware_addr_ && frame.dst==firmware_addr_) {
@@ -196,6 +271,7 @@ bool MasterDisplayWifi::route(const Frame& frame) {
   return send(*p,DATA,&frame);
 }
 bool MasterDisplayWifi::receive(Frame& frame) {
+  received_packet_=false;
   const uint32_t expiry_now=millis();
   for (auto& peer:peers_) {
     if (peer.connected && (uint32_t)(expiry_now-peer.seen)>=5000UL) {
@@ -212,6 +288,9 @@ bool MasterDisplayWifi::receive(Frame& frame) {
   // One datagram per poll bounds authentication work under unsolicited traffic.
   uint8_t raw[PACKET_MAX+1]; sockaddr_in from={}; socklen_t from_len=sizeof(from);
   int n=recvfrom(fd_,raw,sizeof(raw),MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&from),&from_len);
+  const uint32_t received_us=micros();
+  if (timingEnabled()) for (auto& peer:peers_) peer.timing.polled(received_us);
+  received_packet_=n>=0;
   if (n<(int)(HEADER+TAG) || n>(int)PACKET_MAX) return false;
   uint64_t uid=get_u64_le(raw+6); uint8_t key[16]; Packet msg;
   if (!derive(uid,key) || !decode(raw,n,key,msg)) return false;
@@ -254,6 +333,7 @@ bool MasterDisplayWifi::receive(Frame& frame) {
     p->connected=false; publish(*p);
     p->addr=addr; p->client=msg.client; p->server=msg.server; p->endpoint=from;
     p->mode=msg.mode; p->rx=0; p->tx=0; p->seen=now; p->connected=true; p->wired_probes=0;
+    resetPeerTiming(*p);
     publish(*p);
     p->pending_client=0; p->pending_server=0;
     Packet ready; ready.kind=READY; ready.uid=uid; ready.mode=p->mode; ready.client=p->client; ready.server=p->server;
@@ -272,10 +352,27 @@ bool MasterDisplayWifi::receive(Frame& frame) {
   if (!p->connected || !samePeer(from,p->endpoint) ||
       !inSession(msg,p->uid,p->client,p->server,p->mode,p->rx)) return false;
   if (msg.kind==LEAVE) { p->rx=msg.counter; p->connected=false; publish(*p); return false; }
-  if (msg.kind==KEEPALIVE && !msg.length) {
+  if (msg.kind==KEEPALIVE && (!msg.length || timingOffer(msg.body,msg.length))) {
+    p->timing_capable=timingOffer(msg.body,msg.length);
+    p->timing_version=p->timing_capable ? msg.body[2] : 0;
+    p->timing_cap_generation=p->timing_capable ? timing_generation_.load() : 0;
+    if (p->addr>=0x40 && p->addr<=0x4f) {
+      portENTER_CRITICAL(&timing_mux_);
+      timing_stats_[p->addr-0x40].supported=p->timing_capable;
+      timing_stats_[p->addr-0x40].version=p->timing_version;
+      portEXIT_CRITICAL(&timing_mux_);
+    }
     p->rx=msg.counter; p->seen=now; publish(*p); send(*p,KEEPALIVE); return false;
   }
-  if (msg.kind!=DATA || !getFrame(msg,frame) || frame.src!=p->addr || frame.dst!=ADDR_MASTER || !(frame.cmd&0x80)) return false;
+  uint32_t token=0,display_us=0,display_poll_us=UINT32_MAX;
+  const bool timed=msg.kind==TIMED_DATA;
+  if (!(timed ? getTimedFrame(msg,frame,token,display_us,&display_poll_us) : (msg.kind==DATA && getFrame(msg,frame))) ||
+      frame.src!=p->addr || frame.dst!=ADDR_MASTER || !(frame.cmd&0x80)) return false;
+  if (timed && timingEnabled() && p->addr>=0x40 && p->addr<=0x4f) {
+    portENTER_CRITICAL(&timing_mux_);
+    p->timing.finish(token,frame.seq,frame.cmd,display_us,received_us,now,timing_generation_.load(),timing_stats_[p->addr-0x40],display_poll_us);
+    portEXIT_CRITICAL(&timing_mux_);
+  }
   p->rx=msg.counter; p->seen=now;
   publish(*p);
   return true;

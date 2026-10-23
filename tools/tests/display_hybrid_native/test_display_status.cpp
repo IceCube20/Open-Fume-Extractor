@@ -17,6 +17,7 @@ public:
 };
 static uint32_t now_ms=0;
 static uint32_t millis() { return now_ms; }
+extern "C" int64_t esp_timer_get_time(void) { return int64_t(now_ms) * 1000; }
 static int jbc_station_mux=0;
 static void portENTER_CRITICAL(int* m) { assert(!*m); ++*m; }
 static void portEXIT_CRITICAL(int* m) { assert(*m==1); --*m; }

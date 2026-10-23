@@ -1,0 +1,2 @@
+-O3
+-DLV_CONF_PATH=\"ofe_reference_lv_conf.h\"

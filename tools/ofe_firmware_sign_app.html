@@ -49,7 +49,7 @@
   <script>
     const TOKEN="__OFE_TOKEN__";let firmware=null,info=null,busy=false;
     const $=id=>document.getElementById(id),drop=$("drop"),fileInput=$("firmwareFile"),keyInput=$("keyFile");
-    const targetLabels={MASTER:"Master",JBC_BUS:"JBC Bus",WELLER:"Weller",FAN_IO:"Fan/IO",FAN_IO_PRO:"Fan/IO Pro",DISPLAY_320X480:"Display 320x480",DISPLAY_800X480:"Display 800x480",UNIVERSAL_RS232:"Universal RS232",MODBUS_RTU:"Modbus RTU"};
+    const targetLabels={MASTER:"Master",JBC_BUS:"JBC Bus",WELLER:"Weller",FAN_IO:"Fan/IO",FAN_IO_PRO:"Fan/IO Pro",DISPLAY_320X480:"Display 320x480",DISPLAY_800X480:"Display 800x480",DISPLAY_P4_800X480:"Display P4 800x480",UNIVERSAL_RS232:"Universal RS232",MODBUS_RTU:"Modbus RTU"};
     function size(n){return n>=1048576?(n/1048576).toFixed(2)+" MB":(n/1024).toFixed(1)+" KB"}
     function outputName(name){return name.toLowerCase().endsWith(".signed.bin")?name:name.replace(/\.bin$/i,"")+".signed.bin"}
     function setStatus(text,type=""){const el=$("status");el.className="status "+type;el.innerHTML=text}

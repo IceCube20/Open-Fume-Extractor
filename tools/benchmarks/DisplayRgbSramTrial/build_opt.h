@@ -1,0 +1,6 @@
+-O3
+-DOFE_RGB_WIDGET_POOL_PSRAM=1
+-include "OfeBleBuildConfig.h"
+-DLV_CONF_PATH=\"ofe_lv_conf.h\"
+
+-DOFE_RGB_SRAM_TRIAL=1

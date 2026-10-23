@@ -1,5 +1,6 @@
 // Project-local LVGL configuration for DisplayModule_800x480.
-// Keep a 48 KiB hot pool internal; setup adds 144 KiB in PSRAM before building widgets.
+// Standard S3 build_opt.h places all twelve 32 KiB widget pools in PSRAM.
+// Without that opt-in flag, the internal base pool remains available for comparison/P4.
 // Based on the working lv_conf.h; the small display's configuration is unchanged.
 /**
  * @file lv_conf.h
@@ -19,6 +20,10 @@
 
 #ifndef LV_CONF_H
 #define LV_CONF_H
+
+#ifndef OFE_RGB_WIDGET_POOL_PSRAM
+#define OFE_RGB_WIDGET_POOL_PSRAM 0
+#endif
 
 /* If you need to include anything here, do it inside the `__ASSEMBLY__` guard */
 #if  0 && defined(__ASSEMBLY__)
@@ -84,6 +89,10 @@
     #if LV_MEM_ADR == 0
         #undef LV_MEM_POOL_INCLUDE
         #undef LV_MEM_POOL_ALLOC
+        #if OFE_RGB_WIDGET_POOL_PSRAM && !defined(__ASSEMBLY__)
+            #include "src/OfeRgbWidgetPool.h"
+            #define LV_MEM_POOL_ALLOC ofe_rgb_widget_pool_alloc
+        #endif
     #endif
 #endif  /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
 
@@ -1132,9 +1141,16 @@
 #endif /*LV_USE_SYSMON*/
 
 /** 1: Enable runtime performance profiler */
-// Deep hooks are disabled in production: they execute inside hot draw/text/blend/object paths.
-// Lightweight sketch-level LVGL PERF and DISPLAY BENCHMARK counters remain enabled.
+// Diagnostic builds compile the hooks but sample only during the benchmark.
+// Without the project-local build_opt.h flag, production has no deep hooks.
+#ifndef OFE_RGB_RENDER_DIAGNOSTICS
+#define OFE_RGB_RENDER_DIAGNOSTICS 0
+#endif
+#if OFE_RGB_RENDER_DIAGNOSTICS
+#define LV_USE_PROFILER 1
+#else
 #define LV_USE_PROFILER 0
+#endif
 #if LV_USE_PROFILER
     /** 1: Enable the built-in profiler */
     #define LV_USE_PROFILER_BUILTIN 0

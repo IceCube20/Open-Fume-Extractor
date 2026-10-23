@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include "bus/Rs485PeripheralBus.h"
 
+#include "DisplayValueStream.h"
+
 struct UniversalEntityState {
   uint8_t id = 0;
   uint8_t len = 0;
@@ -539,12 +541,19 @@ struct ModuleRecord {
   uint8_t display_language = 0;
   uint8_t display_theme = 0;
   uint8_t display_screensaver_min = 0;
+  bool display_backlight_supported = false;
+  uint8_t display_backlight_mode = 0;
+  uint8_t display_backlight_timeout_min = 5;
+  bool display_backlight_on = true;
   uint8_t display_universal_entity_start = 0;
   // Cursors for the compact DISPLAY_STATUS live-I/O page. Native/JBC states
   // have their own high-priority round-robin so a large Universal/Modbus
   // profile can never delay a later Fan/IO/Weller/JBC module. Entity states
   // use a second cursor through the remaining live-I/O budget.
   uint8_t display_live_io_native_cursor = 0;
+  bool display_home_metrics_supported = false;
+  bool display_values_supported = false;
+  ofe_display_values::Request display_value_request;
   uint16_t display_live_io_cursor = 0;
   // Display cache servicing is intentionally rate-limited by the Master.
   // Keeping per-display state here prevents one WiFi display from causing
@@ -557,6 +566,10 @@ struct ModuleRecord {
   uint8_t display_cache_detail_addr = 0;
   uint8_t display_cache_universal_addr = 0;
   uint8_t display_cache_universal_start = 0;
+  uint8_t display_jbc_section = 0, display_jbc_port = 0;
+  uint8_t display_jbc_window = 6;
+  uint8_t display_jbc_command_cookie = 0, display_jbc_command_status = 0xFF;
+  uint32_t display_jbc_command_hash = 0;
   // Background display-cache retry pacing. WLAN cache frames are disposable;
   // retrying them immediately after a lost UDP sample only creates a packet
   // backlog and late/SEQ replies. Keep the next eligible cache attempt here.

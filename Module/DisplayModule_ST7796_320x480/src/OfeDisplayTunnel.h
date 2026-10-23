@@ -7,13 +7,24 @@
 #include "Rs485PeripheralBus.h"
 
 // Authenticated LAN transport. HMAC authenticates packets, it does not encrypt
-// them. Credentials are provisioned only over the physical OFE bus.
+// them. Credentials are provisioned over the physical OFE bus or authenticated BLE.
 namespace ofe_wifi {
 using namespace jbc_rs485;
 constexpr uint16_t PORT = 42585;
 constexpr uint8_t CONFIG_VERSION = 1;
 enum Mode : uint8_t { AUTOMATIC = 0, WIRED = 1, WIRELESS = 2 };
-enum Kind : uint8_t { HELLO = 1, CHALLENGE, PROOF, READY, DATA, LEAVE, KEEPALIVE };
+enum Kind : uint8_t { HELLO = 1, CHALLENGE, PROOF, READY, DATA, LEAVE, KEEPALIVE, TIMED_DATA };
+constexpr size_t TIMING_BYTES = 8;
+constexpr size_t TIMING_V2_BYTES = 12;
+inline bool timingOffer(const uint8_t* body, size_t length) {
+  return length == 3 && body[0] == 'W' && body[1] == 'T' && (body[2] == 1 || body[2] == 2);
+}
+struct RxPollGap {
+  uint32_t last = 0, gap = UINT32_MAX;
+  bool valid = false;
+  void reset() { valid = false; gap = UINT32_MAX; }
+  void sample(uint32_t now_us) { gap = valid ? uint32_t(now_us - last) : UINT32_MAX; last = now_us; valid = true; }
+};
 struct Config {
   uint8_t version = CONFIG_VERSION;
   uint8_t mode = AUTOMATIC;
@@ -70,9 +81,9 @@ struct Packet {
   uint64_t uid = 0, client = 0, server = 0;
   uint32_t counter = 0;
   uint8_t length = 0;
-  uint8_t body[5 + MAX_PAYLOAD] = {};
+  uint8_t body[5 + MAX_PAYLOAD + TIMING_V2_BYTES] = {};
 };
-constexpr size_t HEADER = 35, TAG = 16, PACKET_MAX = HEADER + 5 + MAX_PAYLOAD + TAG;
+constexpr size_t HEADER = 35, TAG = 16, PACKET_MAX = HEADER + 5 + MAX_PAYLOAD + TIMING_V2_BYTES + TAG;
 // Firmware data is much larger than an OFE frame. Keep normal control traffic
 // byte-for-byte compatible and use a separate authenticated LAN-only envelope
 // to avoid one UDP round trip for every 188 firmware bytes.
@@ -103,7 +114,7 @@ inline size_t encode(const Packet& p, const uint8_t key[16], uint8_t* out) {
 }
 inline bool decode(const uint8_t* in, size_t size, const uint8_t key[16], Packet& p) {
   if (size < HEADER+TAG || memcmp(in, "OFD1", 4) || in[34] > sizeof(p.body) ||
-      size != HEADER+in[34]+TAG || in[4] < HELLO || in[4] > KEEPALIVE || in[5] > WIRELESS) return false;
+      size != HEADER+in[34]+TAG || in[4] < HELLO || in[4] > TIMED_DATA || in[5] > WIRELESS) return false;
   uint8_t digest[32];
   if (!mac(key, in, size-TAG, digest) || !equal(in+size-TAG, digest, TAG)) return false;
   p.kind=in[4]; p.mode=in[5]; p.uid=get_u64_le(in+6); p.client=get_u64_le(in+14);
@@ -118,6 +129,26 @@ inline bool getFrame(const Packet& p, Frame& f) {
   if (p.length < 5 || p.body[4] > MAX_PAYLOAD || p.length != 5+p.body[4]) return false;
   f.dst=p.body[0]; f.src=p.body[1]; f.seq=p.body[2]; f.cmd=p.body[3]; f.len=p.body[4];
   memcpy(f.payload,p.body+5,f.len); return true;
+}
+inline void setTimedFrame(Packet& p, const Frame& f, uint32_t token, uint32_t display_us = 0,
+                          uint8_t version = 1, uint32_t poll_gap_us = 0) {
+  setFrame(p, f); p.kind = TIMED_DATA;
+  put_u32_le(p.body + p.length, token); put_u32_le(p.body + p.length + 4, display_us);
+  if (version == 2) put_u32_le(p.body + p.length + TIMING_BYTES, poll_gap_us);
+  p.length = uint8_t(p.length + (version == 2 ? TIMING_V2_BYTES : TIMING_BYTES));
+}
+inline bool getTimedFrame(const Packet& p, Frame& f, uint32_t& token, uint32_t& display_us,
+                          uint32_t* poll_gap_us = nullptr, uint8_t* version = nullptr) {
+  if (p.kind != TIMED_DATA || p.length < 5 + TIMING_BYTES || p.body[4] > MAX_PAYLOAD ||
+      (p.length != 5 + p.body[4] + TIMING_BYTES && p.length != 5 + p.body[4] + TIMING_V2_BYTES)) return false;
+  const size_t tail = 5 + p.body[4];
+  const bool v2 = p.length == tail + TIMING_V2_BYTES;
+  if (version) *version = v2 ? 2 : 1;
+  if (poll_gap_us) *poll_gap_us = v2 ? get_u32_le(p.body + tail + TIMING_BYTES) : UINT32_MAX;
+  token = get_u32_le(p.body + tail); display_us = get_u32_le(p.body + tail + 4);
+  if (!token) return false;
+  f.dst = p.body[0]; f.src = p.body[1]; f.seq = p.body[2]; f.cmd = p.body[3]; f.len = p.body[4];
+  memcpy(f.payload, p.body + 5, f.len); return true;
 }
 inline int socketOpen(uint16_t port) {
   int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

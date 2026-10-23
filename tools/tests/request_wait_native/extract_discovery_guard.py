@@ -8,8 +8,8 @@ source = (root / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(en
 header = (root / "OpenFumeExtractorMaster/src/MasterScheduler.h").read_text(encoding="utf-8")
 
 
-def function(name):
-    start = source.index("void MasterScheduler::" + name + "(")
+def function(name, result="void"):
+    start = source.index(result + " MasterScheduler::" + name + "(")
     pos = source.index("{", start) + 1
     depth = 1
     while depth:
@@ -24,4 +24,7 @@ assert "waitForDiscoveryWindow();" in function("begin")
 Path(sys.argv[1]).write_text(
     "\n\n".join((constant, function("reserveDiscoveryWindow"), function("waitForDiscoveryWindow"))),
     encoding="utf-8",
+)
+Path(sys.argv[1]).with_name("generated_display_reply.inc.h").write_text(
+    function("handleAsyncDisplayFrame", "bool"), encoding="utf-8"
 )

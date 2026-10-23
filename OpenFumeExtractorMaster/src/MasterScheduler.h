@@ -368,7 +368,7 @@ public:
   bool resetWellerFilter(uint8_t addr);
   bool setWellerFilterRuntime(uint8_t addr, uint16_t minutes);
   bool calibrateFanIoProFilter(uint8_t addr, uint8_t action, uint16_t warn_raw = 0, uint16_t full_raw = 0);
-  bool setDisplaySettings(uint8_t addr, uint8_t brightness, uint8_t language, uint8_t theme, uint8_t screensaver_min = 0xFF);
+  bool setDisplaySettings(uint8_t addr, uint8_t brightness, uint8_t language, uint8_t theme, uint8_t screensaver_min = 0xFF, uint8_t backlight_mode = 0xFF, uint8_t backlight_timeout_min = 0xFF);
   bool setUniversalProfile(uint8_t addr, const char* profile, const char* station, uint32_t baud, const char* frame, const char* protocol, const char* checksum = "NONE", const char* line_end = "CR", const char* profile_text = nullptr);
   bool uploadUniversalProfileText(uint8_t addr, const char* profile_text);
   bool readUniversalProfileText(uint8_t addr, char* out, size_t out_len, uint32_t* out_crc = nullptr, bool* out_truncated = nullptr);
@@ -398,7 +398,8 @@ private:
                                 uint32_t timeout_ms, RequestDiagnosticsKind kind);
   bool request(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, jbc_rs485::Frame& resp, uint32_t timeout_ms, bool physical = false);
   bool startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, uint32_t timeout_ms);
-  bool handleAsyncDisplayFrame(const jbc_rs485::Frame& frame);
+  bool handleAsyncDisplayFrame(const jbc_rs485::Frame& frame, bool via_network,
+                               const jbc_rs485::Frame* synchronous_request = nullptr);
   void serviceAsyncDisplayRequests();
   void recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq, uint32_t timeout_ms, bool disposable_wifi_sample);
   void processDisplayStatusResponse(ModuleRecord& display, const jbc_rs485::Frame& resp);
@@ -409,7 +410,8 @@ private:
   void serviceDelay(uint32_t delay_ms);
   void traceLog(uint8_t addr, TraceDirection direction, uint8_t cmd, uint8_t status, const uint8_t* data, uint8_t len, uint16_t latency_ms, const char* text = nullptr, uint8_t frame_seq = 0xFF);
   bool traceMatches(uint8_t addr) const;
-  static int16_t busDiagIndex(uint8_t addr);
+  bool initBusDiagnostics();
+  int16_t busDiagIndex(uint8_t addr) const;
   static uint16_t ofeWireBytesApprox(const jbc_rs485::Frame& frame);
   void busDiagRecordTx(const jbc_rs485::Frame& frame);
   void busDiagRecordRx(const jbc_rs485::Frame& frame);
@@ -475,6 +477,8 @@ private:
   bool sendDisplayModuleList(uint8_t display_addr, uint8_t start_index);
   bool sendDisplayModuleDetail(uint8_t display_addr, uint8_t target_addr);
   bool sendDisplayUniversalEntityPage(uint8_t display_addr, const ModuleRecord& rec, uint8_t start_entity);
+  bool sendDisplayJbcPage(ModuleRecord& display, const ModuleRecord& target);
+  bool consumeDisplayJbcExtension(ModuleRecord& display, const jbc_rs485::Frame& response, uint8_t& cursor, uint8_t marker);
   bool sendDisplayUpdate(uint8_t addr, bool active, uint8_t target_addr, uint8_t progress,
                          bool wait_for_ack = true);
   void pollHotplugDiscovery();
@@ -672,7 +676,8 @@ private:
   // Passive OFE-bus diagnostics. 0x10..0x6F map to 96 compact counters.
   // These counters never influence scheduling or timeout behavior.
   static const uint8_t BUS_DIAG_ADDR_COUNT = 0x60;
-  BusModuleDiag bus_module_diag_[BUS_DIAG_ADDR_COUNT];
+  // Application-lifetime storage, allocated once after PSRAM initialization.
+  BusModuleDiag* bus_module_diag_ = nullptr;
   uint64_t ofe_tx_wire_bytes_ = 0;
   uint64_t ofe_rx_wire_bytes_ = 0;
   uint32_t ofe_tx_frames_ = 0;

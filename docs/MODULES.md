@@ -189,11 +189,12 @@ the module and confirm `descriptor_truncated=0` and `profile_active=yes`.
 
 ## Displays
 
-Three display targets are supported:
+Four separate display targets are included:
 
 - AXS15231B/QSPI 320x480
 - ST7796/FT63x6 320x480
 - Guition JC8048W550 RGB 800x480
+- ELECROW 5-inch ESP32-P4 RGB 800x480 (experimental, PRE-V3)
 
 Their firmware images are not interchangeable. Displays can communicate by
 RS485 or authenticated WiFi and can automatically fail over between transports.

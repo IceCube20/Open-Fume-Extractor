@@ -45,6 +45,17 @@ static void verify(int x, int y, int w, int h, size_t scratch_size, uint16_t mas
   assert(ofe_rgb_tile::copy180(actual.data() + guard, 800, 480, x, y, w, h,
     input.data(), scratch.data() + guard, scratch_size, mask, rotate_rgb565_180_inplace));
   assert(actual == expected && input == original);
+  // Exercise the production direct-copy path with both source alignments.
+  for (size_t offset : { size_t(0), size_t(1) }) {
+    std::vector<uint16_t> direct(frame_pixels + 2 * guard, 0xBEEF);
+    std::vector<uint16_t> aligned_input(input.size() + offset + guard, 0xCDEF);
+    std::copy(input.begin(), input.end(), aligned_input.begin() + offset);
+    ofe_rgb_tile::copy180Direct(direct.data() + guard, 800, aligned_input.data() + offset,
+      800 - x - w, 480 - y - h, w, h, mask);
+    assert(direct == expected);
+    assert(std::equal(input.begin(), input.end(), aligned_input.begin() + offset));
+    for (size_t i = 0; i < guard; ++i) assert(aligned_input[input.size() + offset + i] == 0xCDEF);
+  }
   for (size_t i = 0; i < guard; ++i) {
     assert(scratch[i] == 0xCDEF && scratch[scratch_size + guard + i] == 0xCDEF);
   }
@@ -68,10 +79,11 @@ int main() {
   for (uint16_t mask : { uint16_t(0), uint16_t(0xFFFF) }) {
     verify(0, 0, 800, 480, 800 * 32, mask);
     verify(8, 52, 784, 368, 800 * 32, mask);
-    for (int w : {1, 2, 7, 31, 319, 783}) {
+    for (int w : {1, 2, 3, 7, 8, 9, 28, 31, 319, 783, 784}) {
       for (int h : {1, 3, 95, 97}) {
         verify(0, 0, w, h, w, mask);
         verify(800 - w, 480 - h, w, h, 800 * 32, mask);
+        if (w < 800 && h < 480) verify(1, 1, w, h, 800 * 32, mask);
       }
     }
   }

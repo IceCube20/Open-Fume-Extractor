@@ -16,7 +16,8 @@ def function(source, name):
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[match.start():end]
+    template = re.search(r"^template[^\n]*\n\Z", source[:match.start()], re.M)
+    return source[template.start() if template else match.start():end]
 
 
 types = logic[logic.index("enum LogicRtNodeType"):logic.index("static LogicCompiledDefinition logic_rt_defs")]
@@ -36,3 +37,9 @@ pieces = [types, function(logic, "logic_index_links"), inputs,
           evaluation, reference, function(logic, "logic_rt_lock"), function(logic, "logic_rt_unlock"),
           tick, function(diagnostics, "diagnostics_device_link_state"), function(scheduler, "pollNextJbc")]
 Path(sys.argv[1]).write_text("\n\n".join(pieces), encoding="utf-8")
+if len(sys.argv) > 2:
+    cpu = (root / "MasterDiagnostics.inc.h").read_text(encoding="utf-8")
+    Path(sys.argv[2]).write_text("\n\n".join(function(cpu, name) for name in
+        ("sample_cpu_load", "append_cpu_load_json")), encoding="utf-8")
+if len(sys.argv) > 3:
+    Path(sys.argv[3]).write_text(cpu[cpu.index('static ofe_runtime::PhaseWindow master_runtime_window;'):], encoding='utf-8')

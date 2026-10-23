@@ -1,0 +1,3 @@
+# Experimental P4 PRE-V3 cache-only profile; rebuild the complete SDK.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y

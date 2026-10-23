@@ -37,7 +37,8 @@ for (const de of [true, false]) {
     return elements.get(id);
   };
   const context = vm.createContext({
-    document: {getElementById: element}, prevDiag: null,
+    document: {getElementById: element}, prevDiag: null,diagControlPending:false,
+    fmtAge:ms=>ms+' ms',
     u: (german, english) => de ? german : english,
     esc: value => String(value), addrText: value => String(value),
     modulePrevByAddr: () => null, fmtBytes: value => String(value),
@@ -160,5 +161,64 @@ for (const de of [true, false]) {
   assert.doesNotMatch(element('diag_dynamic_32').innerHTML, /79\.5 ms/);
   assert.doesNotMatch(element('diag_dynamic_32').innerHTML, /SRC 0x20/);
   assert.doesNotMatch(element('diag_dynamic_32').innerHTML, /VER 0xFF|SRC 0x40/);
+  const metric={samples:2,last_us:1000,avg_us:1000,max_us:2000};
+  const wifi={addr:65,transport:'wifi',online:true,wifi_timing:{supported:true,version:2,rtt:metric,sent:2}};
+  context.diagRenderModules({developer_mode:true,wifi_timing_enabled:true,modules:[wifi]},1);
+  assert.match(element('diag_dynamic_65').innerHTML,/diag-wifi-timing/);
+  assert.equal(element('diag_wifi_timing_controls').hidden,false);
+  context.diagRenderModules({developer_mode:false,wifi_timing_enabled:true,modules:[wifi]},1);
+  assert.doesNotMatch(element('diag_dynamic_65').innerHTML,/diag-wifi-timing/);
+  assert.equal(element('diag_wifi_timing_controls').hidden,true);
 }
 console.log('PASS: diagnostics JS syntax, DE/EN local-link state, timeout observations and live transitions');
+
+async function checkStatusPillLayout() {
+  const {chromium} = require('playwright');
+  const css = source.match(/R"CSS\(<style>([\s\S]*?)<\/style>\)CSS"/)[1];
+  const browser = await chromium.launch({headless:true, executablePath:process.env.OFE_BROWSER_EXECUTABLE});
+  try {
+    const output = path.join(__dirname, 'build-checks/diagnostics-pills');
+    fs.mkdirSync(output, {recursive:true});
+    for (const [size,width,height] of [['desktop',1440,900],['mobile',360,800]]) {
+      for (const [language,labels] of [['en',['ready','disconnected','unknown','offline']],['de',['bereit','getrennt','unbekannt','offline']]]) {
+        const page = await browser.newPage({viewport:{width,height}});
+        const timingSource=source.slice(source.indexOf('function diagWifiTimingHtml('),source.indexOf('\nfunction diagModuleSignature('));
+        const metric={samples:2000,last_us:1234567,avg_us:1234567,max_us:1234567};
+        const m={transport:'wifi',wifi_timing:{supported:true,version:2,rtt:metric,display:metric,transport:metric,master_queue:metric,master_poll:metric,display_poll:metric,sent:2000,age_ms:100,peak:{rtt_us:1234567,display_us:123456,transport_us:1111111,master_poll_us:11111,display_poll_us:2222,master_queue_us:3333,command:83,sequence:255}}};
+        const timing=vm.runInNewContext(timingSource+';diagWifiTimingHtml(m,true,true)',{m,u:(de,en)=>language==='de'?de:en,fmtAge:ms=>ms+' ms'});
+        const cards = labels.map(label => `<div class="diag-module-card"><div class="diag-module-body">Display</div>${timing}<div class="diag-device-section"><div class="diag-device-head"><div class="diag-device-title">JBC USB / CP210x / P01+P02</div><span class="diag-mini-badge diag-online-pill is-warning"><span class="diag-dot warn"></span>${label}</span></div></div></div>`).join('');
+        await page.setContent(`<style>:root{--ofe-font-ui:Arial,sans-serif}body{margin:16px;background:#101418;color:white;font-family:Arial,sans-serif}${css}</style><body class="dev-mode"><div class="diag-wifi-timing-control"><label><input type="checkbox">WiFi timing</label></div><div class="diag-module-grid">${cards}</div></body>`);
+        const issues = await page.locator('.diag-device-head').evaluateAll(heads => heads.flatMap(head => {
+          const pill=head.querySelector('.diag-online-pill'),title=head.querySelector('.diag-device-title');
+          const box=pill.getBoundingClientRect(),t=title.getBoundingClientRect();
+          const range=document.createRange();range.selectNodeContents(pill);const text=range.getBoundingClientRect();
+          const failures=[];
+          if(text.left<box.left||text.right>box.right||text.top<box.top||text.bottom>box.bottom)failures.push(pill.textContent+': text outside pill');
+          if(t.right>box.left)failures.push(pill.textContent+': title overlaps pill');
+          return failures;
+        }));
+        assert.deepEqual(issues, [], `${size}/${language}`);
+        assert(await page.evaluate(() => document.documentElement.scrollWidth<=innerWidth), `${size}/${language}: page overflow`);
+        const widths=await page.locator('.diag-online-pill').evaluateAll(pills=>pills.map(p=>p.getBoundingClientRect().width));
+        assert(widths.every(width => width===widths[0]), `${size}/${language}: changing state shifts badge width`);
+        const timingIssues=await page.locator('.diag-wifi-timing').evaluateAll(blocks=>blocks.flatMap(block=>{
+          const box=block.getBoundingClientRect(),card=block.closest('.diag-module-card').getBoundingClientRect();
+          const failures=[];
+          if(box.left<card.left+14||box.right>card.right-14)failures.push('Timing inset does not match card padding');
+          if(block.scrollWidth>block.clientWidth)failures.push('Timing text overflows');
+          return failures;
+        }));
+        assert.deepEqual(timingIssues,[],`${size}/${language}: timing layout`);
+        await page.screenshot({path:path.join(output, `${size}-${language}.png`),fullPage:true});
+        await page.evaluate(()=>document.body.classList.remove('dev-mode'));
+        assert(await page.locator('.diag-wifi-timing').first().isHidden(), 'Timing remains visible outside developer mode');
+        assert(await page.locator('.diag-wifi-timing-control').isHidden(), 'Controls remain visible outside developer mode');
+        await page.evaluate(()=>{document.body.classList.add('dev-mode');document.querySelector('.diag-wifi-timing-control').hidden=true});
+        assert(await page.locator('.diag-wifi-timing-control').isHidden(), 'Explicit hidden state overridden by flex styling');
+        await page.close();
+      }
+    }
+    console.log('PASS: DE/EN desktop/mobile status pills and timing insets/wrapping, developer-mode transitions and hidden controls');
+  } finally {await browser.close();}
+}
+if(process.argv.includes('--browser'))checkStatusPillLayout().catch(error=>{console.error(error);process.exitCode=1;});

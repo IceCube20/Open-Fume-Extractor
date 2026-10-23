@@ -97,9 +97,8 @@
 #endif
 
 #ifndef DISPLAY_STATUS_SLOT_MS
-// One display is serviced per slot. With two displays 150 ms means roughly
-// 3.3 DISPLAY_STATUS updates/s per display. Home/live feedback remains fast,
-// while leaving more air for cache replies and avoiding UDP queue buildup.
+// Maximum interval for one round-robin slot. The scheduler targets ~200 ms
+// per display, with a 50 ms global floor and one request in flight per display.
 #define DISPLAY_STATUS_SLOT_MS 150UL
 #endif
 
@@ -247,7 +246,7 @@
 
 #define MASTER_FW_MAJOR 2
 #define MASTER_FW_MINOR 0
-#define MASTER_FW_PATCH 53
+#define MASTER_FW_PATCH 75
 #define MASTER_FW_SUFFIX "RC"
 #define MASTER_FW_NAME "Open Fume Extractor"
 #define MASTER_FW_VERSION OFE_STR(MASTER_FW_MAJOR) "." OFE_STR(MASTER_FW_MINOR) "." OFE_STR(MASTER_FW_PATCH) MASTER_FW_SUFFIX

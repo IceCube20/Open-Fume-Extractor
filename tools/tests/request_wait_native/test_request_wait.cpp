@@ -15,6 +15,30 @@ struct Stats {
 };
 
 int main() {
+  RequestReceiveWindow window(1000, 60);
+  assert(window.pollDue(1000) && !window.draining());
+  assert(window.pollDue(1059) && !window.draining());
+  for (int i = 0; i < 4; ++i) assert(window.pollDue(1098) && window.draining());
+  assert(!window.pollDue(1098));
+  assert(!window.pollDue(1000)); // Once draining, a clock wrap must not reopen it.
+  RequestReceiveWindow wrapped_window(UINT32_MAX - 29, 60);
+  assert(wrapped_window.pollDue(29) && !wrapped_window.draining());
+  assert(wrapped_window.pollDue(30) && wrapped_window.draining());
+  for (int i = 0; i < 3; ++i) assert(wrapped_window.pollDue(30));
+  assert(!wrapped_window.pollDue(30));
+  // A queued reply behind an unrelated packet survives a long scheduling gap.
+  RequestReceiveWindow queued(0, 70);
+  unsigned polls = 0;
+  bool matched = false;
+  while (queued.pollDue(83)) {
+    ++polls;
+    if (polls == 2) { matched = true; break; }
+  }
+  assert(matched && polls == 2);
+  RequestReceiveWindow absent(0, 70);
+  polls = 0;
+  while (absent.pollDue(83)) ++polls;
+  assert(polls == 4); // A truly missing or mismatched reply still times out.
   Stats stats;
   stats.rx_frames = 100;
   stats.bad_length = 500;

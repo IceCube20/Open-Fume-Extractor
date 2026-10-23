@@ -1,0 +1,18 @@
+{
+  "name": "Open Fume Extractor - Display P4 800x480 (experimental, PRE-V3)",
+  "version": "1.0.7alpha-P4Prep",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/Display-P4-800x480/Display-P4-800x480-1.0.7alpha-P4Prep-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

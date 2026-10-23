@@ -10,6 +10,8 @@ struct DisplayUniversalControlPending;
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "src/OfeDisplayGuiTask.h"
+#include "src/OfeSmallDisplayProfile.h"
 #include <Preferences.h>
 #include <Update.h>
 #include <Wire.h>
@@ -27,6 +29,9 @@ struct DisplayUniversalControlPending;
 
 #define OFE_DISPLAY_HOSTNAME_PREFIX "OFE-ST7796-320x480"
 #include "src/Rs485PeripheralBus.h"
+#include "src/OfeJbcDetailState.h"
+#include "src/OfeDisplayHomeMetricsState.h"
+#include "src/DisplayValueStream.h"
 #include "src/OfeDisplayWifi.h"
 #ifndef OFE_STATUS_LED_MASTER_TIMEOUT_MS
 #define OFE_STATUS_LED_MASTER_TIMEOUT_MS 8000UL
@@ -42,6 +47,8 @@ static_assert(LV_MEM_SIZE == 32U * 1024U, "Use the bundled build_opt.h and ofe_l
 #include "SolderIronIcon.h"
 #include "SproutIcon.h"
 #include "src/OfeSerialPortFont.h"
+#include "src/OfeDisplayHeaderUi.h"
+#include "src/OfeBluetoothFont.h"
 
 // Eigene LVGL-Montserrat-Medium-Fonts mit deutschen Umlauten.
 // LVGL built-in Montserrat fonts do not include German umlauts.
@@ -111,6 +118,18 @@ static void debug_printf(const char* fmt, ...);
 #define DISPLAY_DIRECT_PARTIAL_FLUSH 1
 #endif
 
+#ifndef DISPLAY_ST7796_ASYNC_DMA
+// Opt-in experiment only: DMA completes but the owner observed a black panel.
+// Keep the known-working register-driven SPI path until hardware validation.
+#define DISPLAY_ST7796_ASYNC_DMA 0
+#endif
+#if DISPLAY_ST7796_ASYNC_DMA && DISPLAY_DIRECT_PARTIAL_FLUSH && DISPLAY_USE_PANEL_HW_ROTATION
+#include "src/OfeSt7796DmaBus.h"
+#define OFE_ST7796_DMA_PATH 1
+#else
+#define OFE_ST7796_DMA_PATH 0
+#endif
+
 #ifndef ST7796_PERCEPTUAL_BACKLIGHT
 // Make the 10..100% setting feel more linear to the eye. 100% remains full PWM.
 #define ST7796_PERCEPTUAL_BACKLIGHT 1
@@ -134,9 +153,8 @@ static void debug_printf(const char* fmt, ...);
 #endif
 
 #ifndef DISPLAY_LVGL_DRAW_BUFFER_PREFER_PSRAM
-// The measured StableFast build already ran with the 16-line LVGL tile in PSRAM
-// (B16) and still achieved ~10 FPS. Keep that proven path so newly reclaimed
-// internal SRAM becomes stability headroom instead of being consumed by a larger tile.
+// Keep internal SRAM for radio/tasks. OFE_SMALL_DRAW_LINES selects B16/B32/B48
+// in PSRAM; the default B32 profile can be compared with B16 via the CLI.
 #define DISPLAY_LVGL_DRAW_BUFFER_PREFER_PSRAM 1
 #endif
 
@@ -244,7 +262,7 @@ static constexpr uint32_t DISPLAY_HW_CAP = (1UL << 27); // CAP_DISPLAY_ST7796
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 13
+#define OFE_MODULE_FW_PATCH 41
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -264,6 +282,8 @@ static void ofe_keep_module_fw_signature() {
 static HardwareSerial RS485(1);
 static Link bus(RS485);
 static OfeDisplayWifi display_wifi;
+#include "src/OfeDisplayBle.h"
+static OfeDisplayBle display_ble;
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
 static bool module_eco_mode = false;
@@ -604,6 +624,8 @@ static uint8_t display_theme = 0; // 0 = dark, 1 = light
 // 2=vivid. It is intentionally independent of the UI theme.
 // Real-panel validation: Vivid/Satt is the preferred default for this hardware.
 static uint8_t display_color_profile = 2;
+#include "src/OfeDisplayBacklight.h"
+static OfeDisplayBacklight display_backlight;
 static uint8_t screensaver_timeout_min = 2; // 0 = disabled
 static uint32_t last_user_activity_ms = 0;
 static const uint32_t DISPLAY_FIRST_SETUP_DELAY_MS = 8000UL;
@@ -805,7 +827,10 @@ struct DisplayUniversalModuleCache {
   uint8_t request_cursor = 0;
   DisplayUniversalEntity universal_entities[DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX];
   uint32_t last_ms = 0;
+  uint32_t values_refresh_ms = 0, values_refresh_mask = 0;
+  uint8_t values_language = 255;
 };
+static bool display_values_supported = false;
 
 // Arduino's .ino preprocessor can place auto-generated prototypes before local
 // struct definitions. Explicit prototypes here keep the custom entity type in
@@ -855,6 +880,9 @@ static uint32_t detail_status_msg_ms = 0;
 static uint8_t selected_universal_request_addr = 0;
 static uint8_t selected_universal_request_cursor = 0;
 static uint32_t selected_universal_request_ms = 0;
+static ofe_jbc_detail::State* display_jbc_state = nullptr;
+static portMUX_TYPE display_jbc_mux = portMUX_INITIALIZER_UNLOCKED;
+static void jbc_detail_reset_ui();
 static uint8_t selected_universal_readback_id = 0;
 
 static void* alloc_cache(size_t item_size, size_t count, const char* label, bool prefer_internal) {
@@ -908,8 +936,19 @@ static void init_psram_caches() {
 #define DISPLAY_RST_PIN 14
 #endif
 
+#if OFE_ST7796_DMA_PATH
+static OfeSt7796DmaBus st7796_dma_bus(
+  DISPLAY_DC_PIN, DISPLAY_SPI_CS_PIN, DISPLAY_SPI_SCK_PIN, DISPLAY_SPI_MOSI_PIN);
+static Arduino_DataBus* gfx_bus = &st7796_dma_bus;
+static uint8_t* st7796_draw_buf2 = nullptr;
+static bool st7796_async_active = false;
+static lv_display_t* st7796_pending_display = nullptr;
+static bool st7796_pending_last = false;
+static uint32_t st7796_pending_bytes = 0, st7796_pending_setup_us = 0;
+#else
 static Arduino_DataBus* gfx_bus = new Arduino_ESP32SPI(
   DISPLAY_DC_PIN, DISPLAY_SPI_CS_PIN, DISPLAY_SPI_SCK_PIN, DISPLAY_SPI_MOSI_PIN, GFX_NOT_DEFINED);
+#endif
 static Arduino_ST7796* output_display = new Arduino_ST7796(
   gfx_bus, DISPLAY_RST_PIN, 0, false, 320, 480);
 // ST7796 can rotate in hardware. Expose the panel directly as 480x320 and let
@@ -919,6 +958,7 @@ static Arduino_GFX* gfx = output_display;
 static lv_display_t* lvgl_disp = nullptr;
 static uint8_t* lvgl_draw_buf = nullptr;
 static uint32_t lvgl_buf_pixels = 0;
+static ofe_small_display::Profiles small_display_profiles;
 static bool system_psram_available = false;
 static uint32_t system_psram_total = 0;
 static uint32_t system_psram_free = 0;
@@ -1031,6 +1071,7 @@ static volatile bool lvgl_touch_pressed = false;
 static volatile uint32_t lvgl_last_touch_ms = 0;
 
 
+static OfeDisplayGuiTask display_gui;
 static TaskHandle_t rs485_task_handle = nullptr;
 static bool rs485_task_started = false;
 
@@ -1088,7 +1129,8 @@ static const uint32_t UI_DEFER_MODULE_LIST   = 1UL << 7;
 static const uint32_t UI_DEFER_MODULE_DETAIL = 1UL << 8;
 static const uint32_t UI_DEFER_DISPLAY_SETTINGS = 1UL << 9;
 
-static bool running_in_rs485_task() {
+static bool ui_needs_defer() {
+  if (display_gui.needsDefer()) return true;
 #if DISPLAY_RS485_DEDICATED_TASK
   return rs485_task_handle && xTaskGetCurrentTaskHandle() == rs485_task_handle;
 #else
@@ -1154,6 +1196,7 @@ static lv_obj_t* ui_benchmark_result = nullptr;
 
 static lv_obj_t* ui_header_link_cards[10] = {nullptr};
 static lv_obj_t* ui_header_link_labels[10] = {nullptr};
+static lv_obj_t* ui_header_ble_icons[10] = {nullptr};
 static lv_obj_t* ui_header_clock_labels[10] = {nullptr};
 static lv_obj_t* ui_header_alarm_labels[10] = {nullptr};
 static lv_obj_t* ui_header_eco_icons[10] = {nullptr};
@@ -1252,6 +1295,8 @@ static lv_obj_t* ui_system_language = nullptr;
 static lv_obj_t* ui_system_theme = nullptr;
 static lv_obj_t* ui_system_color_profile = nullptr;
 static lv_obj_t* ui_system_screensaver = nullptr;
+static lv_obj_t* ui_system_backlight_mode = nullptr;
+static lv_obj_t* ui_system_backlight_delay = nullptr;
 static lv_obj_t* ui_screensaver_screen = nullptr;
 static lv_obj_t* ui_screensaver_brand = nullptr;
 static lv_obj_t* ui_screensaver_clock = nullptr;
@@ -1301,6 +1346,7 @@ static DisplayUniversalControlPending universal_control_pending[DISPLAY_UNIVERSA
 static uint32_t detail_controls_signature = 0;
 static lv_obj_t* ui_numeric_keyboard = nullptr;
 static lv_obj_t* ui_numeric_editor = nullptr;
+static lv_obj_t* ui_numeric_overlay = nullptr;
 static lv_obj_t* ui_numeric_source = nullptr;
 static uint8_t ui_numeric_field = 0;
 static bool language_rebuild_pending = false;
@@ -1486,6 +1532,10 @@ static uint32_t backlight_duty_from_percent(uint8_t pct) {
 }
 
 static void apply_backlight() {
+  if (display_backlight.isOff()) {
+    write_backlight_duty(0);
+    return;
+  }
   if (display_brightness_pct < 10) display_brightness_pct = 10;
   if (display_brightness_pct > 100) display_brightness_pct = 100;
   const uint8_t effective_pct = screensaver_active && display_brightness_pct > 30 ? 30 : display_brightness_pct;
@@ -1572,7 +1622,8 @@ static void set_brightness(uint8_t pct, bool save) {
   if (pct < 10) pct = 10;
   if (pct > 100) pct = 100;
   display_brightness_pct = pct;
-  if (running_in_rs485_task()) {
+  display_backlight.requestWake();
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
   } else {
     apply_backlight();
@@ -1730,12 +1781,57 @@ static inline void IRAM_ATTR canvas_blit_rotate1_fast(
   }
 }
 
+#if OFE_ST7796_DMA_PATH
+static void st7796_complete_flush(lv_display_t*) {
+  if (!st7796_pending_display) return;
+  const uint32_t transfer_us = st7796_dma_bus.waitPixels() + st7796_pending_setup_us;
+  output_display->endWrite();
+  perf_panel_flush_us += transfer_us;
+  perf_panel_bytes += st7796_pending_bytes;
+  if (transfer_us > perf_panel_flush_max_us) perf_panel_flush_max_us = transfer_us;
+  if (st7796_pending_last) {
+    ++perf_lvgl_frames;
+    ++perf_panel_frames;
+  }
+  auto* completed = st7796_pending_display;
+  st7796_pending_display = nullptr;
+  lv_display_flush_ready(completed);
+}
+#endif
+
 static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
   const int32_t w = lv_area_get_width(area);
   const int32_t h = lv_area_get_height(area);
 
   // Measures the LVGL RGB565 tile transfer (direct panel in normal ST7796 mode).
   const uint32_t t0 = micros();
+
+#if OFE_ST7796_DMA_PATH
+  if (st7796_async_active) {
+    output_display->startWrite();
+    output_display->writeAddrWindow(area->x1, area->y1, w, h);
+    const uint32_t setup_us = micros() - t0;
+    if (st7796_dma_bus.queuePixels(reinterpret_cast<const uint16_t*>(px_map), size_t(w) * h)) {
+      const uint32_t elapsed_us = micros() - t0;
+      ++perf_lvgl_tiles;
+      perf_lvgl_pixels += uint64_t(w) * h;
+      perf_canvas_draw_us += elapsed_us;
+      if (elapsed_us > perf_canvas_draw_max_us) perf_canvas_draw_max_us = elapsed_us;
+      st7796_pending_display = disp;
+      st7796_pending_last = lv_display_flush_is_last(disp);
+      st7796_pending_bytes = uint32_t(w) * h * 2U;
+      st7796_pending_setup_us = setup_us;
+      lvgl_canvas_dirty = false;
+      return; // Only the GUI wait callback may acknowledge completed DMA.
+    }
+    // Nothing was queued: transmit this intact RGB565 tile synchronously.
+    // Keep the IDF bus owner; never switch to direct register SPI at runtime.
+    st7796_dma_bus.writePixels(reinterpret_cast<uint16_t*>(px_map), uint32_t(w) * h);
+    output_display->endWrite();
+    debug_println("ST7796 DMA queue failed; tile sent synchronously");
+  } else
+#endif
+  {
 
 #if DISPLAY_FAST_CANVAS_ROTATE1 && !DISPLAY_USE_PANEL_HW_ROTATION
   // Legacy exact replacement for Arduino_Canvas rotation=1 bitmap copy.
@@ -1746,6 +1842,7 @@ static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px
 #else
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t*)px_map, w, h);
 #endif
+  }
 
   const uint32_t elapsed_us = (uint32_t)(micros() - t0);
 
@@ -1779,6 +1876,11 @@ static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px
 static void lvgl_timer_handler_profiled() {
   const uint32_t t0 = micros();
   lv_timer_handler();
+#if OFE_ST7796_DMA_PATH
+  // Drain the final tile before leaving the GUI pass, reporting, OTA, or a
+  // profile swap. Earlier tiles overlapped rendering via LVGL's second buffer.
+  st7796_complete_flush(lvgl_disp);
+#endif
   const uint32_t elapsed_us = (uint32_t)(micros() - t0);
 
   perf_handler_calls++;
@@ -1857,13 +1959,18 @@ static void lvgl_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     last_user_activity_ms = millis();
     last_touch_x = x;
     last_touch_y = y;
-    if (screensaver_active) {
+    const bool light_was_off = display_backlight.wake(millis());
+    if (light_was_off) {
+      apply_backlight();
       screensaver_wait_release = true;
-      screensaver_wake();
+    }
+    if (screensaver_wait_release) {
       data->state = LV_INDEV_STATE_RELEASED;
       return;
     }
-    if (screensaver_wait_release) {
+    if (screensaver_active) {
+      screensaver_wait_release = true;
+      screensaver_wake();
       data->state = LV_INDEV_STATE_RELEASED;
       return;
     }
@@ -2115,6 +2222,9 @@ static void lv_apply_dropdown_theme(lv_obj_t* dropdown, bool open_up = false) {
   lv_obj_add_event_cb(dropdown, lv_dropdown_theme_event, LV_EVENT_ALL, NULL);
 }
 
+#include "src/OfeDisplayUi.h"
+#include "src/OfeDisplayNumericUi.h"
+
 static lv_obj_t* lv_mini_bar(lv_obj_t* parent, int16_t x, int16_t y, int16_t w, int16_t h, lv_color_t accent) {
   lv_obj_t* bar = lv_bar_create(parent);
   lv_obj_set_pos(bar, x, y);
@@ -2351,6 +2461,8 @@ static const char* update_message_text(const char* msg) {
 static void show_dashboard();
 static void lv_update_module_list();
 static void lv_update_module_detail();
+static void lv_update_jbc_detail(bool visible);
+static void lv_detail_values_hide();
 static void lv_update_app_values();
 static void lv_update_display_settings_widgets(bool force);
 static uint8_t lv_update_alarm_center();
@@ -2364,7 +2476,7 @@ static void bus_update_scroll_to_target(bool force);
 static void lv_open_module_summary(uint8_t index);
 
 static void refresh_bus_update_inline_ui() {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_BUS_UPDATE);
     return;
   }
@@ -2617,7 +2729,7 @@ static void bus_update_auto_return_to_previous(uint8_t view, uint8_t detail_addr
 }
 
 static void refresh_bus_update_inline_ui_throttled(bool force = false) {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     const uint32_t now = millis();
     if (!force &&
         status.update_progress == bus_update_last_ui_progress &&
@@ -2867,8 +2979,8 @@ static bool active_output_is_fan_io();
 static uint8_t extractor_power_min_percent();
 
 static void lv_numeric_hide() {
-  if (ui_numeric_keyboard) lv_obj_add_flag(ui_numeric_keyboard, LV_OBJ_FLAG_HIDDEN);
-  if (ui_numeric_editor) lv_obj_add_flag(ui_numeric_editor, LV_OBJ_FLAG_HIDDEN);
+  if (ui_numeric_overlay) lv_obj_delete(ui_numeric_overlay);
+  ui_numeric_overlay = ui_numeric_editor = ui_numeric_keyboard = nullptr;
   ui_numeric_source = nullptr;
   ui_numeric_field = NUMERIC_FIELD_NONE;
 }
@@ -2903,34 +3015,16 @@ static void lv_numeric_keyboard_event(lv_event_t* e) {
 }
 
 static void lv_numeric_field_event(lv_event_t* e) {
+  lv_numeric_hide();
   ui_numeric_source = lv_event_get_target_obj(e);
   ui_numeric_field = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-  if (!ui_numeric_editor) {
-    ui_numeric_editor = lv_textarea_create(lv_layer_top());
-    lv_obj_set_pos(ui_numeric_editor, 8, 0);
-    lv_obj_set_size(ui_numeric_editor, 464, 40);
-    lv_textarea_set_one_line(ui_numeric_editor, true);
-    lv_textarea_set_accepted_chars(ui_numeric_editor, "0123456789");
-    lv_textarea_set_max_length(ui_numeric_editor, 4);
-    lv_obj_set_style_text_font(ui_numeric_editor, UI_FONT_DEFAULT, 0);
-    lv_obj_set_style_bg_color(ui_numeric_editor, ui_theme_color(0x172331, 0xFFFFFF), 0);
-    lv_obj_set_style_text_color(ui_numeric_editor, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-    ui_numeric_keyboard = lv_keyboard_create(lv_layer_top());
-    lv_obj_clear_flag(lv_layer_top(), LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(ui_numeric_keyboard, LV_OBJ_FLAG_SCROLLABLE);
-    lv_keyboard_set_mode(ui_numeric_keyboard, LV_KEYBOARD_MODE_NUMBER);
-    lv_obj_set_size(ui_numeric_keyboard, 480, 278);
-    lv_obj_align(ui_numeric_keyboard, LV_ALIGN_TOP_LEFT, 0, 42);
-    lv_obj_add_event_cb(ui_numeric_keyboard, lv_numeric_keyboard_event, LV_EVENT_READY, NULL);
-    lv_obj_add_event_cb(ui_numeric_keyboard, lv_numeric_keyboard_event, LV_EVENT_CANCEL, NULL);
-  }
-  lv_textarea_set_text(ui_numeric_editor, lv_textarea_get_text(ui_numeric_source));
-  lv_keyboard_set_textarea(ui_numeric_keyboard, ui_numeric_editor);
-  lv_obj_clear_flag(ui_numeric_editor, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(ui_numeric_keyboard, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_to_index(ui_numeric_editor, -1);
-  lv_obj_move_to_index(ui_numeric_keyboard, -1);
-  lv_obj_send_event(ui_numeric_editor, LV_EVENT_FOCUSED, NULL);
+  const char* caption = ui_numeric_field == NUMERIC_FIELD_JBC_DELAY_WORK
+    ? tr("Work afterrun (s)", "Work-Nachlauf (s)") : ui_numeric_field == NUMERIC_FIELD_JBC_DELAY_STAND
+    ? tr("Stand afterrun (s)", "Stand-Nachlauf (s)") : ui_numeric_field == NUMERIC_FIELD_AFTER_POWER
+    ? tr("Afterrun power (%)", "Nachlaufleistung (%)") : tr("Power (%)", "Leistung (%)");
+  const auto dialog = ofe_display_ui::numeric_dialog(lv_screen_active(), caption,
+    lv_textarea_get_text(ui_numeric_source), "0123456789", 4, lv_numeric_keyboard_event);
+  ui_numeric_overlay = dialog.overlay; ui_numeric_editor = dialog.input; ui_numeric_keyboard = dialog.keyboard;
 }
 
 static lv_obj_t* lv_numeric_field(lv_obj_t* parent, int16_t x, int16_t y, int16_t w,
@@ -2940,6 +3034,7 @@ static lv_obj_t* lv_numeric_field(lv_obj_t* parent, int16_t x, int16_t y, int16_
   lv_obj_set_size(input, w, 38);
   lv_textarea_set_one_line(input, true);
   lv_textarea_set_text(input, String(value).c_str());
+  lv_obj_set_style_text_align(input, LV_TEXT_ALIGN_CENTER, 0);
   lv_textarea_set_accepted_chars(input, "0123456789");
   lv_textarea_set_max_length(input, 4);
   lv_obj_set_style_radius(input, 8, 0);
@@ -3076,6 +3171,16 @@ static bool master_link_lost() {
 
 #include "src/OfeDisplayWifiUi.inc.h"
 
+static void lv_update_ble_indicator_ui(bool force=false) {
+  static bool drawn=false,previous=false;
+  const bool active=display_ble.active();
+  if (!force && drawn && previous==active) return;
+  for (uint8_t i=0;i<ui_header_link_count;++i)
+    if (ui_header_ble_icons[i]) lv_obj_set_style_text_color(ui_header_ble_icons[i],
+      active ? lv_color_hex(0x58B8FF) : ui_theme_color(0x667888,0x7A8794),0);
+  previous=active; drawn=true;
+}
+
 static const char* master_link_text(uint8_t state) {
   (void)state;
   return display_wifi.wireless() ? LV_SYMBOL_WIFI : OFE_SYMBOL_SERIAL_PORT;
@@ -3100,7 +3205,7 @@ static lv_color_t master_link_text_color(uint8_t state) {
 }
 
 static bool lv_update_master_link_ui(bool force = false) {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_MASTER_LINK | UI_DEFER_APP_VALUES);
     return false;
   }
@@ -3116,6 +3221,7 @@ static bool lv_update_master_link_ui(bool force = false) {
     reset_expected_modules();
     master_uptime_valid = false;
     master_session_reset_pending = false;
+    home_metrics_clear();
   }
   for (uint8_t i = 0; i < ui_header_link_count; ++i) {
     if (ui_header_link_cards[i]) {
@@ -3148,7 +3254,10 @@ static void lv_update_clock_ui() {
     else snprintf(text, sizeof(text), "%02u:%02u", status.clock_hour, status.clock_minute);
   }
   for (uint8_t i = 0; i < ui_header_link_count; ++i) {
-    if (ui_header_clock_labels[i] && lv_obj_is_valid(ui_header_clock_labels[i])) lv_set_text_c(ui_header_clock_labels[i], text);
+    if (ui_header_clock_labels[i] && lv_obj_is_valid(ui_header_clock_labels[i])) {
+      lv_set_text_c(ui_header_clock_labels[i], text);
+      ofe_display_header::center_clock(ui_header_clock_labels[i]);
+    }
   }
 }
 static void lv_show_alarms_event(lv_event_t* e);
@@ -3166,8 +3275,11 @@ static void lv_update_alarm_header_ui() {
       lv_set_text_color_if_changed(alarm, alarm_color, 0);
       lv_set_visible(alarm, true);
     } else {
-      lv_set_visible(alarm, false);
+      lv_set_text_c(alarm, LV_SYMBOL_OK);
+      lv_set_text_color_if_changed(alarm, lv_color_hex(0x55D98A), 0);
+      lv_set_visible(alarm, true);
     }
+    ofe_display_header::center_glyph(alarm, active_alarm_count ? 0xF0F3 : 0xF00C);
   }
 }
 
@@ -3214,25 +3326,35 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
   const char* localized_subtitle = subtitle;
   if (strcmp(subtitle, "extractor") == 0) localized_subtitle = tr("extractor", "Absaugung");
   else if (strcmp(subtitle, "bus modules") == 0) localized_subtitle = tr("bus modules", "Busmodule");
-  else if (strcmp(subtitle, "module details") == 0) localized_subtitle = tr("module details", "Moduldetails");
-  else if (strcmp(subtitle, "display settings") == 0) localized_subtitle = tr("display settings", "Einstellungen");
+  else if (strcmp(subtitle, "module details") == 0) localized_subtitle = tr("details", "Moduldetails");
+  else if (strcmp(subtitle, "display settings") == 0) localized_subtitle = tr("settings", "Einstellungen");
   else if (strcmp(subtitle, "alarms") == 0) localized_subtitle = tr("alarms", "Alarme");
   else if (strcmp(subtitle, "display update") == 0) localized_subtitle = tr("FW Update", "FW-Update");
-  else if (strcmp(subtitle, "display module") == 0) localized_subtitle = tr("display module", "Displaymodul");
+  else if (strcmp(subtitle, "display module") == 0) localized_subtitle = tr("display", "Displaymodul");
   else if (strcmp(subtitle, "display benchmark") == 0) localized_subtitle = tr("benchmark", "Benchmark");
-  lv_obj_t* sub = lv_label(header, localized_subtitle, 8, 11, lv_color_hex(0x7F8C9B), UI_FONT_DEFAULT, 116);
-  lv_obj_set_size(sub, 116, 20);
+  lv_obj_t* sub = lv_label(header, localized_subtitle, 6, 11, lv_color_hex(0x7F8C9B), UI_FONT_DEFAULT, 114);
+  lv_obj_set_size(sub, 114, 20);
   lv_label_set_long_mode(sub, LV_LABEL_LONG_CLIP);
   lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_LEFT, 0);
 
-  lv_obj_t* title = lv_label(header, "Open Fume Extractor", 126, 3, lv_color_hex(0xF7FAFF), UI_FONT_DEFAULT, 158);
+  lv_obj_t* title = lv_label(header, "Open Fume Extractor", 122, 3, lv_color_hex(0xF7FAFF), UI_FONT_DEFAULT, 158);
   lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_t* author = lv_label(header, "by IceCube20", 126, 22, lv_color_hex(0x718092), UI_FONT_DEFAULT, 158);
+  lv_obj_t* author = lv_label(header, "by IceCube20", 122, 22, lv_color_hex(0x718092), UI_FONT_DEFAULT, 158);
   lv_obj_set_style_text_align(author, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_t* eco_icon = lv_create_eco_sprout(header, 286, 11);
+  // Fixed slots keep alarm, Eco and connection indicators from shifting the title.
+  lv_obj_t* eco_icon = lv_create_eco_sprout(header, 410, 11);
+  lv_obj_t* ble_lbl=lv_label(header,OFE_SYMBOL_BLUETOOTH,432,11,lv_color_hex(0x667888),UI_FONT_DEFAULT,20);
+  lv_obj_set_size(ble_lbl,20,20);
+  lv_obj_set_style_text_font(ble_lbl,ofe_bluetooth_icon::font(),0);
+  lv_obj_set_style_text_align(ble_lbl,LV_TEXT_ALIGN_CENTER,0);
+  ofe_display_header::center_glyph(ble_lbl, 0xE001);
+  lv_obj_add_flag(ble_lbl,LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(ble_lbl,OfeDisplayWifiUi::openEvent,LV_EVENT_CLICKED,nullptr);
 
-  lv_obj_t* alarm_lbl = lv_label(header, LV_SYMBOL_BELL, 400, 11, lv_color_hex(0xFF5A67), UI_FONT_DEFAULT, 32);
+  lv_obj_t* alarm_lbl = lv_label(header, LV_SYMBOL_BELL, 362, 11, lv_color_hex(0xFF5A67), UI_FONT_DEFAULT, 46);
+  lv_obj_set_height(alarm_lbl, 20);
   lv_obj_set_style_text_align(alarm_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  ofe_display_header::center_glyph(alarm_lbl, 0xF0F3);
   lv_obj_add_flag(alarm_lbl, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(alarm_lbl, lv_show_alarms_event, LV_EVENT_CLICKED, NULL);
   if (!active_alarm_count) lv_obj_add_flag(alarm_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -3243,15 +3365,16 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
     else if (status.clock_day && status.clock_month) snprintf(clock_text, sizeof(clock_text), "%02u:%02u\n%02u.%02u", status.clock_hour, status.clock_minute, status.clock_day, status.clock_month);
     else snprintf(clock_text, sizeof(clock_text), "%02u:%02u", status.clock_hour, status.clock_minute);
   }
-  lv_obj_t* clock_lbl = lv_label(header, clock_text, 308, 4, ui_theme_color(0xDDE4EC, 0x33404D), UI_FONT_DEFAULT, 90);
+  lv_obj_t* clock_lbl = lv_label(header, clock_text, 282, 4, ui_theme_color(0xDDE4EC, 0x33404D), UI_FONT_DEFAULT, 78);
   lv_obj_set_style_text_align(clock_lbl, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(clock_lbl, -2, 0);
   lv_label_set_long_mode(clock_lbl, LV_LABEL_LONG_CLIP);
+  ofe_display_header::center_clock(clock_lbl);
 
   const uint8_t link_state = master_link_state_now();
   // Serial/WiFi status shares one small glyph and the existing touch target.
-  lv_obj_t* link_lbl = lv_label(header, master_link_text(link_state), 438, 11, master_link_text_color(link_state), UI_FONT_DEFAULT, 34);
-  lv_obj_set_size(link_lbl, 36, 20);
+  lv_obj_t* link_lbl = lv_label(header, master_link_text(link_state), 454, 11, master_link_text_color(link_state), UI_FONT_DEFAULT, 24);
+  lv_obj_set_size(link_lbl, 24, 20);
   lv_obj_set_style_text_font(link_lbl, ofe_serial_port::font(UI_FONT_DEFAULT), 0);
   lv_obj_set_style_text_align(link_lbl, LV_TEXT_ALIGN_CENTER, 0);
   ofe_serial_port::center_icon(link_lbl, display_wifi.wireless());
@@ -3261,12 +3384,14 @@ static void lv_add_header(lv_obj_t* screen, const char* subtitle) {
   if (ui_header_link_count < 10) {
     ui_header_link_cards[ui_header_link_count] = nullptr;
     ui_header_link_labels[ui_header_link_count] = link_lbl;
+    ui_header_ble_icons[ui_header_link_count] = ble_lbl;
     ui_header_clock_labels[ui_header_link_count] = clock_lbl;
     ui_header_alarm_labels[ui_header_link_count] = alarm_lbl;
     ui_header_eco_icons[ui_header_link_count] = eco_icon;
     ui_header_link_count++;
   }
   lv_update_master_link_ui(true);
+  lv_update_ble_indicator_ui(true);
   lv_update_alarm_header_ui();
   lv_update_eco_indicator_ui(true);
 }
@@ -3344,6 +3469,10 @@ static uint8_t screensaver_selection_from_timeout(uint8_t minutes) {
 }
 
 static void lv_update_display_settings_widgets(bool force) {
+  if (ui_system_backlight_mode && !lv_dropdown_is_open(ui_system_backlight_mode))
+    lv_dropdown_set_selected(ui_system_backlight_mode, display_backlight.mode());
+  if (ui_system_backlight_delay && !lv_dropdown_is_open(ui_system_backlight_delay))
+    lv_dropdown_set_selected(ui_system_backlight_delay, display_backlight.minutes() - 1);
   if (!lvgl_ready) return;
 
   if (ui_system_benchmark_button) {
@@ -3391,7 +3520,7 @@ static void apply_screensaver_timeout(uint8_t minutes) {
   screensaver_timeout_min = minutes;
   prefs.putUChar("saver", screensaver_timeout_min);
   last_user_activity_ms = millis();
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
   } else {
     lv_update_display_settings_widgets(true);
@@ -3400,9 +3529,45 @@ static void apply_screensaver_timeout(uint8_t minutes) {
     // This can be called from the RS485 task when the Master changes the
     // Display settings. Never touch LVGL/backlight from that task; wake in
     // the normal LVGL loop instead.
-    if (running_in_rs485_task()) screensaver_wake_deferred = true;
+    if (ui_needs_defer()) screensaver_wake_deferred = true;
     else screensaver_wake();
   }
+}
+
+static void apply_backlight_settings(uint8_t mode, uint8_t minutes) {
+  const uint16_t previous = display_backlight.settings();
+  if (!display_backlight.configure(mode, minutes)) return;
+  if (previous != display_backlight.settings()) {
+    prefs.putUShort("bl_auto", display_backlight.settings());
+  }
+}
+
+static void lv_backlight_settings_event(lv_event_t*) {
+  apply_backlight_settings((uint8_t)lv_dropdown_get_selected(ui_system_backlight_mode),
+                          (uint8_t)(lv_dropdown_get_selected(ui_system_backlight_delay) + 1));
+}
+
+static void lv_create_backlight_controls(lv_obj_t* parent, int16_t width, int16_t y) {
+  lv_label(parent, tr("Backlight off", "Beleuchtung aus"), 0, y, ofe_display_ui::muted(), UI_FONT_DEFAULT, width);
+  ui_system_backlight_mode = lv_dropdown_create(parent);
+  lv_obj_set_pos(ui_system_backlight_mode, 0, y + 24);
+  lv_obj_set_size(ui_system_backlight_mode, width, 44);
+  lv_dropdown_set_options(ui_system_backlight_mode, display_language == 1
+    ? "Aus\nNur im Energiesparmodus\nImmer" : "Off\nOnly in power saving\nAlways");
+  ofe_display_ui::dropdown(ui_system_backlight_mode);
+  lv_obj_add_event_cb(ui_system_backlight_mode, lv_backlight_settings_event, LV_EVENT_VALUE_CHANGED, NULL);
+  lv_label(parent, tr("Turn off after", "Ausschalten nach"), 0, y + 88, ofe_display_ui::muted(), UI_FONT_DEFAULT, width);
+  ui_system_backlight_delay = lv_dropdown_create(parent);
+  lv_obj_set_pos(ui_system_backlight_delay, 0, y + 112);
+  lv_obj_set_size(ui_system_backlight_delay, width, 44);
+  String options;
+  for (uint8_t i = 1; i <= 60; ++i) {
+    if (i > 1) options += '\n';
+    options += String(i) + " min";
+  }
+  lv_dropdown_set_options(ui_system_backlight_delay, options.c_str());
+  ofe_display_ui::dropdown(ui_system_backlight_delay);
+  lv_obj_add_event_cb(ui_system_backlight_delay, lv_backlight_settings_event, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 static void lv_screensaver_timeout_event(lv_event_t* e) {
@@ -3518,6 +3683,7 @@ static void lv_open_boot_connection_setup(lv_event_t*) {
 static void lv_create_boot_screen() {
   ui_boot_screen = lv_obj_create(NULL);
   lv_style_screen(ui_boot_screen);
+  ofe_display_ui::flat(ui_boot_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_boot_screen, "display module");
   lv_obj_t* card = lv_card(ui_boot_screen, 18, 78, 444, 166, ui_theme_color(0x121C28, 0xF7FAFC));
   lv_obj_set_style_border_color(card, ui_theme_color(0x34516B, 0xC4D0DB), 0);
@@ -3535,14 +3701,18 @@ static void lv_create_boot_screen() {
   lv_label(wait_card, tr("Connecting to master... Tap for setup", "Verbinde mit Master... Antippen zum Einrichten"), 16, 10, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 412);
   lv_obj_add_flag(wait_card, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(wait_card, lv_open_boot_connection_setup, LV_EVENT_CLICKED, nullptr);
+  ofe_display_ui::unframed(card);
+  ofe_display_ui::flat(wait_card, ofe_display_ui::surface());
+  ofe_display_ui::labels(card); ofe_display_ui::labels(wait_card);
 }
 
 static void lv_create_update_screen() {
   ui_update_screen = lv_obj_create(NULL);
   lv_style_screen(ui_update_screen);
+  ofe_display_ui::flat(ui_update_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_update_screen, "display update");
 
-  lv_obj_t* hero = lv_card(ui_update_screen, 16, 62, 448, 146, ui_theme_color(0x101D2C, 0xF7FAFC));
+  lv_obj_t* hero = lv_card(ui_update_screen, 16, 62, 448, 158, ui_theme_color(0x101D2C, 0xF7FAFC));
   lv_obj_set_style_border_color(hero, ui_theme_color(0x1F7AFF, 0x9CCBFF), 0);
 
   lv_obj_t* chip = lv_obj_create(hero);
@@ -3562,14 +3732,17 @@ static void lv_create_update_screen() {
   lv_obj_set_style_text_align(chip_label, LV_TEXT_ALIGN_CENTER, 0);
 
   lv_label(hero, tr("Display firmware", "Display-Firmware"), 16, 44, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_18, 220);
-  ui_update_target = lv_label(hero, "", 16, 74, ui_theme_color(0xB9C6D3, 0x455466), UI_FONT_DEFAULT, 230);
-  ui_update_status = lv_label(hero, "", 16, 101, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 250);
+  ui_update_target = lv_label(hero, "", 16, 72, ui_theme_color(0xB9C6D3, 0x455466), UI_FONT_DEFAULT, 416);
+  lv_obj_set_height(ui_update_target, 34); lv_label_set_long_mode(ui_update_target, LV_LABEL_LONG_DOT);
+  ui_update_status = lv_label(hero, "", 16, 112, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 276);
+  lv_obj_set_height(ui_update_status, 18); lv_label_set_long_mode(ui_update_status, LV_LABEL_LONG_DOT);
   ui_update_percent = lv_label(hero, "0%", 308, 28, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_28, 120);
-  ui_update_phase = lv_label(hero, tr("Starting", "Start"), 300, 94, lv_color_hex(0x2DFF88), UI_FONT_DEFAULT, 120);
+  ui_update_phase = lv_label(hero, tr("Starting", "Start"), 308, 112, lv_color_hex(0x2DFF88), UI_FONT_DEFAULT, 120);
+  lv_obj_set_height(ui_update_phase, 18); lv_label_set_long_mode(ui_update_phase, LV_LABEL_LONG_DOT);
 
   ui_update_bar = lv_bar_create(hero);
-  lv_obj_set_pos(ui_update_bar, 16, 126);
-  lv_obj_set_size(ui_update_bar, 416, 12);
+  lv_obj_set_pos(ui_update_bar, 16, 140);
+  lv_obj_set_size(ui_update_bar, 416, 10);
   lv_bar_set_range(ui_update_bar, 0, 100);
   lv_obj_set_style_radius(ui_update_bar, 6, 0);
   lv_obj_set_style_radius(ui_update_bar, 6, LV_PART_INDICATOR);
@@ -3580,21 +3753,27 @@ static void lv_create_update_screen() {
   lv_obj_clear_flag(ui_update_bar, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(ui_update_bar, LV_OBJ_FLAG_SCROLLABLE);
 
-  lv_obj_t* written = lv_card(ui_update_screen, 16, 218, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
+  lv_obj_t* written = lv_card(ui_update_screen, 16, 230, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
   lv_label(written, tr("Written", "Empfangen"), 12, 8, ui_theme_color(0x8F9BA8, 0x5E6D7C), UI_FONT_DEFAULT, 100);
   ui_update_written = lv_label(written, "0 KB", 12, 29, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 112);
 
-  lv_obj_t* size = lv_card(ui_update_screen, 170, 218, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
+  lv_obj_t* size = lv_card(ui_update_screen, 170, 230, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
   lv_label(size, tr("Image", "Datei"), 12, 8, ui_theme_color(0x8F9BA8, 0x5E6D7C), UI_FONT_DEFAULT, 100);
   ui_update_size = lv_label(size, "-", 12, 29, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 112);
 
-  lv_obj_t* speed = lv_card(ui_update_screen, 324, 218, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
+  lv_obj_t* speed = lv_card(ui_update_screen, 324, 230, 140, 54, ui_theme_color(0x151B23, 0xF7FAFC));
   lv_label(speed, tr("Speed", "Tempo"), 12, 8, ui_theme_color(0x8F9BA8, 0x5E6D7C), UI_FONT_DEFAULT, 100);
   ui_update_speed = lv_label(speed, "-", 12, 29, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 112);
 
-  ui_update_detail = lv_label(ui_update_screen, tr("RS485 firmware transfer", "RS485-Firmware wird empfangen"), 28, 282, ui_theme_color(0xB9C6D3, 0x5E6D7C), UI_FONT_DEFAULT, 286);
-  ui_update_hint = lv_label(ui_update_screen, tr("Do not unplug", "Nicht trennen!"), 318, 282, lv_color_hex(0xFFB020), UI_FONT_DEFAULT, 146);
+  ui_update_detail = lv_label(ui_update_screen, tr("RS485 firmware transfer", "RS485-Firmware wird empfangen"), 28, 292, ui_theme_color(0xB9C6D3, 0x5E6D7C), UI_FONT_DEFAULT, 286);
+  ui_update_hint = lv_label(ui_update_screen, tr("Do not unplug", "Nicht trennen!"), 318, 292, lv_color_hex(0xFFB020), UI_FONT_DEFAULT, 146);
   lv_obj_set_style_text_align(ui_update_hint, LV_TEXT_ALIGN_RIGHT, 0);
+  ofe_display_ui::unframed(hero);
+  ofe_display_ui::flat(chip, ofe_display_ui::field());
+  ofe_display_ui::flat(written, ofe_display_ui::surface());
+  ofe_display_ui::flat(size, ofe_display_ui::surface());
+  ofe_display_ui::flat(speed, ofe_display_ui::surface());
+  ofe_display_ui::labels(ui_update_screen);
 }
 
 static void lv_create_dashboard_screen() {
@@ -3757,11 +3936,15 @@ static void lv_create_dashboard_screen() {
 static void lv_create_status_screen() {
   ui_status_screen = lv_obj_create(NULL);
   lv_style_screen(ui_status_screen);
+  ofe_display_ui::flat(ui_status_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_status_screen, "display");
   lv_obj_t* card = lv_card(ui_status_screen, 18, 90, 444, 132, ui_theme_color(0x171C22, 0xF7FAFC));
   ui_status_msg = lv_label(card, "", 14, 40, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 390);
+  ofe_display_ui::flat(card, ofe_display_ui::surface());
+  ofe_display_ui::labels(card);
 }
 
+#include "src/OfeDisplayHomeActivityUi.h"
 static void lv_create_screensaver_screen() {
   ui_screensaver_screen = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(ui_screensaver_screen, lv_color_hex(0x030609), 0);
@@ -3783,6 +3966,7 @@ static void lv_create_screensaver_screen() {
   ui_screensaver_modules = lv_label(ui_screensaver_screen, "", 248, 196,
     lv_color_hex(0xD8E2EE), UI_FONT_DEFAULT, 190);
   lv_obj_set_style_text_align(ui_screensaver_modules, LV_TEXT_ALIGN_RIGHT, 0);
+  ofe_home_activity::create_saver(ui_screensaver_screen, ui_screensaver_power);
   ui_screensaver_alarm = lv_label(ui_screensaver_screen, "", 20, 164,
     lv_color_hex(0xFF6B78), UI_FONT_DEFAULT, 440);
   lv_obj_set_style_text_align(ui_screensaver_alarm, LV_TEXT_ALIGN_CENTER, 0);
@@ -4025,6 +4209,8 @@ static void screensaver_update_values() {
   lv_set_pos_if_changed(ui_screensaver_hint, shift_x, 284 + shift_y);
   lv_set_pos_if_changed(ui_screensaver_eco_icon, 328 + shift_x, 22 + shift_y);
 
+  ofe_home_activity::move_saver(ui_screensaver_power);
+  ofe_home_activity::update_saver(master_link_online() && status.output_enabled, !display_backlight.isOff(), status.output_power / 10U);
   last_drawn_status = status;
   have_drawn_status = true;
 }
@@ -4183,6 +4369,7 @@ static void lv_open_module_summary(uint8_t index) {
   memset(&selected_module, 0, sizeof(selected_module));
   selected_module.addr = module_summaries[index].addr;
   selected_module.type = module_summaries[index].type;
+  selected_module.caps = module_summaries[index].caps;
   strncpy(selected_module.name, module_summaries[index].name, sizeof(selected_module.name) - 1);
   display_view_mode = DISPLAY_VIEW_MODULE_DETAIL;
   display_view_arg = selected_module.addr;
@@ -4193,6 +4380,8 @@ static void lv_open_module_summary(uint8_t index) {
   lv_set_text(ui_detail_title, lv_addr_text(selected_module.addr) + "  " + String(selected_module.name[0] ? selected_module.name : display_module_type_name(selected_module.type)));
   lv_set_text_c(ui_detail_status, tr("Loading module data...", "Moduldaten laden..."));
   lv_set_text_c(ui_detail_values, "");
+  lv_detail_values_hide();
+  lv_obj_scroll_to_y(lv_obj_get_parent(ui_detail_values), 0, LV_ANIM_OFF);
   lv_obj_add_flag(ui_detail_controls, LV_OBJ_FLAG_HIDDEN);
   // Force controls to be rebuilt when the detail packet arrives.
   // Without this, reopening the same addr/type can keep the old control-card cache
@@ -4200,6 +4389,8 @@ static void lv_open_module_summary(uint8_t index) {
   detail_controls_addr = 0;
   detail_controls_type = MODULE_UNKNOWN;
   detail_controls_caps = 0;
+  // Prepare the correct view before loading it, including the initial wait.
+  lv_update_jbc_detail(detail_fields_is_jbc_usb(selected_module.type, selected_module.caps));
   lv_screen_switch(ui_module_detail_screen);
 }
 
@@ -4419,6 +4610,7 @@ static String universal_input_label(uint8_t addr, const DisplayUniversalEntity& 
 static uint8_t universal_cache_request_start(uint8_t addr) {
   DisplayUniversalModuleCache* c = universal_cache_find(addr, false);
   if (!c || !c->universal_entity_total) return 0;
+  if (c->values_language != display_language) return 0;
   const uint8_t want = c->universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : c->universal_entity_total;
   if (c->universal_entity_count < want) return c->universal_entity_count;
   uint8_t start = c->request_cursor;
@@ -4444,16 +4636,30 @@ static uint8_t first_universal_module_addr(bool online_only) {
 }
 
 static uint8_t first_universal_module_addr_needing_cache() {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  static uint8_t next = 0;
+  const uint8_t count = module_total < 17 ? module_total : 17;
+  if (!count) return 0;
+  // Rotate even while a profile is incomplete or empty, so one module cannot
+  // prevent the other modules' Home values from being loaded and refreshed.
+  for (uint8_t offset = 0; offset < count; ++offset) {
+    const uint8_t i = (next + offset) % count;
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid || !(m.flags & 0x01)) continue;
     if (!detail_fields_is_universal(m.type, m.caps)) continue;
     const DisplayUniversalModuleCache* c = universal_cache_find(m.addr, false);
-    if (!c || !c->universal_entity_total ||
+    if (!c || c->type != m.type || c->values_language != display_language ||
         c->universal_entity_count < (c->universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : c->universal_entity_total)) {
+      next = (i + 1) % count;
       return m.addr;
     }
-    if ((uint32_t)(millis() - c->last_ms) >= DISPLAY_UNIVERSAL_CACHE_REFRESH_MS) return m.addr;
+    const bool compact = display_values_supported &&
+      (m.type == MODULE_UNIVERSAL_RS232 || m.type == MODULE_MODBUS_RTU) &&
+      c->universal_entity_total <= ofe_display_values::MAX_ENTITIES;
+    const uint32_t refresh = compact ? 250UL : DISPLAY_UNIVERSAL_CACHE_REFRESH_MS;
+    if ((uint32_t)(millis() - c->last_ms) >= refresh) {
+      next = (i + 1) % count;
+      return m.addr;
+    }
   }
   return 0;
 }
@@ -4474,8 +4680,7 @@ static bool selected_detail_is_weller() {
 }
 
 static bool selected_detail_is_jbc() {
-  // JBC USB is intentionally read-only on the OFE display.  Only the FAE bus
-  // keeps the existing suction control card.
+  // FAE suction controls stay separate from the paginated JBC USB settings.
   return detail_fields_is_jbc_fae(selected_module.type, selected_module.caps);
 }
 
@@ -4746,6 +4951,8 @@ static uint32_t selected_universal_controls_signature() {
 
 static uint8_t selected_universal_request_start() {
   if (!selected_detail_is_universal()) return 0;
+  const auto* cache = universal_cache_find(selected_module.addr, false);
+  if (cache && cache->values_language != display_language) return 0;
   if (!selected_module.universal_entity_total) return 0;
   if (selected_universal_request_addr != selected_module.addr) {
     selected_universal_request_addr = selected_module.addr;
@@ -4781,6 +4988,7 @@ static void selected_universal_expect_readback(uint8_t id) {
   selected_universal_request_addr = selected_module.addr;
   selected_universal_request_ms = 0;
 }
+#include "src/OfeDisplayValueStreamState.h"
 
 static String universal_select_option_text(const DisplayUniversalEntity& e, int16_t index) {
   if (index < 0 || !e.options[0]) return String("-");
@@ -5421,6 +5629,9 @@ static void lv_home_fanio_power_slider_event(lv_event_t* e) {
 }
 
 static void display_benchmark_reset_counters(uint32_t now) {
+#if OFE_ST7796_DMA_PATH
+  st7796_complete_flush(lvgl_disp);
+#endif
   perf_window_start_ms = now;
   perf_lvgl_frames = 0;
   perf_lvgl_tiles = 0;
@@ -5438,6 +5649,9 @@ static void display_benchmark_reset_counters(uint32_t now) {
 
 static void display_benchmark_finish(uint32_t now) {
   if (!display_benchmark.active) return;
+#if OFE_ST7796_DMA_PATH
+  st7796_complete_flush(lvgl_disp);
+#endif
   display_benchmark.active = false;
   const uint32_t elapsed_ms = now - display_benchmark.started_ms;
   const float seconds = elapsed_ms ? elapsed_ms / 1000.0f : 1.0f;
@@ -5464,7 +5678,8 @@ static void display_benchmark_finish(uint32_t now) {
     handler_avg_ms, perf_handler_max_us / 1000.0f,
     panel_avg_ms, perf_panel_flush_max_us / 1000.0f, (unsigned)display_benchmark.cpu_peak,
     (unsigned)display_benchmark.master_gap_max_ms);
-  perf_window_start_ms = now;
+  // The periodic report must not divide benchmark counters by a fresh window.
+  display_benchmark_reset_counters(now);
 }
 
 static void display_benchmark_start_event(lv_event_t*) {
@@ -5485,7 +5700,7 @@ static void display_benchmark_start_event(lv_event_t*) {
 
 static void display_benchmark_back_event(lv_event_t*) {
   display_benchmark.active = false;
-  perf_window_start_ms = millis();
+  display_benchmark_reset_counters(millis());
   display_view_mode = DISPLAY_VIEW_SYSTEM;
   last_user_activity_ms = millis();
   lv_update_display_settings_widgets(true);
@@ -5541,13 +5756,14 @@ static void display_benchmark_tick() {
 }
 
 static void lv_add_main_nav(lv_obj_t* screen, uint8_t active) {
-  lv_obj_t* home = lv_small_button(screen, 8, 274, 110, tr("Home", "Start"), lv_show_home_event);
-  lv_obj_t* modules = lv_small_button(screen, 126, 274, 110, tr("Modules", "Module"), lv_show_modules_event);
-  lv_obj_t* alarms = lv_small_button(screen, 244, 274, 110, tr("Alarms", "Alarme"), lv_show_alarms_event);
-  lv_obj_t* system = lv_small_button(screen, 362, 274, 110, tr("System", "System"), lv_show_system_event);
-  lv_obj_t* active_btn = active == 0 ? home : (active == 1 ? modules : (active == 2 ? alarms : system));
-  lv_obj_set_style_bg_color(active_btn, lv_color_hex(0x246BFF), 0);
+  const char* labels[] = {tr("Home", "Start"), tr("Modules", "Module"), tr("Alarms", "Alarme"), "System"};
+  const lv_event_cb_t callbacks[] = {lv_show_home_event, lv_show_modules_event, lv_show_alarms_event, lv_show_system_event};
+  ofe_display_ui::navigation(screen, active, labels, callbacks);
 }
+
+#include "src/OfeDisplaySettingsUi.inc.h"
+#include "src/OfeDisplayHomeUi.inc.h"
+#include "src/OfeDisplayDetailUi.inc.h"
 
 static void lv_create_app_screens() {
   ui_dashboard_screen = lv_obj_create(NULL);
@@ -5597,12 +5813,13 @@ static void lv_create_app_screens() {
   lv_label(ui_home_settings_card, tr("Custom power %", "Leistung %"), 152, 7, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 126);
   ui_home_power_input = lv_numeric_field(ui_home_settings_card, 148, 32, 126,
     status.select_flow / 10U, NUMERIC_FIELD_JBC_POWER);
-  lv_label(ui_home_settings_card, tr("Work afterrun s", "Work Nachlauf s"), 294, 7, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 132);
+  lv_label(ui_home_settings_card, tr("Afterrun (s)", "Nachlauf (s)"), 294, 7, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 132);
   ui_home_delay_input = lv_numeric_field(ui_home_settings_card, 292, 32, 132,
     status.delay_work_s, NUMERIC_FIELD_JBC_DELAY_WORK);
 
   lv_label(ui_home_settings_card, tr("Afterrun power %", "Nachlaufleistung %"), 148, 82, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 180);
-  ui_home_afterrun_power_button = lv_small_button(ui_home_settings_card, 12, 108, 126, tr("Afterrun", "Nachlauf"), lv_home_afterrun_power_event);
+  lv_label(ui_home_settings_card, tr("Afterrun", "Nachlauf"), 12, 82, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 126);
+  ui_home_afterrun_power_button = lv_small_button(ui_home_settings_card, 12, 108, 126, tr("Enabled", "Aktiv"), lv_home_afterrun_power_event);
   ui_home_afterrun_power_input = lv_numeric_field(ui_home_settings_card, 148, 108, 132,
     status.afterrun_power / 10U, NUMERIC_FIELD_AFTER_POWER);
 
@@ -5662,14 +5879,16 @@ static void lv_create_app_screens() {
   lv_obj_add_flag(ui_home_fault_card, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(ui_home_fault_card, lv_show_alarms_event, LV_EVENT_CLICKED, NULL);
 
+  lv_style_home_page();
   lv_add_main_nav(ui_dashboard_screen, 0);
 
   ui_module_list_screen = lv_obj_create(NULL);
   lv_style_screen(ui_module_list_screen);
+  ofe_display_ui::flat(ui_module_list_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_module_list_screen, "bus modules");
   ui_module_list = lv_obj_create(ui_module_list_screen);
-  lv_obj_set_pos(ui_module_list, 10, 58);
-  lv_obj_set_size(ui_module_list, 460, 206);
+  lv_obj_set_pos(ui_module_list, 10, 44);
+  lv_obj_set_size(ui_module_list, 460, 220);
   lv_obj_set_style_bg_opa(ui_module_list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(ui_module_list, 0, 0);
   lv_obj_set_style_pad_all(ui_module_list, 0, 0);
@@ -5683,10 +5902,12 @@ static void lv_create_app_screens() {
     lv_obj_set_pos(row, 0, i * 54);
     lv_obj_set_size(row, 438, 48);
     lv_stabilize_button(row);
-    lv_obj_set_style_radius(row, 10, 0);
+    lv_obj_set_style_radius(row, ofe_display_ui::RADIUS, 0);
     lv_obj_set_style_bg_color(row, ui_theme_color(0x151D27, 0xF7FAFC), 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_border_color(row, ui_theme_color(0x2C3B4A, 0xC4D0DB), 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_set_style_bg_grad_dir(row, LV_GRAD_DIR_NONE, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
     lv_obj_set_user_data(row, (void*)(uintptr_t)i);
     lv_obj_add_event_cb(row, lv_module_row_event, LV_EVENT_CLICKED, NULL);
@@ -5707,9 +5928,11 @@ static void lv_create_app_screens() {
   ui_module_update_notice = lv_label(ui_module_list_screen, "", 16, 248, lv_color_hex(0x2997FF), UI_FONT_DEFAULT, 448);
   lv_obj_add_flag(ui_module_update_notice, LV_OBJ_FLAG_HIDDEN);
   lv_add_main_nav(ui_module_list_screen, 1);
+  ofe_display_ui::labels(ui_module_list);
 
   ui_alarm_screen = lv_obj_create(NULL);
   lv_style_screen(ui_alarm_screen);
+  ofe_display_ui::flat(ui_alarm_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_alarm_screen, "alarms");
   ui_alarm_list = lv_obj_create(ui_alarm_screen);
   lv_obj_set_pos(ui_alarm_list, 10, 58);
@@ -5729,15 +5952,24 @@ static void lv_create_app_screens() {
     lv_obj_add_flag(ui_alarm_rows[i], LV_OBJ_FLAG_HIDDEN);
   }
   lv_add_main_nav(ui_alarm_screen, 2);
+  for (uint8_t i = 0; i < 8; ++i) {
+    ofe_display_ui::flat(ui_alarm_rows[i], ofe_display_ui::surface());
+    lv_obj_set_style_border_width(ui_alarm_rows[i], 1, 0);
+    lv_obj_set_style_shadow_width(ui_alarm_rows[i], 2, 0);
+    lv_obj_set_style_shadow_opa(ui_alarm_rows[i], LV_OPA_20, 0);
+  }
+  ofe_display_ui::labels(ui_alarm_list);
 
   ui_module_detail_screen = lv_obj_create(NULL);
+  lv_detail_values_reset();
   lv_style_screen(ui_module_detail_screen);
+  ofe_display_ui::flat(ui_module_detail_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_module_detail_screen, "module details");
-  lv_small_button(ui_module_detail_screen, 10, 46, 92, tr("Back", "Zur\303\274ck"), lv_back_to_modules_event);
-  ui_detail_title = lv_label(ui_module_detail_screen, "Module", 116, 50, lv_color_hex(0xFFFFFF), UI_FONT_18, 342);
+  ofe_display_ui::button(ui_module_detail_screen, 12, 48, 44, LV_SYMBOL_LEFT, lv_back_to_modules_event);
+  ui_detail_title = lv_label(ui_module_detail_screen, "Module", 68, 58, ofe_display_ui::text(), UI_FONT_18, 400);
   lv_obj_t* detail = lv_obj_create(ui_module_detail_screen);
-  lv_obj_set_pos(detail, 8, 90);
-  lv_obj_set_size(detail, 464, 224);
+  lv_obj_set_pos(detail, 8, 100);
+  lv_obj_set_size(detail, 464, 214);
   lv_obj_set_style_bg_color(detail, ui_theme_color(0x121A24, 0xF7FAFC), 0);
 #if DISPLAY_FAST_UI
   lv_obj_set_style_bg_grad_dir(detail, LV_GRAD_DIR_NONE, 0);
@@ -5748,7 +5980,7 @@ static void lv_create_app_screens() {
   lv_obj_set_style_bg_opa(detail, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(detail, 1, 0);
   lv_obj_set_style_border_color(detail, ui_theme_color(0x2C3B4A, 0xC4D0DB), 0);
-  lv_obj_set_style_radius(detail, 18, 0);
+  lv_obj_set_style_radius(detail, 0, 0);
   lv_obj_set_style_pad_all(detail, 0, 0);
   lv_obj_set_scroll_dir(detail, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(detail, LV_SCROLLBAR_MODE_ACTIVE);
@@ -5758,7 +5990,7 @@ static void lv_create_app_screens() {
   ui_detail_status = lv_label(detail, tr("Loading module data...", "Moduldaten laden..."), 16, 40, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 196);
   lv_obj_set_style_bg_color(ui_detail_status, ui_theme_color(0x1C2A3A, 0xE8F1FA), 0);
   lv_obj_set_style_bg_opa(ui_detail_status, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(ui_detail_status, 12, 0);
+  lv_obj_set_style_radius(ui_detail_status, ofe_display_ui::RADIUS, 0);
   lv_obj_set_style_pad_left(ui_detail_status, 10, 0);
   lv_obj_set_style_pad_right(ui_detail_status, 10, 0);
   lv_obj_set_style_pad_top(ui_detail_status, 4, 0);
@@ -5782,88 +6014,22 @@ static void lv_create_app_screens() {
   lv_obj_set_style_border_color(ui_detail_controls, ui_theme_color(0x2A3A4B, 0xD5E0EA), 0);
   lv_obj_set_style_pad_all(ui_detail_controls, 0, 0);
   lv_obj_clear_flag(ui_detail_controls, LV_OBJ_FLAG_SCROLLABLE);
+  ofe_display_ui::unframed(detail);
+  ofe_display_ui::unframed(ui_detail_controls);
+  ofe_display_ui::labels(detail);
 
   ui_system_screen = lv_obj_create(NULL);
   lv_style_screen(ui_system_screen);
   lv_add_header(ui_system_screen, "display settings");
-  lv_obj_t* system_body = lv_obj_create(ui_system_screen);
-  lv_obj_set_pos(system_body, 12, 50);
-  lv_obj_set_size(system_body, 456, 214);
-  lv_obj_set_style_pad_all(system_body, 0, 0);
-  lv_obj_set_style_border_width(system_body, 0, 0);
-  lv_obj_set_style_bg_opa(system_body, LV_OPA_TRANSP, 0);
-  lv_obj_set_scroll_dir(system_body, LV_DIR_VER);
-  lv_small_button(system_body, 0, 0, 456, tr("Connection: RS485 / WiFi", "Verbindung: RS485 / WLAN"), OfeDisplayWifiUi::openEvent);
-  lv_obj_t* brightness = lv_card(system_body, 0, 54, 456, 112, ui_theme_color(0x151B23, 0xF7FAFC));
-  lv_label(brightness, tr("Brightness", "Helligkeit"), 16, 12, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 120);
-  ui_system_brightness = lv_label(brightness, (String(display_brightness_pct) + "%").c_str(), 142, 12, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 70);
-  lv_small_button(brightness, 16, 54, 92, tr("Darker", "Dunkler"), lv_brightness_down_event);
-  lv_small_button(brightness, 116, 54, 92, tr("Brighter", "Heller"), lv_brightness_up_event);
-  lv_label(brightness, tr("Screensaver", "Ruhemodus"), 232, 12, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 112);
-  ui_system_screensaver = lv_dropdown_create(brightness);
-  lv_obj_set_pos(ui_system_screensaver, 344, 7);
-  lv_obj_set_size(ui_system_screensaver, 96, 44);
-  lv_dropdown_set_options(ui_system_screensaver, display_language == 1 ? "Aus\n1 min\n2 min\n5 min\n10 min" : "Off\n1 min\n2 min\n5 min\n10 min");
-  lv_dropdown_set_selected(ui_system_screensaver, screensaver_selection_from_timeout(screensaver_timeout_min));
-  lv_obj_set_style_radius(ui_system_screensaver, 8, 0);
-  lv_obj_set_style_bg_color(ui_system_screensaver, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-  lv_obj_set_style_border_color(ui_system_screensaver, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-  lv_obj_set_style_text_color(ui_system_screensaver, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-  lv_apply_dropdown_theme(ui_system_screensaver);
-  lv_obj_add_event_cb(ui_system_screensaver, lv_screensaver_timeout_event, LV_EVENT_VALUE_CHANGED, NULL);
-
-  lv_obj_t* language = lv_card(system_body, 0, 176, 456, 76, ui_theme_color(0x151B23, 0xF7FAFC));
-  lv_label(language, tr("Language", "Sprache"), 12, 14, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 76);
-  ui_system_language = lv_dropdown_create(language);
-  lv_obj_set_pos(ui_system_language, 88, 9);
-  lv_obj_set_size(ui_system_language, 130, 44);
-  lv_dropdown_set_options(ui_system_language, "English\nDeutsch");
-  lv_dropdown_set_selected(ui_system_language, display_language);
-  lv_obj_set_style_radius(ui_system_language, 8, 0);
-  lv_obj_set_style_bg_color(ui_system_language, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-  lv_obj_set_style_border_color(ui_system_language, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-  lv_obj_set_style_text_color(ui_system_language, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-  lv_apply_dropdown_theme(ui_system_language);
-  lv_obj_add_event_cb(ui_system_language, lv_language_event, LV_EVENT_VALUE_CHANGED, NULL);
-
-  lv_label(language, tr("Theme", "Farbschema"), 232, 14, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 86);
-  ui_system_theme = lv_dropdown_create(language);
-  lv_obj_set_pos(ui_system_theme, 320, 9);
-  lv_obj_set_size(ui_system_theme, 124, 44);
-  lv_dropdown_set_options(ui_system_theme, display_language == 1 ? "Dunkel\nHell" : "Dark\nLight");
-  lv_dropdown_set_selected(ui_system_theme, display_theme);
-  lv_obj_set_style_radius(ui_system_theme, 8, 0);
-  lv_obj_set_style_bg_color(ui_system_theme, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-  lv_obj_set_style_border_color(ui_system_theme, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-  lv_obj_set_style_text_color(ui_system_theme, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-  lv_apply_dropdown_theme(ui_system_theme);
-  lv_obj_add_event_cb(ui_system_theme, lv_theme_event, LV_EVENT_VALUE_CHANGED, NULL);
-
-  lv_obj_t* color_profile = lv_card(system_body, 0, 262, 456, 76, ui_theme_color(0x151B23, 0xF7FAFC));
-  lv_label(color_profile, tr("LCD color", "LCD-Farben"), 12, 14, lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 110);
-  ui_system_color_profile = lv_dropdown_create(color_profile);
-  lv_obj_set_pos(ui_system_color_profile, 128, 9);
-  lv_obj_set_size(ui_system_color_profile, 170, 44);
-  lv_dropdown_set_options(ui_system_color_profile,
-    display_language == 1 ? "Standard\nKontrast\nSatt" : "Standard\nContrast\nVivid");
-  lv_dropdown_set_selected(ui_system_color_profile, display_color_profile > 2 ? 2 : display_color_profile);
-  lv_obj_set_style_radius(ui_system_color_profile, 8, 0);
-  lv_obj_set_style_bg_color(ui_system_color_profile, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-  lv_obj_set_style_border_color(ui_system_color_profile, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-  lv_obj_set_style_text_color(ui_system_color_profile, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-  lv_apply_dropdown_theme(ui_system_color_profile);
-  lv_obj_add_event_cb(ui_system_color_profile, lv_st7796_color_profile_event, LV_EVENT_VALUE_CHANGED, NULL);
-  lv_label(color_profile, tr("Live, saved", "Live, gespeichert"), 314, 16,
-    lv_color_hex(0x667788), UI_FONT_DEFAULT, 128);
-
-  ui_system_benchmark_button = lv_small_button(system_body, 0, 348, 456,
-    tr("Display benchmark", "Display-Benchmark"), display_benchmark_open_event);
+  lv_obj_t* system_body = ofe_display_ui::content(ui_system_screen);
+  lv_create_display_settings(system_body, 456);
 
   lv_update_display_settings_widgets(true);
   lv_add_main_nav(ui_system_screen, 3);
 
   ui_benchmark_screen = lv_obj_create(NULL);
   lv_style_screen(ui_benchmark_screen);
+  ofe_display_ui::flat(ui_benchmark_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_benchmark_screen, "display benchmark");
   ui_benchmark_list = lv_obj_create(ui_benchmark_screen);
   lv_obj_set_pos(ui_benchmark_list, 12, 50);
@@ -5878,6 +6044,7 @@ static void lv_create_app_screens() {
   for (uint8_t i = 0; i < 14; ++i) {
     lv_obj_t* row = lv_card(ui_benchmark_list, 0, i * 44, 438, 38,
       ui_theme_color((i & 1U) ? 0x17212C : 0x14202A, (i & 1U) ? 0xF0F5F9 : 0xF7FAFC));
+    ofe_display_ui::flat(row, ofe_display_ui::surface());
     lv_label(row, (String("0x") + String(0x10 + i, HEX) + "  " + tr("Benchmark module ", "Benchmark-Modul ") + String(i + 1)).c_str(),
       12, 5, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 270);
     lv_label(row, (String(20 + (i * 7) % 79) + "%").c_str(), 356, 5,
@@ -5890,11 +6057,13 @@ static void lv_create_app_screens() {
     12, 240, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 456);
   lv_label_set_long_mode(ui_benchmark_result, LV_LABEL_LONG_WRAP);
   lv_obj_set_height(ui_benchmark_result, 34);
-  lv_small_button(ui_benchmark_screen, 12, 278, 108, tr("Back", "Zur\303\274ck"), display_benchmark_back_event);
-  lv_small_button(ui_benchmark_screen, 350, 278, 118, tr("Start", "Start"), display_benchmark_start_event);
+  ofe_display_ui::button(ui_benchmark_screen, 12, 272, 44, LV_SYMBOL_LEFT, display_benchmark_back_event);
+  ofe_display_ui::button(ui_benchmark_screen, 350, 272, 118, tr("Start", "Start"), display_benchmark_start_event);
+  ofe_display_ui::labels(ui_benchmark_screen);
 }
 
 static void lv_rebuild_app_ui() {
+  jbc_detail_reset_ui();
   OfeDisplayWifiUi::closePanel();
   const uint8_t return_view = display_view_mode;
   lv_obj_t* old_screens[] = {
@@ -5927,6 +6096,8 @@ static void lv_rebuild_app_ui() {
   ui_module_detail_screen = nullptr;
   ui_alarm_screen = nullptr;
   ui_system_screen = nullptr;
+  ui_system_backlight_mode = nullptr;
+  ui_system_backlight_delay = nullptr;
   ui_system_benchmark_button = nullptr;
   ui_benchmark_screen = nullptr;
   ui_benchmark_list = nullptr;
@@ -5956,6 +6127,7 @@ static void lv_rebuild_app_ui() {
   for (uint8_t i = 0; i < 10; ++i) {
     ui_header_link_cards[i] = nullptr;
     ui_header_link_labels[i] = nullptr;
+    ui_header_ble_icons[i] = nullptr;
     ui_header_clock_labels[i] = nullptr;
     ui_header_alarm_labels[i] = nullptr;
     ui_header_eco_icons[i] = nullptr;
@@ -6095,7 +6267,7 @@ static uint16_t lv_detail_controls_y() {
   // telemetry field when labels wrap or the German strings are longer.
   if (y && ui_detail_values) {
     lv_obj_update_layout(ui_detail_values);
-    const uint16_t text_bottom = (uint16_t)(lv_obj_get_y(ui_detail_values) + lv_obj_get_height(ui_detail_values));
+    const uint16_t text_bottom = (uint16_t)lv_detail_values_bottom();
     const uint16_t dynamic_y = text_bottom + 16;
     if (dynamic_y > y) y = dynamic_y;
   }
@@ -6103,328 +6275,25 @@ static uint16_t lv_detail_controls_y() {
 }
 
 static uint16_t lv_detail_controls_h() {
-  if (selected_detail_is_jbc()) return 144;
-  if (selected_detail_is_weller()) return 132;
-  if (selected_module.type == MODULE_DISPLAY) return 76;
+  const int width = lv_obj_get_width(ui_detail_controls);
+  if (selected_detail_is_jbc()) return 230;
+  if (selected_detail_is_weller()) return 224;
+  if (selected_module.type == MODULE_DISPLAY) return 168;
   if (selected_detail_is_fan_io()) {
     const bool main_configured = selected_fan_io_main_output_configured();
     const uint8_t gpio_outputs = selected_fan_io_gpio_output_count();
-    if (!gpio_outputs) return main_configured ? 126 : 62;
-    return (uint16_t)((main_configured ? 132U : 18U) + gpio_outputs * 58U);
+    if (!gpio_outputs) return main_configured ? 112 : 62;
+    return (uint16_t)((main_configured ? 120U : 0U) +
+      ofe_display_ui::control_grid_height(width, gpio_outputs, 104));
   }
   if (selected_detail_is_universal()) {
     const uint8_t n = selected_universal_control_count();
-    return n ? (uint16_t)(28 + n * 68U) : 58;
+    return n ? (uint16_t)ofe_display_ui::control_grid_height(width, n, 152) : 58;
   }
   return 0;
 }
 
-static void lv_build_detail_controls() {
-  if (!ui_detail_controls || !selected_module.valid) return;
-  const uint16_t controls_y = lv_detail_controls_y();
-  const uint16_t controls_h = lv_detail_controls_h();
-  lv_obj_set_y(ui_detail_controls, controls_y);
-  lv_obj_set_height(ui_detail_controls, controls_h ? controls_h : 58);
-  const bool controls_hidden = lv_obj_has_flag(ui_detail_controls, LV_OBJ_FLAG_HIDDEN);
-  const uint32_t next_controls_signature = selected_universal_controls_signature();
-  if (!controls_hidden && detail_controls_addr == selected_module.addr &&
-      detail_controls_type == selected_module.type && detail_controls_caps == selected_module.caps &&
-      detail_controls_signature == next_controls_signature) return;
-  detail_controls_addr = selected_module.addr;
-  detail_controls_type = selected_module.type;
-  detail_controls_caps = selected_module.caps;
-  detail_controls_signature = next_controls_signature;
-  lv_obj_clean(ui_detail_controls);
-  ui_detail_weller_filter_dropdown = nullptr;
-  ui_detail_jbc_mode_dropdown = nullptr;
-  ui_detail_jbc_power_input = nullptr;
-  ui_detail_jbc_delay_work_input = nullptr;
-  ui_detail_jbc_delay_stand_input = nullptr;
-  ui_detail_weller_speed_slider = nullptr;
-  ui_detail_display_brightness_slider = nullptr;
-  ui_detail_display_brightness_value = nullptr;
-  ui_detail_display_language = nullptr;
-  ui_detail_display_theme = nullptr;
-  ui_detail_stand_button = nullptr;
-  ui_detail_continuous_button = nullptr;
-  ui_detail_fan_button = nullptr;
-  ui_detail_out1_button = nullptr;
-  ui_detail_out2_button = nullptr;
-  ui_detail_output_power_slider = nullptr;
-  ui_detail_output_power_value = nullptr;
-  ui_detail_weller_fan_button = nullptr;
-  ui_detail_weller_light_button = nullptr;
-  for (uint8_t i = 0; i < DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX; ++i) {
-    ui_detail_universal_sliders[i] = nullptr;
-    ui_detail_universal_switches[i] = nullptr;
-    ui_detail_universal_values[i] = nullptr;
-    ui_detail_universal_buttons[i] = nullptr;
-    ui_detail_universal_buttons_b[i] = nullptr;
-    ui_detail_universal_selects[i] = nullptr;
-  }
-  lv_obj_clear_flag(ui_detail_controls, LV_OBJ_FLAG_HIDDEN);
-
-  if (selected_detail_is_jbc()) {
-    lv_label(ui_detail_controls, tr("Mode", "Stufe"), 10, 8, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 94);
-    ui_detail_jbc_mode_dropdown = lv_dropdown_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_jbc_mode_dropdown, 10, 28);
-    lv_obj_set_size(ui_detail_jbc_mode_dropdown, 96, 38);
-    lv_dropdown_set_options(ui_detail_jbc_mode_dropdown,
-      display_language == 1 ? "Hoch 100%\nMittel 60%\nNiedrig 30%\nBenutzer" : "High 100%\nMedium 60%\nLow 30%\nCustom");
-    lv_dropdown_set_selected(ui_detail_jbc_mode_dropdown, selected_module.suction > 3 ? 3 : selected_module.suction);
-    lv_obj_set_style_radius(ui_detail_jbc_mode_dropdown, 8, 0);
-    lv_obj_set_style_bg_color(ui_detail_jbc_mode_dropdown, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-    lv_obj_set_style_border_color(ui_detail_jbc_mode_dropdown, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-    lv_obj_set_style_text_color(ui_detail_jbc_mode_dropdown, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-    lv_apply_dropdown_theme(ui_detail_jbc_mode_dropdown);
-    lv_obj_add_event_cb(ui_detail_jbc_mode_dropdown, lv_detail_jbc_mode_event, LV_EVENT_VALUE_CHANGED, NULL);
-
-    lv_label(ui_detail_controls, tr("Power %", "Leistung %"), 116, 8, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 94);
-    ui_detail_jbc_power_input = lv_numeric_field(ui_detail_controls, 116, 28, 86, selected_module.select_flow / 10U, NUMERIC_FIELD_JBC_POWER);
-    ui_detail_stand_button = lv_small_button(ui_detail_controls, 212, 28, 98, tr("Stand", "Stand"), lv_stand_intakes_toggle_event);
-    ui_detail_continuous_button = lv_small_button(ui_detail_controls, 318, 28, 108, tr("Continuous", "Dauerlauf"), lv_continuous_toggle_event);
-
-    lv_label(ui_detail_controls, tr("Work delay (s)", "Work Nachlauf (s)"), 10, 76, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 202);
-    ui_detail_jbc_delay_work_input = lv_numeric_field(ui_detail_controls, 10, 96, 202, selected_module.delay_work, NUMERIC_FIELD_JBC_DELAY_WORK);
-    lv_label(ui_detail_controls, tr("Stand delay (s)", "Stand Nachlauf (s)"), 224, 76, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 202);
-    ui_detail_jbc_delay_stand_input = lv_numeric_field(ui_detail_controls, 224, 96, 202, selected_module.delay_stand, NUMERIC_FIELD_JBC_DELAY_STAND);
-  } else if (selected_detail_is_fan_io()) {
-    const bool main_configured = selected_fan_io_main_output_configured();
-    const String main_label = detail_alias_or(selected_module.io_main_alias, tr("Relay/Fan", "Relais/L\303\274fter"));
-    if (main_configured) {
-      ui_detail_fan_button = lv_small_button(ui_detail_controls, 10, 10, 172, main_label.c_str(), lv_detail_fan_event);
-      lv_label(ui_detail_controls, tr("Power", "Leistung"), 10, 62, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 96);
-      ui_detail_output_power_value = lv_label(ui_detail_controls, "-", 360, 62, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 64);
-      ui_detail_output_power_slider = lv_slider_create(ui_detail_controls);
-      lv_obj_set_pos(ui_detail_output_power_slider, 116, 86);
-      lv_obj_set_size(ui_detail_output_power_slider, 240, 12);
-      lv_slider_set_range(ui_detail_output_power_slider, 10, 100);
-      lv_slider_set_value(ui_detail_output_power_slider, constrain(selected_module.output_power / 10, 10, 100), LV_ANIM_OFF);
-      lv_obj_set_style_bg_color(ui_detail_output_power_slider, ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-      lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0x2997FF), LV_PART_INDICATOR);
-      lv_obj_set_style_bg_color(ui_detail_output_power_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_PRESSED, NULL);
-      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_VALUE_CHANGED, NULL);
-      lv_obj_add_event_cb(ui_detail_output_power_slider, lv_detail_output_power_slider_event, LV_EVENT_RELEASED, NULL);
-    }
-
-    // Additional Fan/IO GPIO outputs are ordinary descriptor switch entities
-    // (40..47). Build every configured output dynamically and use the same
-    // entity write/readback path as Universal modules. Disabled channels are
-    // absent from the descriptor and therefore cannot leave phantom controls.
-    uint8_t row = 0;
-    const uint16_t gpio_y0 = main_configured ? 124U : 10U;
-    for (uint8_t i = 0; i < selected_module.universal_entity_count &&
-         i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX && row < DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX; ++i) {
-      const DisplayUniversalEntity& e = selected_module.universal_entities[i];
-      if (!fan_io_gpio_output_entity(e)) continue;
-      const uint8_t slot = row;
-      const uint16_t y = (uint16_t)(gpio_y0 + row * 58U);
-      const String label = fan_io_entity_label(e, true);
-      lv_label(ui_detail_controls, label.c_str(), 10, y + 6, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 220);
-      const int16_t actual_value = e.value ? 1 : 0;
-      int16_t control_value = actual_value;
-      universal_pending_value(selected_module.addr, e.id, DISPLAY_UNI_SWITCH, control_value);
-      ui_detail_universal_values[slot] = lv_label(ui_detail_controls, on_off(control_value != 0),
-        350, y + 4, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 76);
-      ui_detail_universal_switches[slot] = lv_switch_create(ui_detail_controls);
-      lv_obj_set_pos(ui_detail_universal_switches[slot], 254, y + 18);
-      lv_obj_set_size(ui_detail_universal_switches[slot], 74, 34);
-      lv_obj_set_user_data(ui_detail_universal_switches[slot], (void*)(uintptr_t)e.id);
-      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0x167A4A), LV_PART_INDICATOR);
-      lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-      lv_obj_set_style_border_width(ui_detail_universal_switches[slot], 1, LV_PART_MAIN);
-      lv_obj_set_style_border_color(ui_detail_universal_switches[slot], ui_theme_color(0x3B5570, 0xB5C5D5), LV_PART_MAIN);
-      if (control_value) lv_obj_add_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
-      else lv_obj_clear_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
-      lv_obj_add_event_cb(ui_detail_universal_switches[slot], lv_detail_universal_switch_event, LV_EVENT_VALUE_CHANGED, NULL);
-      ++row;
-    }
-    if (!main_configured && !row) {
-      lv_label(ui_detail_controls, tr("No configured outputs", "Keine konfigurierten Ausg\303\244nge"),
-        10, 18, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 380);
-    }
-  } else if (selected_detail_is_universal()) {
-    uint8_t row = 0;
-    for (uint8_t i = 0; i < selected_module.universal_entity_count && i < DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX && row < DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX; ++i) {
-      const DisplayUniversalEntity& e = selected_module.universal_entities[i];
-      if (!e.valid || !universal_entity_writable(e)) continue;
-      if (!(e.type == DISPLAY_UNI_SWITCH || e.type == DISPLAY_UNI_BUTTON || e.type == DISPLAY_UNI_NUMBER || e.type == DISPLAY_UNI_SELECT)) continue;
-      const uint8_t slot = row;
-      const uint16_t y = 12 + row * 68U;
-      lv_label(ui_detail_controls, e.label[0] ? e.label : "Entity", 10, y, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 190);
-      if (e.type == DISPLAY_UNI_NUMBER) {
-        const bool readback_available = universal_entity_readable(e);
-        const int16_t actual_value = e.value;
-        int16_t control_value = actual_value;
-        const bool has_pending = universal_pending_value(selected_module.addr, e.id, DISPLAY_UNI_NUMBER, control_value);
-        String value_text = (!readback_available && !has_pending) ? String("-") : String(readback_available ? actual_value : control_value);
-        if (value_text != "-" && e.unit[0]) value_text += String(" ") + e.unit;
-        ui_detail_universal_values[slot] = lv_label(ui_detail_controls, value_text.c_str(), 354, y, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 70);
-        ui_detail_universal_sliders[slot] = lv_slider_create(ui_detail_controls);
-        lv_obj_set_pos(ui_detail_universal_sliders[slot], 154, y + 30);
-        lv_obj_set_size(ui_detail_universal_sliders[slot], 188, 12);
-        int16_t min_v = e.min_value;
-        int16_t max_v = e.max_value;
-        if (max_v <= min_v) { min_v = 0; max_v = 100; }
-        if (min_v < 0) min_v = 0;
-        if (max_v > 255) max_v = 255;
-        lv_slider_set_range(ui_detail_universal_sliders[slot], min_v, max_v);
-        lv_slider_set_value(ui_detail_universal_sliders[slot], constrain(control_value, min_v, max_v), LV_ANIM_OFF);
-        lv_obj_set_user_data(ui_detail_universal_sliders[slot], (void*)(uintptr_t)e.id);
-        lv_obj_set_style_bg_color(ui_detail_universal_sliders[slot], ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(ui_detail_universal_sliders[slot], lv_color_hex(0x2997FF), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(ui_detail_universal_sliders[slot], lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-        lv_obj_add_event_cb(ui_detail_universal_sliders[slot], lv_detail_universal_slider_event, LV_EVENT_VALUE_CHANGED, NULL);
-        lv_obj_add_event_cb(ui_detail_universal_sliders[slot], lv_detail_universal_slider_event, LV_EVENT_RELEASED, NULL);
-      } else if (e.type == DISPLAY_UNI_SWITCH) {
-        const bool readback_available = universal_entity_readable(e);
-        const int16_t actual_value = e.value ? 1 : 0;
-        int16_t control_value = actual_value;
-        const bool has_pending = universal_pending_value(selected_module.addr, e.id, DISPLAY_UNI_SWITCH, control_value);
-
-        lv_label(ui_detail_controls,
-          readback_available ? tr("State", "Status") : tr("Target", "Soll"),
-          254, y, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 58);
-        const char* shown_text = (!readback_available && !has_pending) ? "-" : on_off((readback_available ? actual_value : control_value) != 0);
-        ui_detail_universal_values[slot] = lv_label(
-          ui_detail_controls, shown_text,
-          350, y, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 76);
-        ui_detail_universal_switches[slot] = lv_switch_create(ui_detail_controls);
-        lv_obj_set_pos(ui_detail_universal_switches[slot], 254, y + 22);
-        lv_obj_set_size(ui_detail_universal_switches[slot], 74, 34);
-        lv_obj_set_user_data(ui_detail_universal_switches[slot], (void*)(uintptr_t)e.id);
-        lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0x167A4A), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(ui_detail_universal_switches[slot], lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-        lv_obj_set_style_border_width(ui_detail_universal_switches[slot], 1, LV_PART_MAIN);
-        lv_obj_set_style_border_color(ui_detail_universal_switches[slot], ui_theme_color(0x3B5570, 0xB5C5D5), LV_PART_MAIN);
-        if (control_value) lv_obj_add_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
-        else lv_obj_clear_state(ui_detail_universal_switches[slot], LV_STATE_CHECKED);
-        lv_obj_add_event_cb(ui_detail_universal_switches[slot], lv_detail_universal_switch_event, LV_EVENT_VALUE_CHANGED, NULL);
-      } else if (e.type == DISPLAY_UNI_SELECT) {
-        int16_t shown_index = e.value;
-        const bool readback_available = universal_entity_readable(e);
-        const bool has_pending = universal_pending_value(selected_module.addr, e.id, DISPLAY_UNI_SELECT, shown_index);
-        String current_text = readback_available
-          ? universal_entity_value_text(e)
-          : (has_pending ? universal_select_option_text(e, shown_index) : String("-"));
-        ui_detail_universal_values[slot] = lv_label(ui_detail_controls, current_text.c_str(), 354, y, ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 70);
-        ui_detail_universal_selects[slot] = lv_dropdown_create(ui_detail_controls);
-        lv_obj_set_pos(ui_detail_universal_selects[slot], 154, y + 24);
-        lv_obj_set_size(ui_detail_universal_selects[slot], 188, 38);
-        String profile_opts = e.options[0] ? String(e.options) : current_text;
-        profile_opts.replace("|", "\n");
-        profile_opts.replace(";", "\n");
-        String opts = String(tr("Please choose option", "Bitte Option wählen"));
-        if (profile_opts.length()) opts += "\n" + profile_opts;
-        lv_dropdown_set_options(ui_detail_universal_selects[slot], opts.c_str());
-        // Index 0 stays a neutral command placeholder. RW readback is shown
-        // in the separate value column beside the control.
-        ui_detail_universal_select_refreshing = true;
-        lv_dropdown_set_selected(ui_detail_universal_selects[slot], 0);
-        ui_detail_universal_select_refreshing = false;
-        lv_obj_set_user_data(ui_detail_universal_selects[slot], (void*)(uintptr_t)e.id);
-        lv_obj_set_style_radius(ui_detail_universal_selects[slot], 8, 0);
-        lv_obj_set_style_bg_color(ui_detail_universal_selects[slot], ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-        lv_obj_set_style_border_color(ui_detail_universal_selects[slot], ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-        lv_obj_set_style_text_color(ui_detail_universal_selects[slot], ui_theme_color(0xFFFFFF, 0x17212B), 0);
-        lv_apply_dropdown_theme(ui_detail_universal_selects[slot]);
-        lv_obj_add_event_cb(ui_detail_universal_selects[slot], lv_detail_universal_select_event, LV_EVENT_VALUE_CHANGED, NULL);
-      } else {
-        ui_detail_universal_buttons[slot] = lv_small_button(ui_detail_controls, 254, y + 8, 172, tr("Send", "Senden"), lv_detail_universal_button_event);
-        lv_obj_set_user_data(ui_detail_universal_buttons[slot], (void*)(uintptr_t)e.id);
-      }
-      ++row;
-    }
-    if (!row) {
-      const bool descriptor_known = selected_module.universal_descriptor_crc != 0 ||
-        selected_module.universal_entity_total != 0 || selected_module.universal_entity_count != 0;
-      const bool descriptor_incomplete = selected_module.universal_entity_total != 0 &&
-        selected_module.universal_entity_count < selected_module.universal_entity_total;
-      const char* msg = (!descriptor_known || descriptor_incomplete)
-        ? tr("Loading profile controls...", "Profil-Controls werden geladen...")
-        : tr("Profile has no writable display controls", "Profil hat keine schreibbaren Display-Controls");
-      lv_label(ui_detail_controls, msg, 14, 18,
-        ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 398);
-    }
-  } else if (selected_detail_is_weller()) {
-    ui_detail_weller_fan_button = lv_small_button(ui_detail_controls, 10, 10, 96, tr("Fan", "L\303\274fter"), lv_detail_weller_fan_event);
-    ui_detail_weller_light_button = lv_small_button(ui_detail_controls, 114, 10, 96, tr("Light", "Licht"), lv_detail_weller_light_event);
-    lv_label(ui_detail_controls, tr("Speed", "Drehzahl"), 230, 8, ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 196);
-    ui_detail_weller_speed_slider = lv_slider_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_weller_speed_slider, 230, 34);
-    lv_obj_set_size(ui_detail_weller_speed_slider, 196, 12);
-    lv_slider_set_range(ui_detail_weller_speed_slider, 30, 100);
-    lv_slider_set_value(ui_detail_weller_speed_slider,
-      constrain(selected_module.weller_speed, 30, 100), LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(ui_detail_weller_speed_slider, ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_detail_weller_speed_slider, lv_color_hex(0x2997FF), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(ui_detail_weller_speed_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-    lv_obj_add_event_cb(ui_detail_weller_speed_slider,
-      lv_detail_weller_speed_slider_event, LV_EVENT_RELEASED, NULL);
-    ui_detail_weller_filter_dropdown = lv_dropdown_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_weller_filter_dropdown, 10, 76);
-    lv_obj_set_size(ui_detail_weller_filter_dropdown, 202, 40);
-    lv_dropdown_set_options(ui_detail_weller_filter_dropdown, weller_filter_options());
-    lv_dropdown_set_selected(ui_detail_weller_filter_dropdown,
-      weller_filter_preset_index(selected_module.weller_programmed));
-    lv_obj_set_style_radius(ui_detail_weller_filter_dropdown, 8, 0);
-    lv_obj_set_style_bg_color(ui_detail_weller_filter_dropdown, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-    lv_obj_set_style_border_color(ui_detail_weller_filter_dropdown, ui_theme_color(0x3A5068, 0xB1C1D0), 0);
-    lv_obj_set_style_text_color(ui_detail_weller_filter_dropdown, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-    lv_apply_dropdown_theme(ui_detail_weller_filter_dropdown);
-    lv_obj_add_event_cb(ui_detail_weller_filter_dropdown,
-      lv_detail_weller_filter_event, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_small_button(ui_detail_controls, 224, 76, 202, tr("Reset filter", "Filter zur\303\274cksetzen"), lv_detail_weller_reset_event);
-  } else if (selected_module.type == MODULE_DISPLAY && selected_module.addr == module_addr) {
-    lv_label(ui_detail_controls, tr("Brightness", "Helligkeit"), 10, 8,
-      ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 118);
-    ui_detail_display_brightness_value = lv_label(ui_detail_controls, "", 142, 8,
-      ui_theme_color(0xFFFFFF, 0x17212B), UI_FONT_DEFAULT, 54);
-    lv_set_text(ui_detail_display_brightness_value, String(display_brightness_pct) + "%");
-    ui_detail_display_brightness_slider = lv_slider_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_display_brightness_slider, 10, 38);
-    lv_obj_set_size(ui_detail_display_brightness_slider, 188, 12);
-    lv_slider_set_range(ui_detail_display_brightness_slider, 10, 100);
-    lv_slider_set_value(ui_detail_display_brightness_slider, display_brightness_pct, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(ui_detail_display_brightness_slider, ui_theme_color(0x263442, 0xD5DEE7), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_detail_display_brightness_slider, lv_color_hex(0x2997FF), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(ui_detail_display_brightness_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-    lv_obj_add_event_cb(ui_detail_display_brightness_slider, lv_detail_display_brightness_event, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(ui_detail_display_brightness_slider, lv_detail_display_brightness_event, LV_EVENT_RELEASED, NULL);
-
-    lv_label(ui_detail_controls, tr("Language", "Sprache"), 220, 8,
-      ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 94);
-    ui_detail_display_language = lv_dropdown_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_display_language, 220, 28);
-    lv_obj_set_size(ui_detail_display_language, 98, 40);
-    lv_dropdown_set_options(ui_detail_display_language, "English\nDeutsch");
-    lv_dropdown_set_selected(ui_detail_display_language, display_language);
-    lv_obj_set_style_radius(ui_detail_display_language, 8, 0);
-    lv_obj_set_style_bg_color(ui_detail_display_language, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-    lv_obj_set_style_text_color(ui_detail_display_language, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-    lv_apply_dropdown_theme(ui_detail_display_language);
-    lv_obj_add_event_cb(ui_detail_display_language, lv_language_event, LV_EVENT_VALUE_CHANGED, NULL);
-
-    lv_label(ui_detail_controls, tr("Theme", "Farben"), 330, 8,
-      ui_theme_color(0x96A0AA, 0x5E6D7C), UI_FONT_DEFAULT, 96);
-    ui_detail_display_theme = lv_dropdown_create(ui_detail_controls);
-    lv_obj_set_pos(ui_detail_display_theme, 330, 28);
-    lv_obj_set_size(ui_detail_display_theme, 96, 40);
-    lv_dropdown_set_options(ui_detail_display_theme,
-      display_language == 1 ? "Dunkel\nHell" : "Dark\nLight");
-    lv_dropdown_set_selected(ui_detail_display_theme, display_theme);
-    lv_obj_set_style_radius(ui_detail_display_theme, 8, 0);
-    lv_obj_set_style_bg_color(ui_detail_display_theme, ui_theme_color(0x1A2633, 0xF8FAFC), 0);
-    lv_obj_set_style_text_color(ui_detail_display_theme, ui_theme_color(0xFFFFFF, 0x17212B), 0);
-    lv_apply_dropdown_theme(ui_detail_display_theme);
-    lv_obj_add_event_cb(ui_detail_display_theme, lv_theme_event, LV_EVENT_VALUE_CHANGED, NULL);
-  } else {
-    lv_obj_add_flag(ui_detail_controls, LV_OBJ_FLAG_HIDDEN);
-  }
-}
+#include "src/OfeDisplayControlsUi.inc.h"
 static String pro_filter_text(uint16_t saturation_permille, int16_t pressure_raw) {
   String text = String((saturation_permille + 5) / 10) + "%";
   text += "   ";
@@ -6544,7 +6413,7 @@ static void sync_selected_module_detail_to_home_cache() {
   }
 
   if (changed) {
-    if (running_in_rs485_task()) {
+    if (ui_needs_defer()) {
       ui_defer_flags(UI_DEFER_APP_VALUES);
     } else if (lvgl_ready && display_view_mode == DISPLAY_VIEW_HOME) {
       lv_update_app_values();
@@ -6799,6 +6668,8 @@ static String jbc_usb_core_detail_text(const DisplayModuleDetail& m) {
   return values;
 }
 
+#include "src/OfeJbcDetailUi.h"
+
 static void lv_update_module_detail() {
   if (!selected_module.valid) return;
   const DisplayModuleDetail& m = selected_module;
@@ -6825,19 +6696,23 @@ static void lv_update_module_detail() {
     ? ui_theme_color(0xFFB020, 0x7A4B00)
     : (module_online ? ui_theme_color(0x2DFF88, 0x146B3A) : ui_theme_color(0xFF5B5B, 0x9D1D2F)), 0);
 
-  lv_set_detail_work_icon(detail_fields_is_jbc(m.type, m.caps), m.jbc_work != 0);
+  lv_set_detail_work_icon(false, false);
+
+  const bool jbc_details = detail_fields_is_jbc_usb(m.type, m.caps);
+  if (jbc_details && screensaver_active) return;
+  lv_update_jbc_detail(jbc_details);
+  if (jbc_details) return;
+  lv_obj_remove_flag(ui_detail_values, LV_OBJ_FLAG_HIDDEN);
 
   String values;
   if (m.addr == ADDR_MASTER) {
-    values = String("IP: ") + (m.master_ip[0] ? m.master_ip : "-") +
-      "\n" + tr("Uptime: ", "Laufzeit: ") + fmt_dhm(m.uptime_s / 60UL) +
-      "\nHeap: " + String((m.heap_free + 512UL) / 1024UL) + " KB" +
-      "\nCPU: " + String(m.cpu_load) + "%  Loop max: " + String(m.loop_max_ms) + " ms";
+    values = String("IP: ") + (m.master_ip[0] ? m.master_ip : "-");
   } else if (detail_fields_is_jbc_usb(m.type, m.caps)) {
     values = jbc_usb_core_detail_text(m);
   } else if (detail_fields_is_jbc_fae(m.type, m.caps)) {
     values = String(tr("Station: ", "Station: ")) + station_name(m.station_addr) + "  " + lv_addr_text(m.jbc_addr) +
-      "\nWork: " + on_off(m.jbc_work != 0) + "    Stand: " + on_off(m.jbc_stand != 0) +
+      "\nWork: " + on_off(module_online && m.station_addr && (m.jbc_flags & FAST_FLAG_CONNECTED) && m.jbc_work) +
+      "    Stand: " + on_off(ofe_jbc_activity_ui::fae_stand(module_online && m.station_addr && (m.jbc_flags & FAST_FLAG_CONNECTED), m.jbc_work)) +
       "\n" + tr("Mode: ", "Stufe: ") + suction_name(m.suction) + tr("    Power: ", "    Leistung: ") + String(m.select_flow / 10) + "%" +
       "\n" + tr("Afterrun: Work ", "Nachlauf: Work ") + String(m.delay_work) + "s   Stand " + String(m.delay_stand) + "s" +
       "\nDevice ID: " + jbc_device_id_text();
@@ -6922,7 +6797,7 @@ static void lv_update_module_detail() {
   }
 
   values += lv_detail_system_text();
-  lv_set_text(ui_detail_values, values);
+  lv_detail_values_view(values, detail_fields_is_jbc(m.type, m.caps));
   lv_build_detail_controls();
 
   if (ui_detail_jbc_mode_dropdown && !lv_dropdown_is_open(ui_detail_jbc_mode_dropdown)) {
@@ -7042,34 +6917,22 @@ static void lv_set_visible(lv_obj_t* obj, bool visible);
 
 static void lv_layout_home_cards(bool master_ok) {
   const bool show_jbc = master_ok && (status.jbc_present || module_count_by_group(MODULE_JBC_BUS, false));
-  const bool show_fan = master_ok && (status.fan_present || module_count_by_group(MODULE_FAN_IO, false));
-  const bool show_weller = master_ok && (status.weller_present || module_count_by_group(MODULE_WELLER_ZERO_SMOG, false));
-  struct HomeCardVisibility {
-    lv_obj_t* card;
-    lv_obj_t* stripe;
-    bool visible;
-    int16_t height;
-  } cards[] = {
-    {ui_home_jbc_card, ui_home_jbc_stripe, show_jbc, 64},
-    {ui_home_suction_card, ui_home_suction_stripe, show_fan, 112},
-    {ui_home_weller_card, ui_home_weller_stripe, show_weller, 92},
-    {ui_home_fault_card, ui_home_fault_stripe, true, 72},
+  const int width = 440, x = 4;
+  lv_obj_update_layout(ui_home_settings_card);
+  int16_t y = lv_obj_get_y(ui_home_settings_card) + lv_obj_get_height(ui_home_settings_card) + 10;
+  // Legacy group tiles are replaced by addressed read-only operational cards.
+  for (auto* card : {ui_home_suction_card, ui_home_weller_card}) lv_set_visible(card, false);
+  for (unsigned i = 1; i < 5; ++i) ofe_home_activity::set_fan(i, false, false);
+  auto place = [&](lv_obj_t* card, lv_obj_t* stripe, int height) {
+    lv_obj_set_pos(card, x, y); lv_obj_set_size(card, width, height);
+    lv_home_accent_layout(stripe, height);
+    y += height + 8;
   };
-  int16_t y = 392;
-  for (uint8_t i = 0; i < sizeof(cards) / sizeof(cards[0]); ++i) {
-    lv_set_visible(cards[i].card, cards[i].visible);
-    if (!cards[i].visible) continue;
-    if (lv_obj_get_x(cards[i].card) != 4 || lv_obj_get_y(cards[i].card) != y) {
-      lv_obj_set_pos(cards[i].card, 4, y);
-    }
-    if (lv_obj_get_width(cards[i].card) != 440 || lv_obj_get_height(cards[i].card) != cards[i].height) {
-      lv_obj_set_size(cards[i].card, 440, cards[i].height);
-    }
-    if (cards[i].stripe && lv_obj_get_height(cards[i].stripe) != cards[i].height - 20) {
-      lv_obj_set_size(cards[i].stripe, 5, cards[i].height - 20);
-    }
-    y += cards[i].height + 8;
-  }
+  lv_set_visible(ui_home_jbc_card, show_jbc);
+  if (show_jbc) place(ui_home_jbc_card, ui_home_jbc_stripe, 64);
+  y = lv_layout_module_home_cards(y, width, x);
+  lv_set_visible(ui_home_fault_card, true);
+  place(ui_home_fault_card, ui_home_fault_stripe, 72);
 }
 static void lv_alarm_add(uint8_t& index, const String& title, const String& detail, bool critical) {
   if (index >= 8 || !ui_alarm_rows[index]) return;
@@ -7081,6 +6944,8 @@ static void lv_alarm_add(uint8_t& index, const String& title, const String& deta
   lv_obj_set_style_border_color(ui_alarm_rows[index], critical
     ? lv_color_hex(0xFF4D5E) : lv_color_hex(0xFFB020), 0);
   lv_set_visible(ui_alarm_rows[index], true);
+  lv_obj_set_style_shadow_color(ui_alarm_rows[index], critical
+    ? lv_color_hex(0xFF4D5E) : lv_color_hex(0xFFB020), 0);
   index++;
 }
 
@@ -7161,6 +7026,7 @@ static uint8_t lv_update_alarm_center() {
     lv_obj_set_style_bg_color(ui_alarm_rows[0], ui_theme_color(0x102B22, 0xE5F7EC), 0);
     lv_obj_set_style_border_color(ui_alarm_rows[0], lv_color_hex(0x2DFF88), 0);
     lv_set_visible(ui_alarm_rows[0], true);
+    lv_obj_set_style_shadow_color(ui_alarm_rows[0], lv_color_hex(0x2DFF88), 0);
   }
   const uint8_t first_hidden = (reported_count == 0 && count == 0) ? 1 : count;
   for (uint8_t i = first_hidden; i < 8; ++i) lv_set_visible(ui_alarm_rows[i], false);
@@ -7170,7 +7036,7 @@ static uint8_t lv_update_alarm_center() {
 }
 
 static void lv_update_app_values() {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_APP_VALUES);
     return;
   }
@@ -7200,7 +7066,7 @@ static void lv_update_app_values() {
   }
   const uint16_t fault_mask = status.module_output_fault | status.io_fault_mask;
   const uint8_t jbc_list_count = online_module_count_by_type(MODULE_JBC_BUS);
-  const uint8_t fan_list_count = online_module_count_by_type(MODULE_FAN_IO);
+  const uint8_t fan_list_count = lv_home_module_count(MODULE_FAN_IO, true);
   const uint8_t weller_list_count = online_module_count_by_type(MODULE_WELLER_ZERO_SMOG);
 
   // DISPLAY_STATUS says whether that module family is currently present.
@@ -7256,7 +7122,6 @@ static void lv_update_app_values() {
   const uint8_t home_weller_light = weller_live_ok ? ((home_weller_outputs & 0x0002U) ? 1 : 0) :
     (weller_cache_ok ? home_weller_cache.light : status.weller_light);
 
-  lv_layout_home_cards(master_ok);
   if (ui_home_suction_title) lv_set_text(ui_home_suction_title, home_fan_io_title());
 
   if (!master_ok) {
@@ -7305,7 +7170,7 @@ static void lv_update_app_values() {
     else if (status.jbc_connected) jbc_status_line += " | OK";
     lv_set_text(ui_home_jbc, jbc_status_line);
     lv_set_text(ui_home_work, status.jbc_connected
-      ? (String(tr("Station ", "Station ")) + home_jbc_station_models() + tr(" | Work ", " | Work ") + on_off(status.work_mask != 0))
+      ? (String(tr("Station ", "Station ")) + home_jbc_station_models())
       : (jbc_module_count ? String(tr("Station offline", "Station offline")) : String("-")));
     if (fan_module_count) {
       snprintf(fast_text, sizeof(fast_text), "%u%s", (unsigned)fan_module_count, tr(" RS485 online", " RS485 online"));
@@ -7446,6 +7311,14 @@ static void lv_update_app_values() {
     lv_set_border_color_if_changed(ui_home_fault_card, active_alarm_count
       ? lv_color_hex(0xFF4D5E) : lv_color_hex(0x2DFF88), 0);
   }
+  ofe_home_activity::set_counts(lv_home_jbc_counts(master_ok));
+  const auto fan_state = lv_home_fan_state(master_ok);
+  ofe_home_activity::set_fan(0, true, master_ok && status.output_enabled, output_pct);
+  ofe_home_activity::set_fan(1, fan_state.capable, fan_state.active,
+    fan_io_state_known ? home_fan_power / 10U : fan_state.percent);
+  ofe_home_activity::set_fan(2, true, master_ok && home_weller_connected && (home_weller_outputs & 0x01), home_weller_speed);
+  lv_update_bridge_home_cards(master_ok);
+  lv_layout_home_cards(master_ok);
   if (display_view_mode == DISPLAY_VIEW_HOME) {
     last_drawn_status = status;
     have_drawn_status = true;
@@ -7681,12 +7554,12 @@ static void lvgl_init_ui() {
   lv_init();
 
   // Keep only a small hot LVGL pool in internal SRAM. The remaining widget heap
-  // lives in PSRAM. 32 KiB internal + 5 x 32 KiB PSRAM = 192 KiB total, i.e. the
-  // same total capacity used by the tuned 800x480 build without burning scarce DRAM.
-  static void* widget_pools[5] = {};
+  // lives in PSRAM. 32 KiB internal + 11 x 32 KiB PSRAM = 384 KiB total.
+  // Home cards and 32-entity details must fit alongside all persistent screens.
+  static void* widget_pools[11] = {};
   constexpr size_t pool_bytes = LV_MEM_SIZE;
   uint8_t pools_added = 0;
-  for (size_t i = 0; i < 5; ++i) {
+  for (size_t i = 0; i < 11; ++i) {
     if (widget_pools[i]) { ++pools_added; continue; }
     void* candidate = heap_caps_aligned_alloc(64, pool_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!candidate) {
@@ -7719,15 +7592,10 @@ static void lvgl_init_ui() {
   bool draw_buf_psram = false;
 
 #if DISPLAY_LVGL_DRAW_BUFFER_PREFER_PSRAM
-  // Preserve internal SRAM: this is intentionally the same B16 PSRAM tile that
-  // the measured 1.3.69 build fell back to, so performance behavior stays known.
-  selected_lines = 16;
+  lvgl_draw_buf = ofe_small_display::allocateBootPsram(screen_w, selected_lines);
   lvgl_buf_pixels = screen_w * selected_lines;
-  lvgl_draw_buf = (uint8_t*)heap_caps_aligned_alloc(
-    64, lvgl_buf_pixels * LVGL_RGB565_BYTES_PER_PIXEL,
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   draw_buf_psram = lvgl_draw_buf != nullptr;
-  if (draw_buf_psram) debug_println("LVGL draw buffer: preferred PSRAM B16 stability path");
+  if (draw_buf_psram) debug_printf("LVGL draw buffer: PSRAM B%u performance profile\n", (unsigned)selected_lines);
 #endif
 
   if (!lvgl_draw_buf) {
@@ -7778,8 +7646,26 @@ static void lvgl_init_ui() {
   lvgl_disp = lv_display_create(screen_w, screen_h);
   lv_display_set_color_format(lvgl_disp, LV_COLOR_FORMAT_RGB565);
   lv_display_set_flush_cb(lvgl_disp, lvgl_flush_cb);
+#if OFE_ST7796_DMA_PATH
+  if (st7796_dma_bus.dmaAvailable() && ofe_small_display::validLines(selected_lines)) {
+    st7796_draw_buf2 = ofe_small_display::allocatePsram(screen_w, selected_lines);
+    if (st7796_draw_buf2 && st7796_dma_bus.reserve(lvgl_buf_bytes)) {
+      st7796_async_active = true;
+    } else {
+      heap_caps_free(st7796_draw_buf2);
+      st7796_draw_buf2 = nullptr;
+    }
+  }
+  lv_display_set_flush_wait_cb(lvgl_disp, st7796_complete_flush);
+  lv_display_set_buffers(
+    lvgl_disp, lvgl_draw_buf, st7796_draw_buf2, lvgl_buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  debug_printf("ST7796 transport: %s; DMA staging %u B, reserve %u B\n",
+    st7796_async_active ? "ASYNC DMA / two PSRAM draw buffers" : "synchronous fallback",
+    (unsigned)st7796_dma_bus.capacity(), (unsigned)OfeSt7796DmaBus::internalReserve);
+#else
   lv_display_set_buffers(
     lvgl_disp, lvgl_draw_buf, NULL, lvgl_buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#endif
 
   lv_display_set_theme(lvgl_disp, lv_theme_default_init(lvgl_disp, lv_color_hex(0x246BFF), lv_color_hex(0x2DCC88), display_theme == 0, UI_FONT_DEFAULT));
 
@@ -7789,11 +7675,12 @@ static void lvgl_init_ui() {
 
   lv_create_boot_screen();
   lv_create_update_screen();
+  small_display_profiles.publish(selected_lines);
   lvgl_ready = true;
 }
 
 static void show_boot_screen() {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_BOOT_SCREEN);
     return;
   }
@@ -7807,9 +7694,15 @@ static void lvgl_force_refresh_once() {
   if (!lvgl_ready) return;
   lv_obj_invalidate(lv_screen_active());
   lv_refr_now(lvgl_disp);
+#if OFE_ST7796_DMA_PATH
+  st7796_complete_flush(lvgl_disp);
+#endif
   lvgl_flush_canvas_if_dirty(true);
   delay(3);
   lv_refr_now(lvgl_disp);
+#if OFE_ST7796_DMA_PATH
+  st7796_complete_flush(lvgl_disp);
+#endif
   lvgl_flush_canvas_if_dirty(true);
 }
 
@@ -7861,7 +7754,7 @@ static void show_update_screen(uint8_t target, uint8_t percent, const char* msg,
 }
 
 static void show_dashboard() {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_flags(UI_DEFER_DASHBOARD);
     return;
   }
@@ -7889,7 +7782,7 @@ static void show_dashboard() {
 }
 
 static void show_status_message(const char* msg) {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     ui_defer_status_message(msg);
     return;
   }
@@ -7979,7 +7872,7 @@ static void fw_update_render_screen_now(bool force_flush = false) {
 }
 
 static void draw_update_progress_throttled(uint8_t target, uint8_t progress, const char* msg, bool force = false, const char* target_name = nullptr) {
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     const uint32_t now = millis();
     if (!force && progress < 100 &&
         (uint32_t)(now - fw_update_last_draw_ms) < 200UL &&
@@ -8113,6 +8006,15 @@ static void send_display_status_response(const Frame& req) {
   const bool user_needs_detail = display_view_mode == DISPLAY_VIEW_MODULE_DETAIL;
   const bool user_on_module_list = display_view_mode == DISPLAY_VIEW_MODULE_LIST;
 
+  if (user_needs_detail && !screensaver_active && !fw_update_active && !status.update_active &&
+      selected_module.valid && selected_module.addr == display_view_arg &&
+      detail_fields_is_jbc_usb(selected_module.type, selected_module.caps)) {
+    portENTER_CRITICAL(&display_jbc_mux);
+    if (display_jbc_state && display_jbc_state->addr == display_view_arg)
+      resp.len += display_jbc_state->request(resp.payload + resp.len, MAX_PAYLOAD - resp.len, now);
+    portEXIT_CRITICAL(&display_jbc_mux);
+  }
+
   // INFO/CAPS can still be incomplete while freshly flashed modules are being
   // discovered. Periodically restart the list transfer so an early name or
   // capability snapshot cannot remain cached until the next presence change.
@@ -8129,11 +8031,18 @@ static void send_display_status_response(const Frame& req) {
       selected_module.universal_entity_total != 0 &&
       selected_module.universal_entity_count < (selected_module.universal_entity_total > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX
         ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : selected_module.universal_entity_total);
-    const uint32_t entity_request_interval_ms = selected_universal_readback_id ? 350UL : 1500UL;
+    const bool compact = display_values_supported && selected_module.valid &&
+      (selected_module.type == MODULE_UNIVERSAL_RS232 || selected_module.type == MODULE_MODBUS_RTU) &&
+      selected_module.universal_entity_total <= ofe_display_values::MAX_ENTITIES;
+    const uint32_t entity_request_interval_ms = compact ?
+      (selected_universal_readback_id ? 0UL : 250UL) : (selected_universal_readback_id ? 350UL : 1500UL);
     if (descriptor_incomplete || !selected_universal_request_ms ||
         (uint32_t)(now - selected_universal_request_ms) >= entity_request_interval_ms) {
-      resp.payload[resp.len++] = 0xAC; // visible detail-page entity request
-      resp.payload[resp.len++] = selected_module.addr == display_view_arg ? selected_universal_request_start() : universal_cache_request_start(display_view_arg);
+      const uint8_t start = selected_module.addr == display_view_arg ? selected_universal_request_start() : universal_cache_request_start(display_view_arg);
+      if (!append_display_value_request(resp, display_view_arg, selected_universal_readback_id)) {
+        resp.payload[resp.len++] = 0xAC; // visible detail-page entity request
+        resp.payload[resp.len++] = start;
+      }
       selected_universal_request_ms = now;
     }
   }
@@ -8197,13 +8106,22 @@ static void send_display_status_response(const Frame& req) {
 
   if (!fw_update_active && !status.update_active && !user_needs_detail && !user_on_module_list && resp.len + 3 <= MAX_PAYLOAD) {
     const uint8_t uni_addr = first_universal_module_addr_needing_cache();
-    if (uni_addr) {
+    if (uni_addr && !append_display_value_request(resp, uni_addr)) {
       resp.payload[resp.len++] = 0xAD;
       resp.payload[resp.len++] = uni_addr;
       resp.payload[resp.len++] = universal_cache_request_start(uni_addr);
     }
   }
 
+  // Advertise the compact per-module Home record only to capable Masters.
+  if (resp.len + 2 <= MAX_PAYLOAD) {
+    resp.payload[resp.len++] = ofe_home_metrics::CAPABILITY;
+    resp.payload[resp.len++] = ofe_home_metrics::VERSION;
+  }
+  if (resp.len + 2 <= MAX_PAYLOAD) {
+    resp.payload[resp.len++] = ofe_display_values::CAPABILITY;
+    resp.payload[resp.len++] = ofe_display_values::CAP_VERSION;
+  }
   bus.send(resp);
   pending_display_event = DISPLAY_EVENT_NONE;
   pending_display_event_value = 0;
@@ -8370,6 +8288,15 @@ static uint8_t parse_display_live_io(const Frame& req) {
       const uint8_t id = req.payload[p++];
       const uint8_t raw = req.payload[p++];
       changed |= apply_display_live_entity(addr, id, raw);
+    } else if (kind == ofe_home_metrics::KIND) {
+      if (p + ofe_home_metrics::WIRE_SIZE > block_end) break;
+      ofe_home_metrics::State next;
+      if (!ofe_home_metrics::decode(req.payload + p, block_end - p, next)) break;
+      p += ofe_home_metrics::WIRE_SIZE;
+      portENTER_CRITICAL(&display_home_metrics_mux);
+      const bool updated = display_home_metrics_cache.put(next, millis());
+      portEXIT_CRITICAL(&display_home_metrics_mux);
+      if (updated) changed |= DISPLAY_LIVE_IO_ANY;
     } else {
       break; // Unknown record kind: stop at this versioned block safely.
     }
@@ -8466,7 +8393,7 @@ static void parse_display_extension(const Frame& req) {
     // packets clear the list UI.
     if (other_module_update && (wire_total == 0 || count == 0)) {
       bus_update_ensure_module_row();
-      if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE);
+      if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE);
       else lv_update_module_list();
       return;
     }
@@ -8537,7 +8464,7 @@ static void parse_display_extension(const Frame& req) {
       learn_expected_modules_from_current_list();
     }
     if (list_changed) {
-      if (running_in_rs485_task()) {
+      if (ui_needs_defer()) {
         ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE);
       } else {
         lv_update_module_list();
@@ -8552,7 +8479,7 @@ static void parse_display_extension(const Frame& req) {
       }
     }
     if (next >= module_total) {
-      if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_DASHBOARD);
+      if (ui_needs_defer()) ui_defer_flags(UI_DEFER_DASHBOARD);
       else if (lvgl_ready) show_dashboard();
     }
   } else if (mode == DISPLAY_VIEW_MODULE_DETAIL) {
@@ -8732,7 +8659,7 @@ static void parse_display_extension(const Frame& req) {
         uc->universal_entity_count = m.universal_entity_count > DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX ? DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX : m.universal_entity_count;
         memcpy(uc->universal_entities, m.universal_entities, sizeof(uc->universal_entities));
         uc->last_ms = millis();
-        if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_APP_VALUES);
+        if (ui_needs_defer()) ui_defer_flags(UI_DEFER_APP_VALUES);
         else lv_update_app_values();
       }
     }
@@ -8754,11 +8681,11 @@ static void parse_display_extension(const Frame& req) {
         summary.uptime_s = m.uptime_s;
         strncpy(summary.name, m.name, sizeof(summary.name) - 1);
         summary.name[sizeof(summary.name) - 1] = 0;
-        if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_LIST);
+        if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_LIST);
         else lv_update_module_list();
       }
     }
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
     else lv_update_module_detail();
   }
 }
@@ -8845,6 +8772,9 @@ static void send_telemetry(const Frame& req) {
   resp.payload[o++] = screensaver_timeout_min;
   resp.payload[o++] = (uint8_t)ofe_status_leds.busEvent();
   resp.payload[o++] = (uint8_t)ofe_status_leds.moduleEvent();
+  resp.payload[o++] = display_backlight.mode();
+  resp.payload[o++] = display_backlight.minutes();
+  resp.payload[o++] = display_backlight.isOff() ? 0 : 1;
   resp.len = o;
   bus.send(resp);
 }
@@ -8951,7 +8881,7 @@ static void handle_fw_begin(const Frame& req) {
   fw_update_last_draw_ms = 0;
 
   draw_update_progress_throttled(module_addr, 0, "Preparing display firmware", true);
-  if (!running_in_rs485_task()) {
+  if (!ui_needs_defer()) {
     lvgl_timer_handler_profiled();
     lvgl_flush_canvas_if_dirty(true);
     delay(25);
@@ -9134,6 +9064,7 @@ static void handle_display_status(const Frame& req) {
     send_status_response(req, STATUS_BAD_LEN);
     return;
   }
+  display_values_supported = req.len > 55 && req.payload[55] >= 6;
   if (fw_update_active) {
     send_status_response(req, STATUS_OK);
     return;
@@ -9368,7 +9299,7 @@ static void handle_display_status(const Frame& req) {
 
   // Do not touch LVGL from the RS485 task. Fresh Home data (especially Weller/FanIO)
   // is applied by the UI loop via deferred flags.
-  if (running_in_rs485_task()) {
+  if (ui_needs_defer()) {
     // While sleeping, incoming Master frames must never schedule a Dashboard
     // redraw. Only the screensaver labels are refreshed in the LVGL loop.
     if (screensaver_active) {
@@ -9511,7 +9442,7 @@ static void handle_display_alarms(const Frame& req) {
   apply_display_alarm_payload(parsed_alarm_count, parsed_item_count, parsed_critical_mask,
     parsed_addr, parsed_type, parsed_code, parsed_value);
   send_status_response(req, STATUS_OK);
-  if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_APP_VALUES);
+  if (ui_needs_defer()) ui_defer_flags(UI_DEFER_APP_VALUES);
   else lv_update_app_values();
 }
 
@@ -9533,7 +9464,7 @@ static void handle_display_module_list(const Frame& req) {
   if (other_module_update && (wire_total == 0 || count == 0)) {
     bus_update_ensure_module_row();
     send_status_response(req, STATUS_OK);
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE);
     else lv_update_module_list();
     return;
   }
@@ -9610,7 +9541,7 @@ static void handle_display_module_list(const Frame& req) {
   }
   send_status_response(req, STATUS_OK);
   if (list_changed) {
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE | UI_DEFER_APP_VALUES);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_LIST | UI_DEFER_BUS_UPDATE | UI_DEFER_APP_VALUES);
     else {
       lv_update_module_list();
       lv_update_app_values();
@@ -9868,11 +9799,11 @@ static void apply_display_module_detail(DisplayModuleDetail& m) {
       summary.uptime_s = m.uptime_s;
       strncpy(summary.name, m.name, sizeof(summary.name) - 1);
       summary.name[sizeof(summary.name) - 1] = 0;
-      if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_LIST);
+      if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_LIST);
       else lv_update_module_list();
     }
   }
-  if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_DETAIL | UI_DEFER_APP_VALUES);
+  if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_DETAIL | UI_DEFER_APP_VALUES);
   else {
     lv_update_module_detail();
     lv_update_app_values();
@@ -9928,6 +9859,17 @@ static bool validate_display_detail_page_payload(const Frame& req, uint8_t detai
 }
 
 static void handle_display_detail_page(const Frame& req) {
+  if (req.len && req.payload[0] == ofe_display_values::PAGE_VERSION) {
+    handle_display_value_page(req); return;
+  }
+  if (req.len && req.payload[0] == ofe_jbc_detail::VERSION) {
+    portENTER_CRITICAL(&display_jbc_mux);
+    const bool accepted = display_jbc_state && display_jbc_state->accept(req.payload, req.len);
+    portEXIT_CRITICAL(&display_jbc_mux);
+    send_status_response(req, accepted ? STATUS_OK : STATUS_BAD_VALUE);
+    if (accepted) ui_defer_flags(UI_DEFER_MODULE_DETAIL);
+    return;
+  }
   if (req.len < 11 || (req.payload[0] != 1 && req.payload[0] != 2)) {
     send_status_response(req, req.len < 11 ? STATUS_BAD_LEN : STATUS_BAD_VALUE);
     return;
@@ -9957,11 +9899,13 @@ static void handle_display_detail_page(const Frame& req) {
   }
   send_status_response(req, STATUS_OK);
 
-  if (uc->universal_descriptor_crc != crc || uc->universal_entity_total != total) {
+  if (uc->universal_descriptor_crc != crc || uc->universal_entity_total != total || uc->values_language != display_language) {
     memset(uc->universal_entities, 0, sizeof(uc->universal_entities));
     uc->universal_entity_count = 0;
     uc->request_cursor = 0;
+    uc->values_refresh_ms = 0; uc->values_refresh_mask = 0;
   }
+  uc->values_language = display_language;
   uc->type = type;
   uc->flags = flags;
   uc->universal_descriptor_crc = crc;
@@ -10070,13 +10014,13 @@ static void handle_display_detail_page(const Frame& req) {
     selected_module.universal_entity_count = uc->universal_entity_count;
     memcpy(selected_module.universal_entities, uc->universal_entities, sizeof(selected_module.universal_entities));
     sync_selected_module_detail_to_home_cache();
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MODULE_DETAIL | UI_DEFER_APP_VALUES);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MODULE_DETAIL | UI_DEFER_APP_VALUES);
     else {
       lv_update_module_detail();
       lv_update_app_values();
     }
   } else {
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_APP_VALUES);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_APP_VALUES);
     else lv_update_app_values();
   }
 
@@ -10141,12 +10085,12 @@ static void handle_display_update(const Frame& req) {
       draw_update_progress_throttled(status.update_target, status.update_progress, "Bus update", false, status.update_name);
     } else {
       refresh_bus_update_inline_ui();
-      if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_DASHBOARD);
+      if (ui_needs_defer()) ui_defer_flags(UI_DEFER_DASHBOARD);
       else if (lvgl_ready && lv_screen_active() == ui_update_screen) show_dashboard();
     }
   } else {
     refresh_bus_update_inline_ui();
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_DASHBOARD);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_DASHBOARD);
     else if (lvgl_ready && lv_screen_active() == ui_update_screen) show_dashboard();
   }
 }
@@ -10162,20 +10106,32 @@ static void send_display_settings_response(const Frame& req, Status s) {
   resp.src = module_addr;
   resp.seq = req.seq;
   resp.cmd = req.cmd | 0x80;
-  resp.len = 5;
+  resp.len = 7;
   resp.payload[0] = s;
   resp.payload[1] = display_brightness_pct;
   resp.payload[2] = display_language;
   resp.payload[3] = display_theme;
   resp.payload[4] = screensaver_timeout_min;
+  resp.payload[5] = display_backlight.mode();
+  resp.payload[6] = display_backlight.minutes();
   bus.send(resp);
 }
 
 static void handle_display_settings(const Frame& req) {
-  if (req.len != 3 && req.len != 4) {
+  if (req.len != 3 && req.len != 4 && req.len != 6) {
     send_display_settings_response(req, STATUS_BAD_LEN);
     return;
   }
+  // Reject the entire command before changing any settings.
+  if ((req.len >= 4 && req.payload[3] != 0xFF && !valid_screensaver_timeout(req.payload[3])) ||
+      (req.len == 6 && ((req.payload[4] != 0xFF && req.payload[4] > 2) ||
+       (req.payload[5] != 0xFF && (req.payload[5] < 1 || req.payload[5] > 60))))) {
+    send_display_settings_response(req, STATUS_BAD_VALUE);
+    return;
+  }
+  if (req.len == 6) apply_backlight_settings(
+    req.payload[4] == 0xFF ? display_backlight.mode() : req.payload[4],
+    req.payload[5] == 0xFF ? display_backlight.minutes() : req.payload[5]);
   if (req.payload[0] != 0xFF) set_brightness(constrain(req.payload[0], 10, 100), true);
   bool rebuild = false;
   if (req.payload[1] <= 1 && req.payload[1] != display_language) {
@@ -10195,7 +10151,7 @@ static void handle_display_settings(const Frame& req) {
     }
     apply_screensaver_timeout(req.payload[3]);
   }
-  if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
+  if (ui_needs_defer()) ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS);
   else lv_update_display_settings_widgets(true);
   send_display_settings_response(req, STATUS_OK);
   if (rebuild) language_rebuild_pending = true;
@@ -10214,7 +10170,7 @@ static void handle_frame(const Frame& req) {
   if (display_wifi.handleConfig(req)) return;
   if (req.src == ADDR_MASTER) {
     last_master_ms = millis();
-    if (running_in_rs485_task()) ui_defer_flags(UI_DEFER_MASTER_LINK);
+    if (ui_needs_defer()) ui_defer_flags(UI_DEFER_MASTER_LINK);
     else if (lv_update_master_link_ui()) lv_update_app_values();
   }
   bus_update_monitor_foreign_frame(req);
@@ -10353,6 +10309,8 @@ static void start_rs485_task_if_enabled() {
 }
 
 static void record_loop_time(uint32_t busy_us) {
+  const uint32_t gui_busy_us = display_gui.takeMaxBusyUs();
+  if (gui_busy_us > busy_us) busy_us = gui_busy_us;
   if (busy_us > loop_max_us) loop_max_us = busy_us;
   const uint32_t now = millis();
   if ((uint32_t)(now - loop_window_ms) >= 1000UL) {
@@ -10370,6 +10328,33 @@ static void record_loop_time(uint32_t busy_us) {
 // It is deliberately diagnostic-only apart from the explicit `reboot` command.
 // Polling costs only a pair of available() checks and does not change UI timing.
 // ---------------------------------------------------------------------------
+#if OFE_ST7796_DMA_PATH
+static bool st7796_replace_profile(uint8_t* candidate, uint32_t bytes) {
+  st7796_complete_flush(lvgl_disp);
+  uint8_t* next2 = nullptr;
+  if (st7796_async_active) {
+    next2 = ofe_small_display::allocatePsram(gfx->width(), uint16_t(bytes / (gfx->width() * 2U)));
+    if (!next2 || !st7796_dma_bus.reserve(bytes)) {
+      heap_caps_free(next2);
+      return false;
+    }
+  }
+  auto* previous = lvgl_draw_buf;
+  auto* previous2 = st7796_draw_buf2;
+  lv_display_set_buffers(lvgl_disp, candidate, next2, bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lvgl_draw_buf = candidate;
+  st7796_draw_buf2 = next2;
+  heap_caps_free(previous);
+  heap_caps_free(previous2);
+  return true;
+}
+#define OFE_SMALL_PROFILE_REPLACE(candidate, bytes) st7796_replace_profile(candidate, bytes)
+#endif
+#include "src/OfeSmallDisplayProfileUi.inc.h"
+#ifdef OFE_SMALL_PROFILE_REPLACE
+#undef OFE_SMALL_PROFILE_REPLACE
+#endif
+
 static char serial_cli_line[96] = {0};
 static uint8_t serial_cli_len = 0;
 static uint32_t serial_cli_last_char_ms = 0;
@@ -10385,6 +10370,7 @@ static void serial_cli_print_help() {
   debug_println("  status   - firmware/link/performance summary");
   debug_println("  heap     - internal RAM and PSRAM");
   debug_println("  tasks    - FreeRTOS stack reserves");
+  debug_println("  render   - show profile; render b16 / render b32 / render b48");
   debug_println("  perf     - current LVGL/SPI counters");
   debug_println("  reboot   - restart this display");
 }
@@ -10398,16 +10384,27 @@ static void serial_cli_print_heap() {
     (unsigned)ESP.getFreeHeap());
   debug_printf("PSRAM free=%u B / total=%u B\n",
     (unsigned)ESP.getFreePsram(), (unsigned)ESP.getPsramSize());
+  if (lvgl_ready) {
+    lv_mem_monitor_t memory;
+    lv_mem_monitor(&memory);
+    debug_printf("LVGL UI total=%u B, free=%u B, largest=%u B, fragmentation=%u%%\n",
+      (unsigned)memory.total_size, (unsigned)memory.free_size,
+      (unsigned)memory.free_biggest_size, (unsigned)memory.frag_pct);
+  }
 }
 
 static void serial_cli_print_tasks() {
   const UBaseType_t loop_stack = uxTaskGetStackHighWaterMark(nullptr);
   const UBaseType_t rs485_stack = rs485_task_handle ? uxTaskGetStackHighWaterMark(rs485_task_handle) : 0;
-  debug_printf("TASKS loop stack=%u words | rs485=%u words | wifi=%u words | rs485 task=%s\n",
+  debug_printf("TASKS loop stack=%u bytes | rs485=%u bytes | wifi=%u bytes | rs485 task=%s\n",
     (unsigned)loop_stack,
     (unsigned)rs485_stack,
     (unsigned)display_wifi.workerStackHighWaterMark(),
     rs485_task_started ? "running" : "loop fallback");
+  debug_printf("GUI task=%s core=%u priority=%u stack reserve=%u bytes\n",
+    display_gui.running() ? "running" : "loop fallback",
+    (unsigned)DISPLAY_GUI_TASK_CORE, (unsigned)DISPLAY_GUI_TASK_PRIORITY,
+    (unsigned)display_gui.stackReserve());
 }
 
 static void serial_cli_print_status() {
@@ -10436,6 +10433,11 @@ static void serial_cli_print_perf() {
     ((float)perf_panel_flush_us / (float)perf_panel_frames / 1000.0f) : 0.0f;
   debug_printf("PERF window=%ums LVGL=%.1f fps panel=%.1f fps tiles=%.1f handler=%.1f ms SPI=%.1f ms\n",
     (unsigned)window_ms, lvgl_fps, panel_fps, tiles, handler_ms, spi_ms);
+#if OFE_ST7796_DMA_PATH
+  debug_printf("ST7796 transport: %s; DMA staging %u B; queue errors %u\n",
+    st7796_async_active ? "ASYNC DMA / two PSRAM draw buffers" : "synchronous fallback",
+    (unsigned)st7796_dma_bus.capacity(), (unsigned)st7796_dma_bus.errors());
+#endif
 }
 
 static void serial_cli_execute(char* command) {
@@ -10447,6 +10449,12 @@ static void serial_cli_execute(char* command) {
     if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
   }
   if (!*command) return;
+  if (small_profile_command(command)) return;
+
+  const bool ui_diagnostic = !strcmp(command, "status") || !strcmp(command, "heap") ||
+    !strcmp(command, "perf") || !strcmp(command, "qspibench") || !strcmp(command, "qspi");
+  OfeDisplayGuiTask::DiagnosticLock ui_lock(display_gui, ui_diagnostic);
+  if (!ui_lock) { debug_println("GUI busy; retry diagnostic command"); return; }
 
   if (!strcmp(command, "help") || !strcmp(command, "?")) serial_cli_print_help();
   else if (!strcmp(command, "status")) serial_cli_print_status();
@@ -10502,6 +10510,62 @@ static void serial_cli_tick() {
     serial_cli_execute(serial_cli_line);
     serial_cli_len = 0;
     serial_cli_prompt();
+  }
+}
+
+static void process_display_ui_once() {
+  small_profile_tick();
+  bus_update_check_ui_timeout();
+  if (language_rebuild_pending && lvgl_ready && !fw_update_active) {
+    language_rebuild_pending = false;
+    lv_rebuild_app_ui();
+  }
+  if (!fw_update_active) {
+    if (lv_update_master_link_ui()) lv_update_app_values();
+  }
+  if (lvgl_ready) {
+    const bool updating = fw_update_active || status.update_active;
+    if (updating && display_ble.active()) display_ble.cancel();
+    lv_update_ble_indicator_ui();
+    if (display_backlight.tick(millis(), module_eco_mode,
+        updating || !have_drawn_status || OfeDisplayWifiUi::isOpen())) {
+      if (updating) screensaver_wake();
+      apply_backlight();
+    }
+    ofe_home_activity::update_saver(master_link_online() && status.output_enabled, !display_backlight.isOff(), status.output_power / 10U);
+    if (screensaver_wake_deferred) {
+      screensaver_wake_deferred = false;
+      screensaver_wake();
+    }
+    apply_deferred_ui_updates();
+    lv_update_eco_indicator_ui();
+    if (!fw_update_active) {
+      detail_request_watchdog_tick();
+      // Safety net: if the Master is online and valid Home data exists, never stay
+      // on the boot screen. This runs in the LVGL loop task, so lv_screen_active()
+      // and show_dashboard() are safe here.
+      if (status.valid && master_link_online() && ui_boot_screen && lv_screen_active() == ui_boot_screen) {
+        OfeDisplayWifiUi::closePanel();
+        display_view_mode = DISPLAY_VIEW_HOME;
+        display_view_arg = 0;
+        show_dashboard();
+      } else if (!display_boot_setup_prompted && display_boot_setup_started_ms &&
+                 ui_boot_screen && lv_screen_active() == ui_boot_screen &&
+                 !master_link_online() && !OfeDisplayWifiUi::isOpen() &&
+                 (uint32_t)(millis() - display_boot_setup_started_ms) >= DISPLAY_FIRST_SETUP_DELAY_MS &&
+                 !ofe_wifi::configured(display_wifi.view().config)) {
+        lv_open_boot_connection_setup(nullptr);
+      }
+      screensaver_tick();
+    }
+    display_benchmark_tick();
+    const uint32_t lvgl_now = millis();
+    if ((uint32_t)(lvgl_now - lvgl_last_handler_ms) >= DISPLAY_LVGL_HANDLER_INTERVAL_MS) {
+      lvgl_last_handler_ms = lvgl_now;
+      lvgl_timer_handler_profiled();
+      lvgl_flush_canvas_if_dirty(fw_update_active);
+    }
+    perf_report_if_due();
   }
 }
 
@@ -10603,6 +10667,8 @@ void setup() {
 #endif
     backlight_on();
   }
+  const uint16_t backlight_settings = prefs.getUShort("bl_auto", 5U << 8);
+  display_backlight.configure((uint8_t)backlight_settings, (uint8_t)(backlight_settings >> 8));
   screensaver_timeout_min = prefs.getUChar("saver", 2);
   if (screensaver_timeout_min != 0 && screensaver_timeout_min != 1 && screensaver_timeout_min != 2 &&
       screensaver_timeout_min != 5 && screensaver_timeout_min != 10) screensaver_timeout_min = 2;
@@ -10627,8 +10693,16 @@ void setup() {
     pending_display_event_value = 0;
     ui_defer_flags(UI_DEFER_MASTER_LINK | UI_DEFER_APP_VALUES);
   }, handle_wifi_fw_bulk);
+  display_ble.configure(module_uid(),2,nullptr,[](const ofe_wifi::Config& config) {
+    return display_wifi.save(config);
+  },[](const ofe_wifi::Config& config)->uint8_t {
+    const auto current=display_wifi.view();
+    if (current.result==3) return 2;
+    return current.result==2 && memcmp(&current.config,&config,sizeof(config))==0 ? 1 : 0;
+  });
   display_boot_setup_started_ms = millis();
   start_rs485_task_if_enabled();
+  display_gui.begin(rs485_task_started, lvgl_ready, process_display_ui_once);
 }
 
 void loop() {
@@ -10645,49 +10719,7 @@ void loop() {
     announce_join();
     fw_update_check_timeout();
   }
-  bus_update_check_ui_timeout();
-  if (language_rebuild_pending && lvgl_ready && !fw_update_active) {
-    language_rebuild_pending = false;
-    lv_rebuild_app_ui();
-  }
-  if (!fw_update_active) {
-    if (lv_update_master_link_ui()) lv_update_app_values();
-  }
-  if (lvgl_ready) {
-    if (screensaver_wake_deferred) {
-      screensaver_wake_deferred = false;
-      screensaver_wake();
-    }
-    apply_deferred_ui_updates();
-    lv_update_eco_indicator_ui();
-    if (!fw_update_active) {
-      detail_request_watchdog_tick();
-      // Safety net: if the Master is online and valid Home data exists, never stay
-      // on the boot screen. This runs in the LVGL loop task, so lv_screen_active()
-      // and show_dashboard() are safe here.
-      if (status.valid && master_link_online() && ui_boot_screen && lv_screen_active() == ui_boot_screen) {
-        OfeDisplayWifiUi::closePanel();
-        display_view_mode = DISPLAY_VIEW_HOME;
-        display_view_arg = 0;
-        show_dashboard();
-      } else if (!display_boot_setup_prompted && display_boot_setup_started_ms &&
-                 ui_boot_screen && lv_screen_active() == ui_boot_screen &&
-                 !master_link_online() && !OfeDisplayWifiUi::isOpen() &&
-                 (uint32_t)(millis() - display_boot_setup_started_ms) >= DISPLAY_FIRST_SETUP_DELAY_MS &&
-                 !ofe_wifi::configured(display_wifi.view().config)) {
-        lv_open_boot_connection_setup(nullptr);
-      }
-      screensaver_tick();
-    }
-    display_benchmark_tick();
-    const uint32_t lvgl_now = millis();
-    if ((uint32_t)(lvgl_now - lvgl_last_handler_ms) >= DISPLAY_LVGL_HANDLER_INTERVAL_MS) {
-      lvgl_last_handler_ms = lvgl_now;
-      lvgl_timer_handler_profiled();
-      lvgl_flush_canvas_if_dirty(fw_update_active);
-    }
-    perf_report_if_due();
-  }
+  if (!display_gui.running()) process_display_ui_once();
   record_loop_time((uint32_t)(micros() - loop_start_us));
   runtime_health_tick();
   // Prevent the Arduino loop task from busy-spinning on one CPU core.
