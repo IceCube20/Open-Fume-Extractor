@@ -1,0 +1,28 @@
+{
+  "name": "OFE S3 RGB WiFi memory A/B",
+  "target": "esp32s3",
+  "memory_variant": "qio_opi",
+  "arduino_version": "3.2.0",
+  "sources": {
+    ".": {"repository": "espressif/esp32-arduino-lib-builder", "commit": "a3c4d2c3deba06173c8889c094c212ff359857e9"},
+    "esp-idf": {"repository": "espressif/esp-idf", "commit": "2f7dcd862a62ec7380abe3e64c952d8038661463"},
+    "components/arduino": {"repository": "espressif/arduino-esp32", "commit": "210edfeaa6cfa64d1a7bd51abd5c6e1ac30692a8"},
+    "components/arduino_tinyusb/tinyusb": {"repository": "hathach/tinyusb", "commit": "8c1802e41d37c915334a19b859b24cb2a1b48ee5"}
+  },
+  "changes": {"CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP": "n"},
+  "preserve": {
+    "CONFIG_IDF_TARGET": "\"esp32s3\"",
+    "CONFIG_SPIRAM_MODE_OCT": "y",
+    "CONFIG_SPIRAM_XIP_FROM_PSRAM": "y",
+    "CONFIG_SPIRAM_FETCH_INSTRUCTIONS": "y",
+    "CONFIG_SPIRAM_RODATA": "y",
+    "CONFIG_SPIRAM_SPEED": "80",
+    "CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE": "64",
+    "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ": "240",
+    "CONFIG_FREERTOS_HZ": "1000",
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL": "4096",
+    "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM": "8",
+    "CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM": "32",
+    "CONFIG_ESP_WIFI_TX_BUFFER_TYPE": "1"
+  }
+}
