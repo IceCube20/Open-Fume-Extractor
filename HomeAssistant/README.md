@@ -39,7 +39,8 @@ Manual HACS steps:
 4. Search HACS for **Open Fume Extractor** and download it.
 5. Enable pre-release/beta versions for this repository if needed. Under
    **Need a different version?**, choose a numbered RC release, such as
-   **v0.1.0rc27**. The `main` development branch is hidden from the HACS download
+   **v0.1.28rc1** (release title **0.1.28RC**). The `main` development branch is
+   hidden from the HACS download
    selector; it is not the recommended installation source.
 6. **Restart Home Assistant**, not just the integration.
 7. Open **Settings > Devices & services > Add integration > Open Fume Extractor**.
@@ -75,7 +76,7 @@ can then appear as an update even though the integration code is unchanged.
 
 In HACS, open this repository and select **three-dot menu > Update information**,
 then **Redownload > Need a different version?**. Enable pre-release/beta versions
-if needed and choose **v0.1.0rc27** (or a newer numbered release). Download it,
+if needed and choose **v0.1.28rc1** (or a newer numbered release). Download it,
 restart Home Assistant and fully reload the browser/app. Do not remove the
 integration, devices or entities.
 
@@ -133,7 +134,7 @@ lovelace:
 Use the unversioned URL there and fully reload the browser after updates.
 If automatic registration fails, a manual storage-mode fallback is available
 under **Settings > Dashboards > Resources** (Advanced Mode): add/update
-`/open_fume_extractor/ofe-cards.js?v=0.1.0rc27` as a JavaScript module, not a second
+`/open_fume_extractor/ofe-cards.js?v=0.1.28rc1` as a JavaScript module, not a second
 duplicate entry. Check HA logs for the underlying resource-registration error.
 
 ## Documentation and support
@@ -162,7 +163,20 @@ in a running HA installation. Cross-firmware MQTT/API contract tests remain in
 the main firmware repository. Integration runtime code is self-contained under
 `custom_components/open_fume_extractor/`.
 
-Tags must match the integration manifest version, for example `v0.1.0rc27`.
+Card browser checks run the real OFE bundle with a small HA host/controls stub
+in German/English, light/dark themes and mobile/desktop sizes. They verify
+layout, live updates, focus retention, more-info actions and alarm states; they
+do not replace testing inside Home Assistant. To run them locally:
+
+```sh
+npm install --no-save --ignore-scripts playwright @mdi/js@7.4.47
+npx playwright install chromium
+OFE_MDI_MODULE=node_modules/@mdi/js/mdi.js node tools/test_cards.cjs
+```
+
+Tags must match the integration manifest version, for example `v0.1.28rc1`.
+The human-readable release title is **0.1.28RC**; machine-readable versions retain
+the RC number so Home Assistant and HACS can compare updates reliably.
 CI tests the component and HACS layout before publishing a manual-install ZIP.
 No firmware binaries, credentials or signing keys belong in this repository.
 

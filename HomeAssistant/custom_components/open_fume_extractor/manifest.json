@@ -1,7 +1,7 @@
 {
   "domain": "open_fume_extractor",
   "name": "Open Fume Extractor",
-  "version": "0.1.0rc27",
+  "version": "0.1.28rc1",
   "after_dependencies": ["lovelace"],
   "config_flow": true,
   "integration_type": "hub",

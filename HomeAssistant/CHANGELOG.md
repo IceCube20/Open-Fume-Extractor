@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.28RC (0.1.28rc1)
+
+- Refresh the master, module and overview cards with the master's module accent
+  colors, compact summaries, clearer connection badges and consistent spacing.
+- Keep native Home Assistant controls, entity IDs, card configuration and focus
+  during live updates. OFE/EVT effects and reduced-motion support remain intact.
+- Show a green check for an empty alarm list and distinguish unavailable alarm
+  data from a healthy state. Alarm entries keep their original text.
+- Use the display name 0.1.28RC and the comparable HA/HACS version 0.1.28rc1.
+
 ## 0.1.0rc27
 
 - Hide the `main` development branch from the HACS download selector so normal

@@ -1,3 +1,4 @@
 aiohttp>=3.11,<4
 jinja2>=3.1.6,<4
 voluptuous>=0.15,<1
+awesomeversion>=25.8,<26

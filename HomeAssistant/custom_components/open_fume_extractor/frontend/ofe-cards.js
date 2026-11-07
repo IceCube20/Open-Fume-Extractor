@@ -1,5 +1,5 @@
 /* OFE cards delegate all controls to Home Assistant's native entities card. */
-const VERSION = "0.1.0rc27";
+const VERSION = "0.1.28rc1";
 let helpersPromise;
 const words = {
   en: {master: "Master", module: "Module", overview: "Overview", auto: "Automatic",
@@ -26,6 +26,8 @@ const devices = (rows, master) => [...new Map(rows.filter(s => s.attributes.ofe_
 const groupRank = group => ({status: 0, controls: 1, filter: 2, thermocouples: 4, diagnostics: 5}[group] ?? 3);
 const leafKey = state => String(state.attributes.ofe_key || "").replace(/^entity_\d+_/, "");
 const hasValue = state => state && !["unknown", "unavailable"].includes(state.state);
+const deviceAccent = type => ({1: "#39c779", 9: "#39c779", 2: "#4a90d9", 3: "#4a90d9",
+  5: "#55b9ca", 6: "#b58cff", 7: "#f1b84b", 8: "#e28b52"})[type] || "#4a90d9";
 const alarmRows = state => hasValue(state) && Array.isArray(state.attributes?.alarms) ?
   state.attributes.alarms.filter(alarm => typeof alarm === "string" && alarm) : [];
 function updateAlarmList(list, rows) {
@@ -93,41 +95,46 @@ class OfeCard extends HTMLElement {
       :host{display:block;min-width:0;container-type:inline-size;font-family:var(--paper-font-body1_-_font-family,inherit);letter-spacing:0}
       *{box-sizing:border-box}.cards{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
       .overview{grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));align-items:start}
-      .heading{display:flex;align-items:center;gap:12px;margin:0 0 20px;font-size:20px;font-weight:600}
-      .heading img{width:40px;height:40px;object-fit:contain;flex-shrink:0}.heading span{min-width:0;overflow-wrap:anywhere}
+      .heading{display:flex;align-items:center;gap:12px;margin:0 0 16px;font-size:18px;font-weight:600;line-height:1.4}
+      .heading img{width:36px;height:36px;object-fit:contain;flex-shrink:0}.heading span{min-width:0;overflow-wrap:anywhere}
       .message{padding:16px;color:var(--secondary-text-color)}
       .heading[hidden],.message:empty{display:none}
-      .device{display:block;min-width:0;border-radius:8px;overflow:hidden;background:var(--ha-card-background,var(--card-background-color));
+      .device{--ofe-accent:#4a90d9;display:block;min-width:0;border-radius:8px;overflow:hidden;background:var(--ha-card-background,var(--card-background-color));
         border:1px solid var(--ha-card-border-color,var(--divider-color));box-shadow:var(--ha-card-box-shadow,none)}
-      .device-head{display:grid;grid-template-columns:40px minmax(0,1fr) 104px;align-items:center;gap:12px;padding:20px 20px 12px;min-width:0}
+      .device-head{position:relative;display:grid;grid-template-columns:40px minmax(0,1fr) 104px;align-items:center;gap:12px;padding:18px 20px 12px;min-width:0}
+      .device-head::before{content:"";position:absolute;left:7px;top:18px;bottom:12px;width:3px;border-radius:2px;background:var(--ofe-accent);pointer-events:none}
       .device-head>img{width:40px;height:40px;object-fit:contain}.device-head>ha-icon{--mdc-icon-size:24px;width:40px;height:40px;
-        display:flex;align-items:center;justify-content:center;background:var(--secondary-background-color);border-radius:8px;color:var(--primary-color)}
+        display:flex;align-items:center;justify-content:center;background:var(--secondary-background-color);
+        background:color-mix(in srgb,var(--ofe-accent) 12%,transparent);border-radius:8px;color:var(--ofe-accent)}
       .identity{min-width:0}.device-title{font-size:17px;font-weight:600;line-height:1.4;overflow-wrap:anywhere}
-      .model{font-size:12px;color:var(--secondary-text-color);margin-top:4px;overflow-wrap:anywhere}
-      .indicators{display:flex;flex-wrap:wrap;gap:8px 16px;padding:0 20px 18px;font-size:12px;color:var(--secondary-text-color)}
-      .indicator{display:inline-flex;align-items:center;gap:5px}.indicator ha-icon{--mdc-icon-size:16px}
+      .model{font-size:12px;color:var(--secondary-text-color);margin-top:3px;line-height:1.4;overflow-wrap:anywhere}
+      .model[hidden]{display:none}.indicators{display:flex;flex-wrap:wrap;gap:6px;padding:0 20px 16px;font-size:12px;color:var(--secondary-text-color)}
+      .indicator{display:inline-flex;align-items:center;gap:5px;min-height:26px;padding:3px 7px;border-radius:4px;
+        background:var(--secondary-background-color);line-height:1.4;max-width:100%}.indicator span{overflow-wrap:anywhere}.indicator ha-icon{--mdc-icon-size:15px;flex-shrink:0}
       .link[data-state="online"]{color:var(--success-color,#168369)}.link[data-state="offline"]{color:var(--error-color,#b43c3c)}
       .eco{color:var(--success-color,#168369)}.indicator[hidden]{display:none}
-      .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-block:1px solid var(--divider-color);padding:0 12px}
-      .metric{font:inherit;text-align:left;min-width:0;min-height:112px;border:0;border-radius:0;padding:16px 8px;background:transparent;
-        color:var(--primary-text-color);cursor:pointer}.metric:hover{background:var(--secondary-background-color)}
+      .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-block:1px solid var(--divider-color);padding:0 20px;
+        background:color-mix(in srgb,var(--secondary-background-color) 35%,transparent)}
+      .metric{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;font:inherit;text-align:left;min-width:0;min-height:94px;
+        border:0;border-radius:0;padding:14px 0;background:transparent;color:var(--primary-text-color);cursor:pointer;
+        -webkit-tap-highlight-color:transparent}.metric:hover{background:var(--secondary-background-color)}
       .metric:nth-child(n+3){border-top:1px solid var(--divider-color)}
       .metric:nth-child(odd){padding-right:16px}.metric:nth-child(even){padding-left:16px;border-left:1px solid var(--divider-color)}
       .metric:focus-visible{outline:2px solid var(--primary-color);outline-offset:-2px}.metric-label{display:flex;align-items:center;gap:6px;
         font-size:12px;line-height:1.4;color:var(--secondary-text-color);overflow-wrap:anywhere}.metric ha-icon{--mdc-icon-size:16px;flex-shrink:0}
-      .metric-value{display:block;font-size:22px;font-weight:600;line-height:1.35;min-height:1.35em;margin-top:9px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+      .metric-label span{min-width:0}.metric-value{display:block;font-size:22px;font-weight:600;line-height:1.35;min-height:1.35em;margin-top:7px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
       .metric[data-tone="active"] .metric-value{color:var(--success-color,#168369)}
       .metric[data-tone="alert"] .metric-value{color:var(--error-color,#b43c3c)}
       .metric[data-tone="muted"] .metric-value{color:var(--secondary-text-color);font-size:16px}
-      .meter{width:100%;height:4px;margin-top:10px;display:block;appearance:none;border:0;border-radius:2px;overflow:hidden;background:var(--divider-color);accent-color:var(--primary-color)}
-      .meter::-webkit-progress-bar{background:var(--divider-color)}.meter::-webkit-progress-value{background:var(--primary-color)}
-      .meter::-moz-progress-bar{background:var(--primary-color)}.meter[hidden],.metrics[hidden]{display:none}
-      .alarms{padding:16px 20px;border-bottom:1px solid var(--divider-color)}.alarms[hidden]{display:none}
+      .meter{width:100%;height:4px;margin-top:10px;display:block;appearance:none;border:0;border-radius:2px;overflow:hidden;background:var(--divider-color);accent-color:var(--ofe-accent)}
+      .meter::-webkit-progress-bar{background:var(--divider-color)}.meter::-webkit-progress-value{background:var(--ofe-accent)}
+      .meter::-moz-progress-bar{background:var(--ofe-accent)}.meter[hidden],.metrics[hidden]{display:none}
+      .alarms{margin:16px 20px 0;padding:0 0 0 12px;border-left:3px solid var(--error-color,#b43c3c)}.alarms[hidden]{display:none}
       .alarms h3{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;margin:0 0 8px;color:var(--error-color,#b43c3c)}
       .alarms h3 ha-icon{--mdc-icon-size:18px}.alarm-list{margin:0;padding-left:20px;font-size:14px;line-height:1.5}
       .alarm-list li{padding:4px 0;overflow-wrap:anywhere}
       .led-pair{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
-      .led-word{font:600 17px var(--paper-font-body1_-_font-family,Arial,sans-serif);letter-spacing:0;border:0;background:none;padding:8px 2px;
+      .led-word{font:inherit;font-size:17px;font-weight:600;letter-spacing:0;border:0;background:none;padding:8px 2px;
         min-width:48px;min-height:44px;color:var(--secondary-text-color);cursor:pointer}
       .led-word:disabled{cursor:default}.led-word:focus-visible{outline:2px solid var(--primary-color);border-radius:4px}
       .led-word[data-live="true"]{color:var(--led-color);text-shadow:0 0 3px var(--led-color),0 0 8px var(--led-color),0 1px 1px #555;
@@ -141,9 +148,10 @@ class OfeCard extends HTMLElement {
       @keyframes led-blink{0%,49.99%{opacity:.15}50%,100%{opacity:1}}
       @keyframes led-double{0%,10%,20%,30%,100%{opacity:.15}0.01%,20.01%{opacity:1}}
       @media(prefers-reduced-motion:reduce){.led-word{animation:none!important}}
-      @container(max-width:360px){.device-head{grid-template-columns:36px minmax(0,1fr);padding:16px 16px 8px;gap:8px 12px}
+      @container(max-width:380px){.device-head{grid-template-columns:36px minmax(0,1fr);padding:16px 16px 8px;gap:4px 10px}
         .device-head>img,.device-head>ha-icon{width:36px;height:36px}.led-pair{grid-column:2;justify-content:flex-start}
-        .indicators{padding:0 16px 14px}.metrics{padding:0 8px}}
+        .device-head::before{top:16px;bottom:12px;left:5px}.indicators{padding:0 16px 14px}.metrics{padding:0 16px}
+        .metric:nth-child(odd){padding-right:12px}.metric:nth-child(even){padding-left:12px}.alarms{margin:14px 16px 0}}
     </style><div class="heading" hidden><img src="/open_fume_extractor/logo.png" alt=""><span></span></div>
     <div class="message" role="status"></div><div class="cards"></div>`;
     this._children = [];
@@ -170,6 +178,7 @@ class OfeCard extends HTMLElement {
   getGridOptions() { return {columns: this._config?.type === "custom:ofe-overview-card" ? "full" : 12, min_columns: 6}; }
   _panel(config, uid, rows, helpers) {
     const root = document.createElement("ha-card"); root.className = "device";
+    root.style.setProperty("--ofe-accent", deviceAccent(rows[0]?.attributes.ofe_device_type));
     const header = document.createElement("div"); header.className = "device-head";
     const mark = document.createElement(uid === rows[0]?.attributes.ofe_master_uid ? "img" : "ha-icon");
     if (mark.localName === "img") { mark.src = "/open_fume_extractor/logo.png"; mark.alt = ""; }
@@ -207,7 +216,7 @@ class OfeCard extends HTMLElement {
     const unframe = () => {
       if (!card.shadowRoot || card.shadowRoot.querySelector("[data-ofe-style]")) return;
       const style = document.createElement("style"); style.dataset.ofeStyle = "";
-      style.textContent = ":host{--ha-card-border-width:0;--ha-card-box-shadow:none;--ha-card-background:transparent;border:0;box-shadow:none;background:transparent;border-radius:0}ha-card{border:0;box-shadow:none;background:transparent;border-radius:0}.card-header,h2{display:none}";
+      style.textContent = ":host{--ha-card-border-width:0;--ha-card-box-shadow:none;--ha-card-background:transparent;border:0;box-shadow:none;background:transparent;border-radius:0}ha-card{border:0;box-shadow:none;background:transparent;border-radius:0}.card-header,h2{display:none}#states{padding:8px 16px 12px}.divider{margin:16px 0 8px}";
       card.shadowRoot.append(style);
     };
     customElements.whenDefined(card.localName).then(unframe);
@@ -235,7 +244,7 @@ class OfeCard extends HTMLElement {
       transportBadge.querySelector("span").textContent = transport === "wifi" ? "Wi-Fi" : "RS485";
       transportBadge.querySelector("ha-icon").setAttribute("icon", transport === "wifi" ? "mdi:wifi" : "mdi:serial-port");
       panel.model.textContent = attr.ofe_device_model || (panel.uid === attr.ofe_master_uid ? "Open Fume Extractor" : text.module);
-      panel.model.hidden = panel.model.textContent === panel.root.querySelector(".device-title").textContent.replace(/^0x[0-9A-F]{2} /i, "");
+      panel.model.hidden = panel.uid === attr.ofe_master_uid || panel.model.textContent === panel.root.querySelector(".device-title").textContent.replace(/^0x[0-9A-F]{2} /i, "");
       for (const led of panel.leds.children) {
         const state = find("led_" + led.dataset.channel), data = state?.attributes || {};
         const effect = ["off", "solid", "breath", "whitebreath", "greenwhite", "bluewhite", "purplewhite", "blink", "double"].includes(data.ofe_led_effect) ? data.ofe_led_effect : "off";
@@ -334,12 +343,17 @@ class OfeAlarmsCard extends HTMLElement {
   constructor() {
     super(); this.attachShadow({mode: "open"});
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block;min-width:0;letter-spacing:0}ha-card{display:block;padding:20px;border-radius:8px}
+      :host{display:block;min-width:0;font-family:var(--paper-font-body1_-_font-family,inherit);letter-spacing:0}
+      *{box-sizing:border-box}ha-card{--alarm-accent:var(--error-color,#b43c3c);position:relative;display:block;padding:18px 20px;border-radius:8px;
+        border:1px solid var(--ha-card-border-color,var(--divider-color));background:var(--ha-card-background,var(--card-background-color));box-shadow:var(--ha-card-box-shadow,none)}
+      ha-card::before{content:"";position:absolute;left:7px;top:18px;height:24px;width:3px;border-radius:2px;background:var(--alarm-accent)}
+      ha-card[data-state="clear"]{--alarm-accent:var(--success-color,#168369)}ha-card[data-state="unknown"]{--alarm-accent:var(--secondary-text-color)}
       h2{display:flex;align-items:center;gap:10px;font-size:17px;line-height:1.4;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}
-      ha-icon{--mdc-icon-size:22px;flex-shrink:0;color:var(--error-color,#b43c3c)}
-      ul{margin:0;padding-left:20px;font-size:14px;line-height:1.5}li{padding:4px 0;overflow-wrap:anywhere}
-      .message{font-size:14px;color:var(--secondary-text-color);overflow-wrap:anywhere}[hidden]{display:none}
-    </style><ha-card><h2><ha-icon icon="mdi:bell-alert-outline"></ha-icon><span></span></h2>
+      h2 span{min-width:0;flex:1}ha-icon{--mdc-icon-size:22px;flex-shrink:0;color:var(--alarm-accent)}
+      .alarm-count{font-size:22px;font-weight:600;color:var(--alarm-accent);font-variant-numeric:tabular-nums}
+      ul{margin:0;padding:0;list-style:none;font-size:14px;line-height:1.5}li{padding:12px 0;overflow-wrap:anywhere;border-top:1px solid var(--divider-color)}
+      .message{font-size:14px;line-height:1.5;color:var(--secondary-text-color);overflow-wrap:anywhere}[hidden]{display:none}
+    </style><ha-card><h2><ha-icon icon="mdi:bell-alert-outline"></ha-icon><span></span><b class="alarm-count" aria-hidden="true"></b></h2>
       <div class="message" role="status"></div><ul class="alarm-list"></ul></ha-card>`;
   }
   static getConfigElement() { return document.createElement("ofe-card-editor"); }
@@ -357,6 +371,10 @@ class OfeAlarmsCard extends HTMLElement {
   _update() {
     if (!this._config || !this._hass) return;
     const text = words[language(this._hass)], state = this._hass.states[this._config.entity], rows = alarmRows(state);
+    const known = !!this._config.entity && hasValue(state) && Array.isArray(state.attributes?.alarms);
+    this.shadowRoot.querySelector("ha-card").dataset.state = !known ? "unknown" : rows.length ? "alert" : "clear";
+    this.shadowRoot.querySelector("h2 ha-icon").setAttribute("icon", !known ? "mdi:help-circle-outline" : rows.length ? "mdi:bell-alert-outline" : "mdi:check-circle-outline");
+    const count = this.shadowRoot.querySelector(".alarm-count"); count.hidden = !known; count.textContent = String(rows.length);
     this.shadowRoot.querySelector("h2 span").textContent = this._config.title || text.alarms;
     const message = this.shadowRoot.querySelector(".message"), list = this.shadowRoot.querySelector("ul");
     message.textContent = !this._config.entity ? text.chooseAlarm : !hasValue(state) ? text.unavailable :

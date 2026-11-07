@@ -1,7 +1,7 @@
 # Open Fume Extractor 2.0.87 RC
 
 Community Master **2.0.87RC**, JBC FAE Bus **1.1.70RC** and native Home Assistant
-integration **0.1.0rc27**. The public master excludes developer mode and private
+integration **0.1.28RC** (HA/HACS version **0.1.28rc1**). The public master excludes developer mode and private
 developer credentials. Signing private keys and build caches are not published.
 
 ## Changes Since 2.0.75 RC
@@ -34,6 +34,9 @@ developer credentials. Signing private keys and build caches are not published.
 - HACS hides the development branch from normal downloads. Existing branch
   installations must select a numbered release once; RC releases remain opt-in
   pre-releases. This does not alter saved HACS channel preferences.
+- Home Assistant dashboard cards use matching module accents, compact summaries
+  and theme-aware status badges. Native controls and live-update focus are
+  preserved; an empty alarm list shows a green check, not an active warning.
 
 ## Updating
 

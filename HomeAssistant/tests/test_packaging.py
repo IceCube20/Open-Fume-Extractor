@@ -6,12 +6,19 @@ from pathlib import Path
 import re
 import unittest
 import zipfile
+from awesomeversion import AwesomeVersion
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components/open_fume_extractor"
 
 
 class PackagingTests(unittest.TestCase):
+    def test_release_version_is_recognized_and_upgrades_previous_series(self):
+        version = json.loads((COMPONENT / "manifest.json").read_text())["version"]
+        current = AwesomeVersion(version)
+        self.assertTrue(current.valid)
+        self.assertGreater(current, AwesomeVersion("0.1.0rc27"))
+
     def test_hacs_layout_has_exactly_one_self_contained_integration(self):
         self.assertEqual([p.name for p in (ROOT / "custom_components").iterdir() if p.is_dir() and p.name != "__pycache__"],
                          ["open_fume_extractor"])

@@ -2,6 +2,7 @@ build/
 .arduino-high-perf/
 .pytest_cache/
 __pycache__/
+node_modules/
 tools/tests/build-checks/
 *.log
 *.pyc
