@@ -54,5 +54,5 @@ The `*-merged.bin` files are complete images for an initial USB flash at address
 - Never use a merged image in the web updater.
 - Never flash an OTA package at address `0x0`.
 - Display 320x480, Display 800x480 and Display ST7796 320x480 are different firmware targets.
-- Display P4 800x480 is experimental and requires the ELECROW PRE-V3 hardware/SDK profile; never use an S3 image on it.
+- Display P4 800x480 requires the ELECROW PRE-V3 hardware/SDK profile; never use an S3 image on it.
 - The web updater rejects a file whose target or Ed25519 signature does not match the selected device.

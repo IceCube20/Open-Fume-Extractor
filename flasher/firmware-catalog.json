@@ -97,7 +97,7 @@
   },
   {
     "id": "Display-P4-800x480",
-    "label": "Display P4 800x480 (experimental, PRE-V3)",
+    "label": "Display P4 800x480 (PRE-V3)",
     "version": "1.0.13RC",
     "signatureTarget": "DISPLAY_P4_800X480",
     "chipFamily": "ESP32-P4",
