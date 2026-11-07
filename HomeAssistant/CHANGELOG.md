@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0rc27
+
+- Hide the `main` development branch from the HACS download selector so normal
+  installations use numbered releases.
+- Document the one-time switch from branch/commit tracking to an RC release.
+  Existing HACS channel selections are not changed automatically; RC releases
+  still require opting into pre-releases where applicable.
+- Keep device identities, integration settings and dashboard layouts unchanged.
+
 ## 0.1.0rc26
 
 - Allow native status polling from 0.5 to 60 seconds, preserving fractional intervals.

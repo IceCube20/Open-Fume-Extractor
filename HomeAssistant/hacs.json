@@ -1,1 +1,6 @@
-{"name": "Open Fume Extractor", "homeassistant": "2025.1.0"}
+{
+  "name": "Open Fume Extractor",
+  "hide_default_branch": true,
+  "homeassistant": "2026.10.0",
+  "hacs": "2.0.0"
+}

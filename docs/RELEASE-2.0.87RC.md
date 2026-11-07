@@ -1,7 +1,7 @@
 # Open Fume Extractor 2.0.87 RC
 
 Community Master **2.0.87RC**, JBC FAE Bus **1.1.70RC** and native Home Assistant
-integration **0.1.0rc26**. The public master excludes developer mode and private
+integration **0.1.0rc27**. The public master excludes developer mode and private
 developer credentials. Signing private keys and build caches are not published.
 
 ## Changes Since 2.0.75 RC
@@ -31,6 +31,9 @@ developer credentials. Signing private keys and build caches are not published.
   separators. The module table uses the same icons/colors as the cards.
 - Native Home Assistant polling is configurable from **0.5 to 60 seconds**.
   The existing default and stored preferences remain unchanged.
+- HACS hides the development branch from normal downloads. Existing branch
+  installations must select a numbered release once; RC releases remain opt-in
+  pre-releases. This does not alter saved HACS channel preferences.
 
 ## Updating
 

@@ -1,5 +1,5 @@
 /* OFE cards delegate all controls to Home Assistant's native entities card. */
-const VERSION = "0.1.0rc26";
+const VERSION = "0.1.0rc27";
 let helpersPromise;
 const words = {
   en: {master: "Master", module: "Module", overview: "Overview", auto: "Automatic",
