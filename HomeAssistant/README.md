@@ -58,6 +58,14 @@ Extract it and place its `open_fume_extractor` folder at:
 Restart Home Assistant and add the integration through **Devices & services**.
 Do not create a second nested `custom_components/custom_components` directory.
 
+## Status update interval
+
+The integration options accept **0.5 to 60 seconds**, including fractional values.
+The default stays at **5 seconds**; existing settings are preserved.
+An interval of 0.5 seconds polls twice per second and increases master/network
+load. It does not change the module polling rate or guarantee delivery of every
+short input/output pulse.
+
 ## Dashboard cards
 
 The integration includes **OFE Overview**, **OFE Master**, **OFE Module** and
@@ -86,7 +94,7 @@ lovelace:
 Use the unversioned URL there and fully reload the browser after updates.
 If automatic registration fails, a manual storage-mode fallback is available
 under **Settings > Dashboards > Resources** (Advanced Mode): add/update
-`/open_fume_extractor/ofe-cards.js?v=0.1.0rc25` as a JavaScript module, not a second
+`/open_fume_extractor/ofe-cards.js?v=0.1.0rc26` as a JavaScript module, not a second
 duplicate entry. Check HA logs for the underlying resource-registration error.
 
 ## Documentation and support
@@ -115,7 +123,7 @@ in a running HA installation. Cross-firmware MQTT/API contract tests remain in
 the main firmware repository. Integration runtime code is self-contained under
 `custom_components/open_fume_extractor/`.
 
-Tags must match the integration manifest version, for example `v0.1.0rc25`.
+Tags must match the integration manifest version, for example `v0.1.0rc26`.
 CI tests the component and HACS layout before publishing a manual-install ZIP.
 No firmware binaries, credentials or signing keys belong in this repository.
 

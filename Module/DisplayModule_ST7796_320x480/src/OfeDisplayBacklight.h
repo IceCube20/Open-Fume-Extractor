@@ -24,12 +24,15 @@ class OfeDisplayBacklight {
   }
   bool tick(uint32_t now, bool eco, bool inhibit) {
     const bool requested = wake_pending_.exchange(false);
-    if (requested || inhibit) return wake(now);
     const uint16_t value = settings();
     const uint8_t mode = uint8_t(value);
     const bool allowed = mode == 2 || (mode == 1 && eco);
-    const bool next = allowed && (off_.load() ||
-      uint32_t(now - last_activity_ms_) >= uint32_t(value >> 8) * 60000UL);
+    // Re-entering Eco starts a fresh delay, not the pre-extraction idle age.
+    const bool entering = allowed && !was_allowed_;
+    was_allowed_ = allowed;
+    if (requested || inhibit || !allowed || entering) return wake(now);
+    const bool next = off_.load() ||
+      uint32_t(now - last_activity_ms_) >= uint32_t(value >> 8) * 60000UL;
     return off_.exchange(next) != next;
   }
 
@@ -38,4 +41,5 @@ class OfeDisplayBacklight {
   std::atomic<bool> off_{false};
   std::atomic<bool> wake_pending_{true};
   uint32_t last_activity_ms_ = 0;
+  bool was_allowed_ = false;
 };

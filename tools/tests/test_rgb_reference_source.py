@@ -18,7 +18,7 @@ class RgbReferenceSource(unittest.TestCase):
 
     def test_production_stays_at_safe_baseline(self):
         source = (PROD / (PROD.name + ".ino")).read_text(encoding="utf-8-sig")
-        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 12", source)
+        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 10", source)
         self.assertIn("#define DISPLAY_STATUS_UI_MIN_INTERVAL_MS 100", source)
         self.assertIn("#define DISPLAY_RGB_PCLK_HZ 16000000", source)
         memory = (PROD / "src/OfeDisplayMemory.h").read_text()

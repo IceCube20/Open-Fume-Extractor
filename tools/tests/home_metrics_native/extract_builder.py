@@ -10,6 +10,10 @@ Path(sys.argv[1]).write_text(source[start:end], encoding='utf-8')
 start = source.index('static void sync_fanio_gpio_entities(')
 end = source.index('\n}\n', start) + 3
 Path(sys.argv[1]).with_name('fanio_live.inc.h').write_text(source[start:end], encoding='utf-8')
+
+start = source.index('  {\n    const uint16_t live_tail_reserve', source.index('bool MasterScheduler::sendDisplayStatus('))
+end = source.index('\n  // A7:', start)
+Path(sys.argv[1]).with_name('live_builder.inc.h').write_text(source[start:end], encoding='utf-8')
 start = source.index('bool MasterScheduler::readIoStatus(')
 end = source.index('\n}\n', start) + 3
 Path(sys.argv[1]).with_name('fanio_readback.inc.h').write_text(

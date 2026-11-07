@@ -3,9 +3,12 @@
 #include <cstdio>
 #include <cstring>
 #include "Rs485PeripheralBus.h"
+#include "../../../OpenFumeExtractorMaster/src/WifiOtaDiagnostics.h"
 using namespace jbc_rs485;
 static constexpr uint8_t DATA=4;
 static uint32_t esp_random() { return 0x12345678u; }
+static uint32_t now_ms=0;
+static uint32_t millis() { return now_ms; }
 
 // Only peer lookup and network I/O are adapted; routing comes from production.
 class MasterDisplayWifi {
@@ -14,7 +17,11 @@ public:
   Peer peers_[1];
   bool online=true,physical_=false,firmware_wifi_=false,send_ok=true;
   bool firmware_bulk_available_=false,firmware_bulk_confirmed_=false;
+  bool firmware_bulk_retry_pending_=false;
+  uint32_t firmware_bulk_retry_started_ms_=0;
+  uint32_t firmware_bulk_retry_delay_ms_=2000;
   uint32_t firmware_bulk_request_=0;
+  ofe_wifi_ota::Diagnostics firmware_bulk_diagnostics_;
   std::atomic<uint8_t> firmware_addr_{0};
   uint64_t firmware_uid_=0;
   unsigned sends=0;
@@ -33,7 +40,9 @@ public:
   Peer* peer(uint8_t addr) { return addr==peers_[0].addr ? &peers_[0] : nullptr; }
   bool send(Peer&,uint8_t,const Frame*) { ++sends; return send_ok; }
   void beginFirmware(uint8_t addr);
+  void endFirmware();
   bool route(const Frame&);
+#include "generated_master_bulk_policy.inc.h"
 };
 #include "generated_master_route.inc.h"
 
@@ -55,8 +64,41 @@ int main() {
   assert(!MasterDisplayWifi::pollHook(&master, frame) && master.receives==4);
   assert(!MasterDisplayWifi::pollHook(&master, frame) && master.receives==8);
   assert(MasterDisplayWifi::pollHook(&master, frame) && master.receives==11);
+  master.firmware_bulk_diagnostics_.note(ofe_wifi_ota::Tx);
   master.beginFirmware(0x40);
+  assert(master.firmware_bulk_diagnostics_.snapshot().events[ofe_wifi_ota::Tx]==0);
   assert(master.firmware_wifi_ && master.route(frame) && master.sends==1);
+  assert(master.firmwareBulkAvailable(0x40) && !master.firmwareBulkConfirmed(0x40));
+  master.firmwareBulkFailed(); // Old firmware is not probed repeatedly.
+  now_ms=10000;
+  assert(!master.firmwareBulkAvailable(0x40));
+  master.beginFirmware(0x40);
+  master.firmwareBulkSucceeded();
+  assert(master.firmwareBulkConfirmed(0x40) && !master.firmwareBulkAvailable(0x41));
+  master.firmwareBulkFailed();
+  assert(!master.firmwareBulkAvailable(0x40));
+  now_ms+=1999;
+  assert(!master.firmwareBulkAvailable(0x40));
+  ++now_ms;
+  assert(master.firmwareBulkAvailable(0x40) && master.firmwareBulkConfirmed(0x40));
+  master.firmwareBulkFailed(); // Another failure starts a fresh bounded cooldown.
+  assert(!master.firmwareBulkAvailable(0x40));
+  assert(master.firmware_bulk_retry_delay_ms_==4000);
+  for (unsigned i=0;i<8;++i) master.firmwareBulkFailed();
+  assert(master.firmware_bulk_retry_delay_ms_==30000); // A broken large-packet path backs off.
+  master.firmwareBulkSucceeded();
+  assert(master.firmware_bulk_retry_delay_ms_==2000);
+  assert(master.firmwareBulkAvailable(0x40));
+  now_ms=0xFFFFFF00u;
+  master.firmwareBulkFailed();
+  now_ms+=1999;
+  assert(!master.firmwareBulkAvailable(0x40));
+  ++now_ms;
+  assert(master.firmwareBulkAvailable(0x40));
+  master.endFirmware();
+  assert(!master.firmwareBulkAvailable(0x40) && !master.firmware_bulk_retry_pending_);
+  master.beginFirmware(0x40);
+  assert(!master.firmwareBulkConfirmed(0x40)); // No capabilities leak across sessions.
   master.online=false; master.peers_[0].connected=false;
   assert(!master.route(frame) && master.sends==1); // allow bounded physical fallback
   master.physical_=true;

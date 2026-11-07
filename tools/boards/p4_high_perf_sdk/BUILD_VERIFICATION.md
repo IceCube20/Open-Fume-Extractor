@@ -1,8 +1,4 @@
-# P4 SDK Build Verification (Historical)
-
-This records the initial SDK bring-up, not the current release checklist.
-For the subsequently owner-tested GUI-task firmware and published alpha image,
-see [2.0.75 RC release notes](../../../docs/RELEASE-2.0.75RC.md).
+# P4 SDK Build Verification
 
 Local Windows build checked and flashed on 2026-10-23. **Boot and Master connection
 verified; benchmark and full functional testing pending.** A separate Arduino
@@ -59,10 +55,13 @@ report is `firmware-check/ecc-link-verification.json`.
 
 ## Device Upload And First Boot
 
-- Device: ESP32-P4 revision 1.3, 16 MB flash.
+- Device: ESP32-P4 revision 1.3, MAC `E8:F6:0A:E2:51:C1`, 16 MB flash.
 - UART0 upload through COM18 using packaged esptool 5.3.1, 921600 baud.
-- Full 16 MB original flash backup completed before writing and kept privately.
+- Full 16 MB original flash backup completed before writing. Kept privately in
+  `C:/esp/ofe-p4-3.3.12/device-backups/P4-E8F60AE251C1-before-cache256-20261023`.
   It contains device settings and must not be published.
+- Backup SHA-256:
+  `ad9d1d8179fe0f662e6cc735c509ab8bb98d6d553ebdddae133c269224901f56`.
 - Wrote matching bootloader at `0x2000`, OTA selection data at `0xe000` and
   application at `0x10000`. All three esptool hash verifications passed.
 - Preserved the device's existing partition table: app0 `0x10000`, app1 `0x340000`,

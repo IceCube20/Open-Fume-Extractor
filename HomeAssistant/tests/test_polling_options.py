@@ -40,16 +40,16 @@ class PollingOptionsTests(unittest.IsolatedAsyncioTestCase):
         form = await flow.async_step_init()
         schema = form["data_schema"]
         self.assertEqual(schema({}), {"scan_interval": 5})
-        for seconds in (1, 5, 60):
+        for seconds in (0.5, 0.75, 1, 1.5, 5, 60):
             with self.subTest(seconds=seconds):
                 self.assertEqual(schema({"scan_interval": seconds}), {"scan_interval": seconds})
-        for seconds in (0, 61):
+        for seconds in (-1, 0, 0.49, 60.01, 61):
             with self.subTest(seconds=seconds), self.assertRaises(vol.Invalid):
                 schema({"scan_interval": seconds})
 
     async def test_selected_interval_is_saved_and_used_as_form_default(self):
         flow = flow_class()
-        for seconds in (1, 60):
+        for seconds in (0.5, 1.5, 60):
             flow.config_entry = types.SimpleNamespace(options={"scan_interval": seconds})
             form = await flow.async_step_init()
             self.assertEqual(form["data_schema"]({}), {"scan_interval": seconds})

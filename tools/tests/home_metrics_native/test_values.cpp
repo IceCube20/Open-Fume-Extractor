@@ -27,7 +27,7 @@ static uint8_t ack=255,pending_id=51;
 static void send_status_response(const Frame&,uint8_t status){ack=status;}
 static void universal_pending_observe(uint8_t addr,const Entity& e){if(addr==0x50&&e.id==pending_id&&e.value==777)pending_id=0;}
 static bool worker=true;
-static bool running_in_rs485_task(){return worker;}
+static bool ui_needs_defer(){return worker;}
 constexpr uint32_t UI_DEFER_APP_VALUES=1,UI_DEFER_MODULE_DETAIL=2;
 static uint32_t deferred=0,home_updates=0,detail_updates=0;
 static void ui_defer_flags(uint32_t flags){deferred|=flags;}

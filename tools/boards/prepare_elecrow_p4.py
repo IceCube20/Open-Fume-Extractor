@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "Module/DisplayModule_800x480"
 DEST = ROOT / "Module/DisplayModule_P4_800x480"
 TEMPLATES = Path(__file__).resolve().parent / "elecrow_p4_5inch"
-P4_FW_PATCH = 7
+P4_FW_PATCH = 13
+P4_FW_SUFFIX = "RC"
 
 
 def once(text, old, new):
@@ -36,6 +37,16 @@ def replace_function(text, name, body):
 def generated_files():
     original = (SOURCE / (SOURCE.name + ".ino")).read_text(encoding="utf-8-sig")
     source = original
+    # Preserve the tested P4 bounce-buffer size independently of the S3 profile.
+    source, count = re.subn(r"^#define DISPLAY_RGB_BOUNCE_BUFFER_LINES \d+[^\n]*$",
+                            "#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 12", source, flags=re.M)
+    if count != 1:
+        raise ValueError("Bounce-buffer default boundary changed")
+    for name, value in (("LVGL_DRAW_BUFFER_USE_PSRAM", 0), ("LVGL_DRAW_BUFFER_LINES_FAST", 48)):
+        source, count = re.subn(r"^#define " + name + r" \d+[^\n]*$",
+                                f"#define {name} {value}", source, flags=re.M)
+        if count != 1:
+            raise ValueError("P4 draw-buffer default boundary changed: " + name)
     # Keep performance reports visible on UART0 as well as native USB CDC.
     source = once(source, '  Serial.printf(\n    "LVGL PERF:',
                   '  debug_printf(\n    "LVGL PERF:')
@@ -64,7 +75,7 @@ def generated_files():
             raise ValueError("Firmware version boundary changed: " + component)
     start = source.index("#if OFE_RGB_RENDER_DIAGNOSTICS\n#define OFE_MODULE_FW_SUFFIX")
     end = source.index("#define OFE_MODULE_FW_VERSION", start)
-    source = source[:start] + '#define OFE_MODULE_FW_SUFFIX "alpha-P4Prep"\n' + source[end:]
+    source = source[:start] + f'#define OFE_MODULE_FW_SUFFIX "{P4_FW_SUFFIX}"\n' + source[end:]
     source = once(source, "target=DISPLAY_800X480;version=", "target=DISPLAY_P4_800X480;version=")
     source = source.replace("CAP_DISPLAY_800X480 | CAP_FW_UPDATE |", "CAP_DISPLAY_P4 | CAP_DISPLAY_800X480 | CAP_FW_UPDATE |")
     source = once(source, "static size_t fw_update_write_len = 0;",
@@ -73,8 +84,8 @@ def generated_files():
                   "static void fw_update_buffer_reset() {\n  p4_firmware_guard.reset();\n")
     source = once(source, "static bool fw_update_buffer_append(const uint8_t* data, size_t len) {\n",
                   "static bool fw_update_buffer_append(const uint8_t* data, size_t len) {\n  if (!p4_firmware_guard.append(data, len)) return false;\n")
-    source = once(source, "const bool ok = fw_update_buffer_flush() && Update.end(true);",
-                  "const bool ok = p4_firmware_guard.complete() && fw_update_buffer_flush() && Update.end(true);")
+    source = once(source, "const bool ok = fw_update_buffer_flush() && display_firmware_writer.end(true);",
+                  "const bool ok = p4_firmware_guard.complete() && fw_update_buffer_flush() && display_firmware_writer.end(true);")
     source = once(source, "  if (!fw_update_buffer_append(data, n)) return STATUS_BUSY;",
                   "  if (!fw_update_buffer_append(data, n)) { fw_update_abort_local(); return STATUS_BAD_VALUE; }")
 
@@ -218,12 +229,17 @@ def generated_files():
     outputs["build_opt.h"] = b'-O3\n-DLV_CONF_PATH=\\"ofe_lv_conf.h\\"\n'
     wifi = outputs["src/OfeDisplayWifi.h"].decode("utf-8-sig")
     wifi = once(wifi, '#include "OfeDisplayTunnel.h"', '#include "OfeDisplayTunnel.h"\n#include "../OfeP4Board.h"')
+    wifi = once(wifi, '    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {',
+                '    // The P4 has no local WiFi MAC; use its factory eFuse identity, not the hosted C6.\n'
+                '    if (esp_efuse_mac_get_default(mac) == ESP_OK) {')
+    wifi = once(wifi, '// Extremely defensive fallback; normal ESP32-S3 hardware always has a base MAC.',
+                '// Defensive fallback if the P4 factory eFuse MAC cannot be read.')
     wifi = once(wifi, '  bool startRadio(const char* phase) {',
                 '  bool startRadio(const char* phase) {\n'
                 '    if (!ofe_p4::hostedPinsReady()) return false; // Never fall back to EV-board SDIO pins.')
     outputs["src/OfeDisplayWifi.h"] = wifi.encode()
     manifest = {
-        "firmware_version": f"1.0.{P4_FW_PATCH}alpha-P4Prep",
+        "firmware_version": f"1.0.{P4_FW_PATCH}{P4_FW_SUFFIX}",
         "status": "software port; hosted BLE and RS485/WiFi OTA enabled; hardware validation pending",
         "base_sketch_sha256": hashlib.sha256(original.encode()).hexdigest(),
         "vendor_repository": "https://github.com/Elecrow-RD/-CrowPanel-Advanced-5inch-ESP32-P4-HMI-AI-Display-800x480-IPS-Touch-Screen",

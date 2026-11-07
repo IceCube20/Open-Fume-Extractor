@@ -39,36 +39,21 @@ two defaults. Simply editing the root sdkconfig would test the wrong variant.
 From the project root, using Python 3.11 or newer:
 
 ```powershell
-$ws = 'C:/esp/ofe-s3-3.2.0-wifi-sram'
-python tools/boards/s3_wifi_memory_sdk/prepare.py prepare --workspace $ws --sdk <baseline-sdk-root>/esp32s3
-python tools/boards/s3_wifi_memory_sdk/prepare.py fetch-builder --workspace $ws
-python tools/boards/s3_wifi_memory_sdk/build.py fetch --workspace $ws
-python tools/boards/s3_wifi_memory_sdk/build.py pin-components --workspace $ws
-python tools/boards/s3_wifi_memory_sdk/build.py setup --workspace $ws
-python tools/boards/s3_wifi_memory_sdk/build.py configure --workspace $ws --profile candidate
-python tools/boards/s3_wifi_memory_sdk/build.py build --workspace $ws --profile candidate --jobs 8
+python tools/boards/s3_wifi_memory_sdk/prepare.py prepare --workspace C:/esp/ofe-s3-3.2.0-wifi-sram --sdk <baseline-sdk-root>/esp32s3
+python tools/boards/s3_wifi_memory_sdk/prepare.py fetch-builder --workspace C:/esp/ofe-s3-3.2.0-wifi-sram
 ```
 
-The `prepare.py` preparation/audit commands never install a toolchain or upload
-firmware. `build.py setup` installs build tools only inside the isolated
-workspace, and `build.py build` compiles the candidate libraries. The helpers
-refuse unrelated nonempty workspaces and conflicting files. Fetch uses exact
-commits, not floating branch names.
+These commands never invoke a compiler, install libraries, edit board settings
+or upload firmware. They refuse unrelated nonempty workspaces and conflicting
+files. Fetch uses an exact commit, not the now-unavailable upstream branch name.
 
 ## Candidate Build Result
 
 The candidate used the pinned IDF 5.4 / Arduino 3.2.0 sources and exact managed
-component versions. The full SDK builder target completed successfully, and the
-original `copy-libs.sh` exporter generated the S3 SDK package. To export a local
-candidate build, create a temporary junction for the exporter's expected build
-path, run its CMake target, then remove only that junction:
+component versions. The full SDK builder target completed successfully, then
+the original `copy-libs.sh` exporter generated the S3 SDK package at:
 
-```powershell
-New-Item -ItemType Junction -Path "$ws/builder/build" -Target "$ws/build-candidate-r5"
-& "$ws/tools/tools/cmake/3.30.2/bin/cmake.exe" --build "$ws/build-candidate-r5" --target idf-libs --parallel 8
-Copy-Item "$ws/baseline-versions.txt" "$ws/builder/out/tools/esp32-arduino-libs/versions.txt"
-Remove-Item -LiteralPath "$ws/builder/build"
-```
+`C:/esp/ofe-s3-3.2.0-wifi-sram/builder/out/tools/esp32-arduino-libs/esp32s3`
 
 The rebuilt archives differ from the captured baseline (`esp_wifi`: 329,848 to
 329,388 bytes; `lwip`: 4,506,032 to 4,505,744 bytes). The active `qio_opi`
@@ -78,10 +63,11 @@ pass. These small archive-size changes do not imply a throughput improvement.
 
 The separate board-profile installer is
 `tools/boards/s3_wifi_memory_sdk/install_candidate_board.ps1`. Run it from the
-project root with `-CandidateWorkspace $ws`, restart Arduino IDE, and select
-**OFE RGB WiFi SRAM Candidate > OFE Display 800x480 (WiFi SRAM Test)**. Its FQBN
-is `ofe_sram:esp32:ofe800sram`; the existing High Performance profile remains
-separate.
+project's `outputs/OpenFumeExtractorMaster_Arduino` directory, restart Arduino
+IDE, and select **OFE RGB WiFi SRAM Candidate > OFE Display 800x480 (WiFi SRAM
+Test)**. Its FQBN is `ofe_sram:esp32:ofe800sram`; the existing High Performance
+profile remains separate. The installer copies a platform snapshot and creates
+only the dedicated `hardware/ofe_sram/esp32` board link.
 
 The full OFE S3 sketch still needs a compile/link against this candidate and a
 memory review before it is a verified firmware build. Arduino CLI could not be

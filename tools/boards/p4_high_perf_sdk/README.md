@@ -1,11 +1,5 @@
 # P4 PRE-V3 Cache Performance SDK Preparation
 
-The bring-up notes below document the initial SDK experiment. The owner later
-tested the dedicated GUI-task firmware at 24 MHz and reported about 41 FPS in
-the OFE benchmark. See [current release notes](../../../docs/RELEASE-2.0.75RC.md).
-The P4 image remains experimental; these results are not a guarantee for other
-boards, scenes or chip revisions.
-
 Status: **native Windows candidate built, validated and boot-tested on the owner's
 P4; performance and full functional tests pending**. A separate Arduino IDE
 profile is installed locally; the stock ESP32 SDK is unchanged.

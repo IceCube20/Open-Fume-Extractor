@@ -16,13 +16,25 @@ struct DisplayUniversalControlPending;
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "src/OfeDisplayGuiTask.h"
+#include "src/OfeDisplayUpdateExit.h"
 #include <Preferences.h>
 #include <Update.h>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define OFE_DISPLAY_OTA_TIMING 1
+#include "src/OfeRgbOta.h"
+static OfeRgbOta display_firmware_writer;
+#else
+static auto& display_firmware_writer = Update;
+#endif
 #include <Wire.h>
 #include <esp_heap_caps.h>
 #include <esp_attr.h>
 #include <esp_timer.h>
 #include <esp_idf_version.h>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include <esp_wifi.h>
+#include "src/OfeRgbOtaProbe.h"
+#endif
 #ifndef EXT_RAM_BSS_ATTR
 #define EXT_RAM_BSS_ATTR
 #endif
@@ -246,7 +258,8 @@ static const char* fan_io_alias_for(uint8_t addr, uint8_t slot, const char* fall
 #endif
 
 #ifndef DISPLAY_RS485_TASK_PRIORITY
-// Niedriger als v12: Der Bus bleibt separat, nimmt dem UI beim Scrollen aber weniger Zeit weg.
+// The priority-2 S3 OTA experiment did not improve the reported transfer.
+// Restore the baseline before testing WiFi buffers separately.
 #define DISPLAY_RS485_TASK_PRIORITY 1
 #endif
 
@@ -317,8 +330,8 @@ static const uint16_t HW_VERSION = 0x0200;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 7
-#define OFE_MODULE_FW_SUFFIX "alpha-P4Prep"
+#define OFE_MODULE_FW_PATCH 13
+#define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
 static const uint8_t FW_MAJOR = OFE_MODULE_FW_MAJOR;
@@ -451,8 +464,9 @@ static HomeWellerDetailCache home_weller_cache;
 static HomeFanIoDetailCache home_fan_io_cache;
 
 static std::atomic<uint32_t> fw_update_reboot_ms{0};
+static OfeDisplayUpdateExit display_update_exit;
 static void fw_update_abort_local() {
-  if (fw_update_active) Update.abort();
+  if (fw_update_active) display_firmware_writer.abort();
   fw_update_active = false;
   display_wifi.finishUpdate();
   fw_update_started_ms = 0;
@@ -467,6 +481,7 @@ static void fw_update_check_timeout() {
   if (committed_ms && (uint32_t)(millis() - committed_ms) >= 12000UL) ESP.restart();
   if (fw_update_active && (uint32_t)(millis() - fw_update_last_ms) > FW_UPDATE_TIMEOUT_MS) {
     fw_update_abort_local();
+    display_update_exit.requestAbort();
   }
 }
 static std::atomic<uint32_t> fw_update_offset{0};
@@ -487,7 +502,14 @@ static void fw_update_buffer_reset() {
 static bool fw_update_buffer_flush() {
   if (!fw_update_write_len) return true;
   const size_t n = fw_update_write_len;
-  if (Update.write(fw_update_write_buffer, n) != n) return false;
+  if (display_firmware_writer.write(fw_update_write_buffer, n) != n) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    const auto timing = display_firmware_writer.timing();
+    Serial.printf("OTA FLASH: write failed | offset=%u | error=0x%X | max=%u ms\n",
+      (unsigned)fw_update_offset.load(), (unsigned)timing.error, (unsigned)(timing.max_us / 1000U));
+#endif
+    return false;
+  }
   fw_update_write_len = 0;
   return true;
 }
@@ -1034,6 +1056,18 @@ static inline void display_resync_after_flash_write() {
   // operation explicitly instead of restarting normal UI traffic.
 }
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+static OfeRgbOtaProbe rgb_ota_probe(DISPLAY_RGB_PCLK_HZ);
+#endif
+
+static uint32_t display_requested_pclk_hz() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  return rgb_ota_probe.requestedHz();
+#else
+  return DISPLAY_RGB_PCLK_HZ;
+#endif
+}
+
 static lv_display_t* lvgl_disp = nullptr;
 static lv_indev_t* lvgl_touch_indev = nullptr;
 static uint8_t* lvgl_draw_buf = nullptr;
@@ -1281,6 +1315,9 @@ static lv_obj_t* ui_update_size = nullptr;
 static lv_obj_t* ui_update_speed = nullptr;
 static lv_obj_t* ui_update_detail = nullptr;
 static lv_obj_t* ui_status_msg = nullptr;
+static lv_obj_t* ui_status_back = nullptr;
+static void lv_update_abort_back_event(lv_event_t*);
+static void update_exit_tick();
 static lv_obj_t* ui_home_output = nullptr;
 static lv_obj_t* ui_home_power = nullptr;
 static lv_obj_t* ui_home_rpm = nullptr;
@@ -1804,13 +1841,24 @@ static void perf_finish_window_if_due() {
     perf_handler_max_x10_ms / 10, perf_handler_max_x10_ms % 10,
     perf_flush_avg_x10_ms / 10, perf_flush_avg_x10_ms % 10,
     perf_flush_max_x10_ms / 10, perf_flush_max_x10_ms % 10,
-    (double)DISPLAY_RGB_PCLK_HZ /
+    (double)display_requested_pclk_hz() /
       (double)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) *
                (DISPLAY_RGB_HEIGHT + 16 + 4 + 16)));
 
 
   perf_window_ms = now_ms;
   perf_frames = 0;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  if (fw_update_active) {
+    const auto timing = display_firmware_writer.timing();
+    const uint32_t average = timing.writes ? timing.total_us / timing.writes : 0;
+    Serial.printf("OTA FLASH: IDF sequential | writes=%u | avg=%u.%u ms max=%u.%u ms | error=0x%X\n",
+      (unsigned)timing.writes, (unsigned)(average / 1000U), (unsigned)((average % 1000U) / 100U),
+      (unsigned)(timing.max_us / 1000U), (unsigned)((timing.max_us % 1000U) / 100U),
+      (unsigned)timing.error);
+    display_wifi.logOtaTiming();
+  }
+#endif
   perf_flush_calls = 0;
   perf_pixels = 0;
   perf_flush_us = 0;
@@ -3865,6 +3913,9 @@ static void lv_create_status_screen() {
   lv_style_screen(ui_status_screen);
   ofe_display_ui::flat(ui_status_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_status_screen, "display");
+  ui_status_back = ofe_display_ui::button(ui_status_screen, 12, 0, 44, LV_SYMBOL_LEFT, lv_update_abort_back_event);
+  lv_obj_align(ui_status_back, LV_ALIGN_BOTTOM_LEFT, 12, -12);
+  lv_obj_add_flag(ui_status_back, LV_OBJ_FLAG_HIDDEN);
   lv_obj_t* card = lv_card(ui_status_screen, 120, 110, 560, 132, ui_theme_color(0x171C22, 0xF7FAFC));
   ui_status_msg = lv_label(card, "", 18, 40, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 510);
   ofe_display_ui::flat(card, ofe_display_ui::surface());
@@ -5633,7 +5684,7 @@ static void display_benchmark_finish(uint32_t now) {
     (float)perf_handler_us / (float)perf_handler_calls / 1000.0f : 0.0f;
   const float flush_avg_ms = perf_flush_calls ?
     (float)perf_flush_us / (float)perf_flush_calls / 1000.0f : 0.0f;
-  const float scan_hz = (float)DISPLAY_RGB_PCLK_HZ /
+  const float scan_hz = (float)display_requested_pclk_hz() /
     (float)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) * (DISPLAY_RGB_HEIGHT + 16 + 4 + 16));
 
   const uint32_t benchmark_buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
@@ -5790,7 +5841,7 @@ static void lv_create_app_screens() {
   lv_label_set_long_mode(ui_home_rpm, LV_LABEL_LONG_CLIP);
   lv_obj_set_style_text_align(ui_home_rpm, LV_TEXT_ALIGN_RIGHT, 0);
   ui_home_afterrun = lv_label(ui_home_output_card, "Afterrun 0s", 16, 54, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 116);
-  ui_home_continuous_button = lv_small_button(ui_home_output_card, 120, 32, 94, tr("Continuous", "Dauerlauf"), lv_home_continuous_event);
+  ui_home_continuous_button = lv_small_button(ui_home_output_card, 120, 32, 92, tr("Continuous", "Dauerlauf"), lv_home_continuous_event);
   ui_home_fan_button = lv_small_button(ui_home_output_card, 220, 32, 68, tr("Fan", "L\303\274fter"), lv_home_fan_event);
   ui_home_light_button = lv_small_button(ui_home_output_card, 296, 32, 68, tr("Light", "Licht"), lv_home_light_event);
   ui_home_io1_button = lv_small_button(ui_home_output_card, 220, 32, 68, "OUT 1", lv_home_io1_event);
@@ -5804,10 +5855,10 @@ static void lv_create_app_screens() {
   // Row 1: three clean columns. Labels sit above the controls so German text
   // can never intrude into a neighbouring dropdown/text field.
   lv_label(ui_home_settings_card, tr("Mode", "Stufe"), 12, 8,
-    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 118);
+    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 140);
   ui_home_mode_dropdown = lv_dropdown_create(ui_home_settings_card);
   lv_obj_set_pos(ui_home_mode_dropdown, 12, 30);
-  lv_obj_set_size(ui_home_mode_dropdown, 118, 40);
+  lv_obj_set_size(ui_home_mode_dropdown, 140, 40);
   lv_dropdown_set_options(ui_home_mode_dropdown,
     display_language == 1 ? "Hoch 100%\nMittel 60%\nNiedrig 30%\nBenutzer" :
                             "High 100%\nMedium 60%\nLow 30%\nCustom");
@@ -5816,25 +5867,25 @@ static void lv_create_app_screens() {
   lv_obj_set_style_pad_right(ui_home_mode_dropdown, 28, 0);
   lv_obj_add_event_cb(ui_home_mode_dropdown, lv_detail_jbc_mode_event, LV_EVENT_VALUE_CHANGED, NULL);
 
-  lv_label(ui_home_settings_card, tr("Power %", "Leistung %"), 138, 8,
-    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 88);
-  ui_home_power_input = lv_numeric_field(ui_home_settings_card, 138, 30, 88,
+  lv_label(ui_home_settings_card, tr("Power %", "Leistung %"), 160, 8,
+    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 98);
+  ui_home_power_input = lv_numeric_field(ui_home_settings_card, 160, 30, 98,
     status.select_flow / 10U, NUMERIC_FIELD_JBC_POWER);
 
-  lv_label(ui_home_settings_card, tr("Afterrun (s)", "Nachlauf (s)"), 234, 8,
-    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 130);
-  ui_home_delay_input = lv_numeric_field(ui_home_settings_card, 234, 30, 130,
+  lv_label(ui_home_settings_card, tr("Afterrun (s)", "Nachlauf (s)"), 266, 8,
+    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 98);
+  ui_home_delay_input = lv_numeric_field(ui_home_settings_card, 266, 30, 98,
     status.delay_work_s, NUMERIC_FIELD_JBC_DELAY_WORK);
 
   // Row 2: Afterrun controls.
   lv_label(ui_home_settings_card, tr("Afterrun", "Nachlauf"), 12, 84,
-    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 108);
-  ui_home_afterrun_power_button = lv_small_button(ui_home_settings_card, 12, 106, 108,
+    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 140);
+  ui_home_afterrun_power_button = lv_small_button(ui_home_settings_card, 12, 106, 140,
     tr("Enabled", "Aktiv"), lv_home_afterrun_power_event);
 
-  lv_label(ui_home_settings_card, tr("Afterrun power %", "Nachlaufleistung %"), 138, 84,
-    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 226);
-  ui_home_afterrun_power_input = lv_numeric_field(ui_home_settings_card, 138, 106, 88,
+  lv_label(ui_home_settings_card, tr("Afterrun power %", "Nachlaufleistung %"), 160, 84,
+    lv_color_hex(0x8F9BA8), UI_FONT_DEFAULT, 204);
+  ui_home_afterrun_power_input = lv_numeric_field(ui_home_settings_card, 160, 106, 98,
     status.afterrun_power / 10U, NUMERIC_FIELD_AFTER_POWER);
 
   // Full-width selectors: labels are above, never horizontally overlapping the box.
@@ -6130,6 +6181,7 @@ static void lv_rebuild_app_ui() {
   ui_screensaver_hint = nullptr;
   ui_screensaver_eco_icon = nullptr;
   ui_status_msg = nullptr;
+  ui_status_back = nullptr;
   ui_home_io1_button = nullptr;
   ui_home_io2_button = nullptr;
   ui_home_work_icon = nullptr;
@@ -7923,6 +7975,8 @@ static void show_status_message(const char* msg) {
   lv_screen_switch(ui_status_screen);
 }
 
+#include "src/OfeDisplayUpdateExitUi.inc.h"
+
 static bool status_changed_for_draw() {
   if (!have_drawn_status) return true;
   return status.output_enabled != last_drawn_status.output_enabled ||
@@ -9044,7 +9098,7 @@ static void handle_fw_begin(const Frame& req) {
     fw_update_started_ms = 0;
     return;
   }
-  if (!Update.begin(fw_update_size ? fw_update_size.load() : UPDATE_SIZE_UNKNOWN)) {
+  if (!display_firmware_writer.begin(fw_update_size ? fw_update_size.load() : UPDATE_SIZE_UNKNOWN)) {
     display_wifi.finishUpdate();
     fw_update_active = false;
     send_status_response(req, STATUS_BUSY);
@@ -9147,12 +9201,12 @@ static void handle_fw_end(const Frame& req) {
     send_status_response(req, STATUS_BAD_VALUE);
     return;
   }
-  const bool ok = p4_firmware_guard.complete() && fw_update_buffer_flush() && Update.end(true);
+  const bool ok = p4_firmware_guard.complete() && fw_update_buffer_flush() && display_firmware_writer.end(true);
   fw_update_active = false;
   const bool wifi_update = display_wifi.updateWireless();
   if (ok && wifi_update) fw_update_reboot_ms.store(millis());
   else display_wifi.finishUpdate();
-  if (!ok) Update.abort();
+  if (!ok) display_firmware_writer.abort();
   if (ok && fw_update_size) fw_update_offset = fw_update_size.load();
   send_status_response(req, ok ? STATUS_OK : STATUS_BUSY);
   draw_update_progress_throttled(module_addr, ok ? 100 : 0, ok ? "Update complete - rebooting" : "Update failed", true);
@@ -10367,7 +10421,7 @@ static void handle_frame(const Frame& req) {
       if (fw_update_reboot_ms.load()) { send_status_response(req, STATUS_BUSY); break; }
       fw_update_abort_local();
       send_status_response(req, STATUS_OK);
-      show_status_message(update_message_text("Update aborted"));
+      display_update_exit.requestAbort();
       break;
     case CMD_FW_REBOOT:
       send_status_response(req, STATUS_OK);
@@ -10400,6 +10454,11 @@ static void rs485_task(void* pv) {
   (void)pv;
   rs485_task_handle = xTaskGetCurrentTaskHandle();
   Serial.printf("RS485 task running on core %u\n", (unsigned)xPortGetCoreID());
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  Serial.printf("OFE bus/WiFi task: priority=%u, stack=%u B, active/idle=%u/%u ms\n",
+    (unsigned)uxTaskPriorityGet(nullptr), (unsigned)DISPLAY_RS485_TASK_STACK,
+    (unsigned)DISPLAY_RS485_ACTIVE_YIELD_MS, (unsigned)DISPLAY_RS485_IDLE_DELAY_MS);
+#endif
   uint32_t last_periodic_ms = 0;
   for (;;) {
     const bool had_frames = poll_rs485();
@@ -10474,6 +10533,11 @@ static void serial_cli_print_help() {
   debug_println("  heap     - internal RAM and PSRAM");
   debug_println("  tasks    - FreeRTOS stack reserves");
   debug_println("  perf     - current LVGL/RGB counters");
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  debug_println("  wifidiag - actual driver power-save state (read only)");
+  debug_println("  rgbprobe - query nonpersistent RGB/WiFi OTA probe");
+  debug_println("  rgbprobe 15/14/13/normal - MHz during local OTA only (12 MHz and below removed)");
+#endif
   debug_println("  reboot   - restart this display");
 }
 
@@ -10524,7 +10588,7 @@ static void serial_cli_print_status() {
 
 static void serial_cli_print_perf() {
   const uint32_t buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
-  const float scan_hz = (float)DISPLAY_RGB_PCLK_HZ /
+  const float scan_hz = (float)display_requested_pclk_hz() /
     (float)((DISPLAY_RGB_WIDTH + 8 + 4 + 8) * (DISPLAY_RGB_HEIGHT + 16 + 4 + 16));
   debug_printf("PERF LVGL=%u.%u fps tiles=%u.%u/B%u MPix=%u.%02u handler=%u.%u/%u.%u ms copy=%u.%u/%u.%u ms scan=%.1f Hz\n",
     perf_fps_x10 / 10, perf_fps_x10 % 10,
@@ -10536,6 +10600,20 @@ static void serial_cli_print_perf() {
     perf_flush_max_x10_ms / 10, perf_flush_max_x10_ms % 10,
     scan_hz);
 }
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+static void serial_cli_print_wifi_driver() {
+  wifi_ps_type_t actual = WIFI_PS_NONE;
+  const esp_err_t error = esp_wifi_get_ps(&actual);
+  if (error != ESP_OK) {
+    debug_printf("WIFI DRIVER: power-save read failed, error=0x%X\n", (unsigned)error);
+    return;
+  }
+  debug_printf("WIFI DRIVER: actual PS=%u (%s); Arduino requested PS=%u; RSSI=%d dBm\n",
+    (unsigned)actual, actual == WIFI_PS_NONE ? "NONE" : "MODEM SLEEP",
+    (unsigned)WiFi.getSleep(), (int)WiFi.RSSI());
+}
+#endif
 
 static void serial_cli_execute(char* command) {
   if (!command) return;
@@ -10557,6 +10635,21 @@ static void serial_cli_execute(char* command) {
   else if (!strcmp(command, "heap")) serial_cli_print_heap();
   else if (!strcmp(command, "tasks") || !strcmp(command, "stack")) serial_cli_print_tasks();
   else if (!strcmp(command, "perf")) { serial_cli_print_perf(); p4_print_renderer_stats(); }
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  else if (!strcmp(command, "wifidiag")) serial_cli_print_wifi_driver();
+  else if (!strcmp(command, "rgbprobe") || !strncmp(command, "rgbprobe ", 9)) {
+    const char* argument=command+8;
+    while (*argument==' ' || *argument=='\t') ++argument;
+    if (*argument && !rgb_ota_probe.select(argument)) {
+      debug_println("Usage: rgbprobe [15|14|13|normal]; 12 MHz and below removed after image-loss tests");
+      return;
+    }
+    debug_printf("RGB PROBE: OTA-only selection=%u MHz (0=disabled); last accepted PCLK request=%u Hz; normal=%u Hz\n",
+      (unsigned)(rgb_ota_probe.selectedHz()/1000000U),
+      (unsigned)rgb_ota_probe.requestedHz(), (unsigned)DISPLAY_RGB_PCLK_HZ);
+    serial_cli_print_wifi_driver();
+  }
+#endif
   else if (!strcmp(command, "reboot") || !strcmp(command, "restart")) {
     debug_println("Restarting display...");
     delay(40);
@@ -10608,6 +10701,16 @@ static void serial_cli_tick() {
 }
 
 static void process_display_ui_once() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  const auto probe = rgb_ota_probe.service(millis(), fw_update_active.load(), [](uint32_t hz) -> int32_t {
+    return gfx ? gfx->requestDiagnosticClock(hz) : ESP_ERR_INVALID_STATE;
+  });
+  if (probe.attempted) {
+    debug_printf("RGB PROBE: PCLK request=%u Hz, error=0x%X; success schedules change at VSYNC\n",
+      (unsigned)probe.hz, (unsigned)probe.error);
+    serial_cli_print_wifi_driver();
+  }
+#endif
   bus_update_check_ui_timeout();
   if (language_rebuild_pending && lvgl_ready && !fw_update_active) {
     language_rebuild_pending = false;
@@ -10631,6 +10734,7 @@ static void process_display_ui_once() {
       screensaver_wake();
     }
     apply_deferred_ui_updates();
+    update_exit_tick();
     lv_update_eco_indicator_ui();
     if (!fw_update_active) {
       detail_request_watchdog_tick();

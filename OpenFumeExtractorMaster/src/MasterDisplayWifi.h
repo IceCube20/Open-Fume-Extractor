@@ -2,6 +2,7 @@
 #include "bus/OfeDisplayTunnel.h"
 #include "ModuleRegistry.h"
 #include "WifiTiming.h"
+#include "WifiOtaDiagnostics.h"
 #include <atomic>
 
 class MasterDisplayWifi {
@@ -28,12 +29,15 @@ public:
   void endFirmware();
   bool firmwareWireless(uint8_t addr) const { return firmware_addr_==addr && firmware_wifi_; }
   bool firmwareBulkAvailable(uint8_t addr) const {
-    return firmwareWireless(addr) && firmware_bulk_available_;
+    return firmwareWireless(addr) && firmware_bulk_available_ &&
+      (!firmware_bulk_retry_pending_ ||
+       (uint32_t)(millis()-firmware_bulk_retry_started_ms_)>=firmware_bulk_retry_delay_ms_);
   }
   bool firmwareBulkConfirmed(uint8_t addr) const {
     return firmwareBulkAvailable(addr) && firmware_bulk_confirmed_;
   }
   bool firmwareBulkChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint16_t len);
+  ofe_wifi_ota::Snapshot firmwareBulkDiagnostics() const { return firmware_bulk_diagnostics_.snapshot(); }
   bool rebindAddress(uint64_t uid, uint8_t new_addr);
   bool timingEnabled() const { return timing_enabled_.load(); }
   void setTimingEnabled(bool enabled);
@@ -69,7 +73,31 @@ private:
   uint64_t firmware_uid_=0;
   bool firmware_wifi_=false;
   bool firmware_bulk_available_=false,firmware_bulk_confirmed_=false;
+  bool firmware_bulk_retry_pending_=false;
+  uint32_t firmware_bulk_retry_started_ms_=0;
+  uint32_t firmware_bulk_retry_delay_ms_=2000;
+  void firmwareBulkSucceeded() {
+    firmware_bulk_confirmed_=true;
+    firmware_bulk_retry_pending_=false;
+    firmware_bulk_retry_delay_ms_=2000;
+  }
+  void firmwareBulkFailed() {
+    // Only retry a protocol that this exact OTA session has already confirmed.
+    // Old firmware still gets one probe, then stays on the compatible OFE path.
+    if (firmware_bulk_confirmed_) {
+      if (firmware_bulk_retry_pending_) {
+        firmware_bulk_retry_delay_ms_=firmware_bulk_retry_delay_ms_>=15000UL
+          ? 30000UL : firmware_bulk_retry_delay_ms_*2UL;
+      }
+      firmware_bulk_retry_started_ms_=millis();
+      firmware_bulk_retry_pending_=true;
+    } else {
+      firmware_bulk_available_=false;
+      firmware_bulk_retry_pending_=false;
+    }
+  }
   uint32_t firmware_bulk_request_=0;
+  ofe_wifi_ota::Diagnostics firmware_bulk_diagnostics_;
   int fd_=-1;
   uint32_t socket_retry_ms_=0;
   ModuleRegistry* registry_=nullptr;

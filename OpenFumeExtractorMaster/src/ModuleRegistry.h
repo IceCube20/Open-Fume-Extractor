@@ -551,6 +551,7 @@ struct ModuleRecord {
   // profile can never delay a later Fan/IO/Weller/JBC module. Entity states
   // use a second cursor through the remaining live-I/O budget.
   uint8_t display_live_io_native_cursor = 0;
+  uint8_t display_home_metrics_cursor = 0;
   bool display_home_metrics_supported = false;
   bool display_values_supported = false;
   ofe_display_values::Request display_value_request;

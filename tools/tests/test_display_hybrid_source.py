@@ -323,7 +323,7 @@ class DisplayHybridIntegration(unittest.TestCase):
 
     def test_large_tiles_keep_scanout_and_sram_reserve(self):
         large = read(DISPLAYS[1] / (DISPLAYS[1].name + ".ino"))
-        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 12", large)
+        self.assertIn("#define DISPLAY_RGB_BOUNCE_BUFFER_LINES 10", large)
         self.assertIn("#define DISPLAY_RGB_PCLK_HZ 16000000", large)
         self.assertIn("#define DISPLAY_LVGL_FULL_REFRESH 0", large)
         defaults = large.split("#ifndef DISPLAY_LVGL_LARGE_TILES", 1)[1].split("#endif", 1)[0]
@@ -407,7 +407,8 @@ class DisplayHybridIntegration(unittest.TestCase):
         self.assertIn("constexpr uint16_t BULK_DATA_MAX = 1024", tunnel)
         self.assertIn('ack ? "OFA1" : "OFB1"', tunnel)
         self.assertIn("decodeBulk(raw,n,key,ack)", master)
-        self.assertIn("firmware_bulk_confirmed_=true", master)
+        self.assertIn("firmwareBulkSucceeded();", master)
+        self.assertIn("firmware_bulk_confirmed_=true", read(MASTER / "src/MasterDisplayWifi.h"))
         self.assertIn("module_update_send_legacy_chunks", update)
         self.assertIn("firmwareBulkConfirmed", update)
         for display in DISPLAYS:

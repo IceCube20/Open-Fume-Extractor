@@ -19,7 +19,7 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.0.75 RC release notes](docs/RELEASE-2.0.75RC.md)
+- [2.0.87 RC release notes](docs/RELEASE-2.0.87RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [Master setup and configuration](docs/MASTER.md)
@@ -65,7 +65,7 @@ the browser/app after updating; YAML resources remain user-managed.
 - main input/output routing, after-run power and graphical Boolean logic
 - bilingual web UI and displays
 - Home Assistant MQTT Discovery with TLS support
-- Native Home Assistant integration with configurable 1-60 second polling,
+- Native Home Assistant integration with configurable 0.5-60 second polling,
   dynamic module entities, OFE/EVT indicators and dashboard cards
 - Ed25519-signed master and module firmware updates
 - AXS15231B 320x480, ST7796 320x480 and RGB 800x480 displays with

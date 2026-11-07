@@ -10,7 +10,7 @@ source = sketch.read_text(encoding="utf-8-sig")
 
 
 def function(name, text=source, qualifier="static "):
-    match = re.search(qualifier + r"(?:void|bool|String|const char\*) " + name + r"\([^;]*?\)\s*\{", text)
+    match = re.search(qualifier + r"(?:void|bool|String|const char\*) " + name + r"\([^;]*?\)\s*(?:const\s*)?\{", text)
     if not match:
         raise ValueError(name)
     start = match.start()
@@ -31,7 +31,20 @@ out.write_text("\n\n".join(function(name) for name in names), encoding="utf-8")
 router = (root / "OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp").read_text(encoding="utf-8-sig")
 out.with_name("generated_master_route.inc.h").write_text(
     "\n\n".join(function("MasterDisplayWifi::" + name, router, "")
-                 for name in ("beginFirmware", "route", "pollHook")), encoding="utf-8")
+                 for name in ("beginFirmware", "endFirmware", "route", "pollHook")), encoding="utf-8")
+router_header = (root / "OpenFumeExtractorMaster/src/MasterDisplayWifi.h").read_text(encoding="utf-8-sig")
+out.with_name("generated_master_bulk_policy.inc.h").write_text(
+    "\n\n".join(function(name, router_header, "  ") for name in
+        ("firmwareWireless", "firmwareBulkAvailable", "firmwareBulkConfirmed",
+         "firmwareBulkSucceeded", "firmwareBulkFailed")), encoding="utf-8")
+out.with_name("generated_master_bulk.inc.h").write_text(
+    function("MasterDisplayWifi::firmwareBulkChunk", router, ""), encoding="utf-8")
+update_source = (root / "OpenFumeExtractorMaster/src/WebUpdate.inc.h").read_text(encoding="utf-8-sig")
+limit_start = update_source.index("  module_update_wifi_bulk_limit =", update_source.index("static void web_handle_module_chunk_begin()"))
+limit_end = update_source.index("\n", limit_start)
+out.with_name("generated_bulk_limit.inc.h").write_text(
+    "static void reset_bulk_limit() {\n" + update_source[limit_start:limit_end] +
+    "\n}\n", encoding="utf-8")
 
 out.with_name("generated_display_jbc.inc.h").write_text(
     "\n\n".join(function(name) for name in

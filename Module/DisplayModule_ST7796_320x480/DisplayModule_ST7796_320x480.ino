@@ -11,6 +11,7 @@ struct DisplayUniversalControlPending;
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "src/OfeDisplayGuiTask.h"
+#include "src/OfeDisplayUpdateExit.h"
 #include "src/OfeSmallDisplayProfile.h"
 #include <Preferences.h>
 #include <Update.h>
@@ -43,6 +44,7 @@ struct DisplayUniversalControlPending;
 
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
+#include "src/OfeSmallDisplayTiming.h"
 static_assert(LV_MEM_SIZE == 32U * 1024U, "Use the bundled build_opt.h and ofe_lv_conf.h for the 320x480 display");
 #include "SolderIronIcon.h"
 #include "SproutIcon.h"
@@ -262,7 +264,7 @@ static constexpr uint32_t DISPLAY_HW_CAP = (1UL << 27); // CAP_DISPLAY_ST7796
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 41
+#define OFE_MODULE_FW_PATCH 44
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -395,6 +397,7 @@ static HomeWellerDetailCache home_weller_cache;
 static HomeFanIoDetailCache home_fan_io_cache;
 
 static std::atomic<uint32_t> fw_update_reboot_ms{0};
+static OfeDisplayUpdateExit display_update_exit;
 static void fw_update_abort_local() {
   if (fw_update_active) Update.abort();
   fw_update_active = false;
@@ -411,6 +414,7 @@ static void fw_update_check_timeout() {
   if (committed_ms && (uint32_t)(millis() - committed_ms) >= 12000UL) ESP.restart();
   if (fw_update_active && (uint32_t)(millis() - fw_update_last_ms) > FW_UPDATE_TIMEOUT_MS) {
     fw_update_abort_local();
+    display_update_exit.requestAbort();
   }
 }
 static std::atomic<uint32_t> fw_update_offset{0};
@@ -1217,6 +1221,9 @@ static lv_obj_t* ui_update_size = nullptr;
 static lv_obj_t* ui_update_speed = nullptr;
 static lv_obj_t* ui_update_detail = nullptr;
 static lv_obj_t* ui_status_msg = nullptr;
+static lv_obj_t* ui_status_back = nullptr;
+static void lv_update_abort_back_event(lv_event_t*);
+static void update_exit_tick();
 static lv_obj_t* ui_home_output = nullptr;
 static lv_obj_t* ui_home_power = nullptr;
 static lv_obj_t* ui_home_rpm = nullptr;
@@ -3938,6 +3945,9 @@ static void lv_create_status_screen() {
   lv_style_screen(ui_status_screen);
   ofe_display_ui::flat(ui_status_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_status_screen, "display");
+  ui_status_back = ofe_display_ui::button(ui_status_screen, 12, 0, 44, LV_SYMBOL_LEFT, lv_update_abort_back_event);
+  lv_obj_align(ui_status_back, LV_ALIGN_BOTTOM_LEFT, 12, -12);
+  lv_obj_add_flag(ui_status_back, LV_OBJ_FLAG_HIDDEN);
   lv_obj_t* card = lv_card(ui_status_screen, 18, 90, 444, 132, ui_theme_color(0x171C22, 0xF7FAFC));
   ui_status_msg = lv_label(card, "", 14, 40, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 390);
   ofe_display_ui::flat(card, ofe_display_ui::surface());
@@ -6119,6 +6129,7 @@ static void lv_rebuild_app_ui() {
   ui_screensaver_hint = nullptr;
   ui_screensaver_eco_icon = nullptr;
   ui_status_msg = nullptr;
+  ui_status_back = nullptr;
   ui_home_io1_button = nullptr;
   ui_home_io2_button = nullptr;
   ui_home_work_icon = nullptr;
@@ -7672,6 +7683,7 @@ static void lvgl_init_ui() {
   lv_indev_t* indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, lvgl_touch_cb);
+  ofe_small_display::configureTiming(lvgl_disp, indev);
 
   lv_create_boot_screen();
   lv_create_update_screen();
@@ -7790,6 +7802,8 @@ static void show_status_message(const char* msg) {
   lv_set_text_c(ui_status_msg, msg);
   lv_screen_switch(ui_status_screen);
 }
+
+#include "src/OfeDisplayUpdateExitUi.inc.h"
 
 static bool status_changed_for_draw() {
   if (!have_drawn_status) return true;
@@ -10238,7 +10252,7 @@ static void handle_frame(const Frame& req) {
       if (fw_update_reboot_ms.load()) { send_status_response(req, STATUS_BUSY); break; }
       fw_update_abort_local();
       send_status_response(req, STATUS_OK);
-      show_status_message(update_message_text("Update aborted"));
+      display_update_exit.requestAbort();
       break;
     case CMD_FW_REBOOT:
       send_status_response(req, STATUS_OK);
@@ -10538,6 +10552,7 @@ static void process_display_ui_once() {
       screensaver_wake();
     }
     apply_deferred_ui_updates();
+    update_exit_tick();
     lv_update_eco_indicator_ui();
     if (!fw_update_active) {
       detail_request_watchdog_tick();

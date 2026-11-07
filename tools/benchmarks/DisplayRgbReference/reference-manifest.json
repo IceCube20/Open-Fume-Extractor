@@ -4,11 +4,11 @@
     "DISPLAY_RGB_WIDTH": 800,
     "DISPLAY_RGB_HEIGHT": 480,
     "DISPLAY_RGB_PCLK_HZ": 16000000,
-    "DISPLAY_RGB_BOUNCE_BUFFER_LINES": 12,
+    "DISPLAY_RGB_BOUNCE_BUFFER_LINES": 10,
     "DISPLAY_RGB_INVERT_COLORS": 0,
     "DISPLAY_ROTATION": 2
   },
-  "production_panel_sha256": "679370e476d94046f0f7b4c5467cdc32860b0c19ac7ed3bb2c50d2f5e956e052",
+  "production_panel_sha256": "5975db056718d461b7cb56b2449b136d6003694e158bce8a263a85b1d5c9de7b",
   "production_lv_config_sha256": "49ac6769413467d4fd1ed9a5d281d158723a72071e71bd6185209ef08a187c78",
   "upstream_lvgl": "9.6.x",
   "upstream_sources_sha256": {
@@ -28,8 +28,8 @@
     "demos/widgets/lv_demo_widgets_shop.c": "6e14c5d97049128b124ef1d2b7824ddb873466f4c73d1445e3b14ec52497ca5d"
   },
   "generated_sha256": {
-    "src/OfeReferenceDefaults.h": "12abb362acd764e221a783c43a6ef11acf79e9ff7b57aaee7695ce82343edd23",
-    "src/OfeReferencePanel.h": "4d0567a519c7b702d980731a3c5d3672c1056bb62ac51c91fa70ee2273af87e6",
+    "src/OfeReferenceDefaults.h": "d23761ad31c97ca14cd0294dd4fc412e56ae1e64ae4866d03e3823012dd8a52d",
+    "src/OfeReferencePanel.h": "d1d83521fcbf3af7fef60a97ac7336c32433475115a9c009231051ebcf883806",
     "src/OfeRgbTileCopy.h": "7e5d6e7be7787e64c021d6aae22a046bdf32c45f5689ee058018a722a561974a",
     "ofe_reference_base.h": "49ac6769413467d4fd1ed9a5d281d158723a72071e71bd6185209ef08a187c78",
     "src/upstream_lv_demos.c": "0bf2540e2874d25aa06167b1e81767527851e1987d6bf3ec1613c8d0bcdcf3d2",

@@ -3,6 +3,8 @@
 #include <freertos/task.h>
 #include <Preferences.h>
 #include <Update.h>
+#include <esp_random.h>
+#include "src/FaeIdentity.h"
 #ifndef OFE_STATUS_LED_ENABLE
 #define OFE_STATUS_LED_ENABLE 1
 #endif
@@ -53,7 +55,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 67
+#define OFE_MODULE_FW_PATCH 70
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -293,11 +295,8 @@ static uint8_t pin_enabled = 0;
 static char pin_code[5] = "0000";
 static char device_name[17] = "JBC FAE Emulator";
 
-static uint8_t device_id[64];
-static uint8_t device_id_len = 32;
-
-static const char FW_STR[] = "02:F2:EMU_02:8881031:0051123";
-static const char DEFAULT_DEVICE_ID[] = "849158E467A340159646170D6B1595EF";
+static uint8_t device_id[ofe_fae_identity::LEGACY_ID_MAX];
+static uint8_t device_id_len = 0;
 
 static uint64_t module_uid() {
   return 0x1000000000000000ULL | (esp_uid64() & 0x0FFFFFFFFFFFFFFFULL);
@@ -472,13 +471,13 @@ static void send_syn_p02(uint8_t src_addr, uint8_t dst, uint8_t fid) {
 static void send_firmware(uint8_t src_addr, uint8_t dst, uint8_t fid) {
   uint8_t pl[5 + 64];
   size_t o = 0;
-  const uint8_t len = (uint8_t)strlen(FW_STR);
+  const uint8_t len = sizeof(ofe_fae_identity::FIRMWARE) - 1;
   pl[o++] = src_addr;
   pl[o++] = dst;
   pl[o++] = fid;
   pl[o++] = jbc_fe::M_FIRMWARE;
   pl[o++] = len;
-  memcpy(pl + o, FW_STR, len);
+  memcpy(pl + o, ofe_fae_identity::FIRMWARE, len);
   o += len;
   send_p02(pl, o);
 }
@@ -514,6 +513,33 @@ static void send_read_reply(uint8_t src_addr, uint8_t dst, uint8_t fid, uint8_t 
     o += len;
   }
   send_p02(pl, o);
+}
+
+static bool handle_identity_command(uint8_t src_addr, uint8_t dst, uint8_t fid,
+                                    uint8_t ctrl, const uint8_t* data, uint8_t len) {
+  if (ctrl == jbc_fe::M_FIRMWARE) {
+    send_firmware(src_addr, dst, fid);
+    return true;
+  }
+  if (ctrl == jbc_fe::M_R_DEVICEIDORIGINAL) {
+    uint8_t hardware[8];
+    // Our own board identity, not an invented original JBC hardware ID.
+    ofe_fae_identity::hardwareId(esp_uid64(), hardware);
+    send_read_reply(src_addr, dst, fid, ctrl, hardware, sizeof(hardware));
+    return true;
+  }
+  if (ctrl == jbc_fe::M_R_DEVICEID || ctrl == jbc_fe::M_R_DISCOVER) {
+    // Keep the existing, unverified discovery behavior separate from 0x1C.
+    send_device_id(src_addr, dst, fid);
+    return true;
+  }
+  if (ctrl == jbc_fe::M_W_DEVICEID) {
+    const bool saved = ofe_fae_identity::save(prefs, device_id, device_id_len, data, len);
+    const uint8_t result = saved ? 0x06 : 0x15;
+    send_read_reply(src_addr, dst, fid, saved ? ctrl : jbc_base::M_NACK, &result, 1);
+    return true;
+  }
+  return false;
 }
 
 static void le16(uint8_t* out, uint16_t v) {
@@ -596,7 +622,7 @@ static bool is_fae_a_addr(uint8_t addr) {
 }
 
 static void handle_p02_frame(const uint8_t* f, size_t n) {
-  if (n < 4) return;
+  if (n < 5 || n != size_t(5 + f[4])) return;
 
   const uint8_t src = f[0];
   const uint8_t dst = f[1];
@@ -639,23 +665,7 @@ static void handle_p02_frame(const uint8_t* f, size_t n) {
     return;
   }
 
-  if (ctrl == jbc_fe::M_FIRMWARE) {
-    send_firmware(reply_src_addr, reply_to, fid);
-    return;
-  }
-
-  if (ctrl == jbc_fe::M_R_DEVICEID || ctrl == jbc_fe::M_R_DEVICEIDORIGINAL || ctrl == jbc_fe::M_R_DISCOVER) {
-    send_device_id(reply_src_addr, reply_to, fid);
-    return;
-  }
-
-  if (ctrl == jbc_fe::M_W_DEVICEID && data && len >= 1) {
-    device_id_len = len > sizeof(device_id) ? sizeof(device_id) : len;
-    memcpy(device_id, data, device_id_len);
-    prefs.putBytes("devid", device_id, device_id_len);
-    send_ack(reply_src_addr, reply_to, fid);
-    return;
-  }
+  if (handle_identity_command(reply_src_addr, reply_to, fid, ctrl, data, len)) return;
 
   if (ctrl == jbc_fe::M_W_INTAKEACTIVATION && data && len >= 2) {
     // Real DDE -> FAE commonly uses [OnOff, Port] for WORK. Some station
@@ -1643,12 +1653,8 @@ void setup() {
   }
   cleanup_legacy_runtime_prefs();
 
-  size_t n = prefs.getBytesLength("devid");
-  if (n > 0 && n <= sizeof(device_id)) {
-    device_id_len = prefs.getBytes("devid", device_id, sizeof(device_id));
-  } else {
-    memcpy(device_id, DEFAULT_DEVICE_ID, 32);
-    device_id_len = 32;
+  if (!ofe_fae_identity::load(prefs, device_id, device_id_len, esp_uid64(), esp_random(), esp_random())) {
+    Serial.println("JBC identity: NVS read/write failed; existing stored ID was not replaced.");
   }
 
   Serial.println("JBC Bus RS485 module");

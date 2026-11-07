@@ -171,6 +171,13 @@ public:
 
   uint16_t* getFramebuffer() const { return framebuffer_; }
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  esp_err_t requestDiagnosticClock(uint32_t hz) {
+    if (!panel_) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_rgb_panel_set_pclk(panel_, hz);
+  }
+#endif
+
 private:
   static void writeBack(const void* addr, size_t bytes) {
     (void)addr;

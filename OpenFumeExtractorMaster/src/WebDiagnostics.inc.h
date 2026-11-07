@@ -1285,7 +1285,13 @@ body:not(.dev-mode) .diag-wifi-timing,body:not(.dev-mode) .diag-wifi-timing-cont
 .diag-trace-legend{display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:34px;margin:4px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:10px;background:#0a1118;font-size:11px;color:var(--muted)}
 .diag-legend-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;background:#73808f}.diag-legend-dot.tx{background:#76adf2}.diag-legend-dot.rx{background:#67d982}.diag-legend-dot.timeout{background:#f06d78}
 .diag-trace-note{margin-left:auto}
-.diag-trace-switch{min-width:190px}.diag-trace-switch button{flex:1}
+.diag-trace-head>div:first-child{min-width:0}
+.diag-trace-switch{min-width:190px;box-sizing:border-box}.diag-trace-switch button{flex:1}
+@media(max-width:760px){
+  .diag-trace-head{flex-direction:column;align-items:stretch}
+  .diag-trace-switch{width:100%;min-width:0}
+  .diag-trace-switch button{min-width:0;white-space:normal;overflow-wrap:anywhere}
+}
 .diag-scroll{scrollbar-color:#334456 #0b1118;scrollbar-width:thin}
 .diag-table th{white-space:nowrap}
 .diag-table td{transition:background .1s ease}.diag-table tbody tr:nth-child(even){background:rgba(255,255,255,.012)}
@@ -1593,6 +1599,8 @@ body:not(.dev-mode) .diag-wifi-timing,body:not(.dev-mode) .diag-wifi-timing-cont
 .diag-module-head .diag-online-pill{flex:0 0 auto;width:78px;min-width:78px;height:22px;padding:0 9px;font-size:11px;white-space:nowrap;line-height:1}
 .diag-device-head .diag-online-pill{flex:0 0 auto;width:auto;min-width:118px;white-space:nowrap}
 .diag-device-title{min-width:0;overflow-wrap:anywhere}
+.diag-module-head{position:relative;box-shadow:none}
+.diag-module-head::before{content:"";position:absolute;left:4px;top:12px;bottom:12px;width:3px;border-radius:0;background:var(--diag-accent);pointer-events:none}
 @media(max-width:520px){.diag-module-head{height:auto;min-height:136px;max-height:none;flex-basis:auto}.diag-module-head-main{align-items:center}.diag-module-statuses{flex:0 0 auto}}
 
 </style>)CSS");
@@ -1779,60 +1787,166 @@ function diagProto(e){
     ((a>=0x30&&a<=0x3F)?'Weller UART':
     (a>=0x20&&a<=0x2F?'Lokale I/O':'JBC P02')));
 }
-function diagFilename(ext){
-  let v=document.getElementById('diag_view').value;
-  let a=document.getElementById('diag_addr').value||'0';
-  let stamp=new Date().toISOString().replace(/[:.]/g,'-');
-  return 'open-fume-'+v+'-'+a.replace('0x','0X')+'-'+stamp+'.'+ext;
-}
-function diagSemanticDecoded(e){
-  if(!jbcUsbTraceEvent(e))return e&&e.text?String(e.text):'';
-  let f=jbcFrame(e);if(!f)return e&&e.text?String(e.text):'';
-  let role=jbcTraceRole(e),di=jbcUsbPayloadInfo(f,role),parts=[];
-  parts.push(jbcUsbCommandName(f)||('CMD 0x'+hex2(f.ctrl)));
-  if(di&&di.format)parts.push(di.format);
-  if(di&&di.html){
-    let box=document.createElement('div');box.innerHTML=di.html;
-    let fields=box.querySelectorAll('.jbc-value'),vals=[];
-    for(let i=0;i<fields.length;i++){
-      let lab=fields[i].querySelector('.jbc-chip-label'),val=fields[i].querySelector('.jbc-chip-value');
-      let a=lab?lab.textContent.trim():'',b=val?val.textContent.trim():'';
-      if(a&&b)vals.push(a+'='+b);else if(b)vals.push(b);else if(a)vals.push(a);
+function diagFilename(ext,exported){
+  const view=exported?exported.view:document.getElementById('diag_view').value;
+  const addr=Number(exported&&exported.target!=null?exported.target:document.getElementById('diag_addr').value)||0;
+  const mode=view==='local'?u('lokal','local'):'ofe-bus';
+  let target=u('alle-module','all-modules');
+  if(addr){
+    const modules=exported&&exported.stats?exported.stats.modules||[]:(lastDiag&&lastDiag.modules||[]);
+    const module=modules.find(m=>Number(m.addr)===addr);
+    const types={1:'jbc-fae',2:'fan-io',3:'fan-io-pro',5:'weller',7:'universal-rs232',8:'modbus-rtu',9:'jbc-usb'};
+    let type=types[Number(module&&module.type)]||u('modul','module');
+    if(module&&Number(module.type)===6){
+      type=String(module.type_name||'display').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64)||'display';
     }
-    if(vals.length)parts.push(vals.join(' | '));
-    else if(di.summary)parts.push(di.summary);
-  }else if(di&&di.summary)parts.push(di.summary);
-  return parts.filter(function(x,i,a){return x&&a.indexOf(x)===i;}).join(' · ');
-}
-function diagExportEvent(e){
-  let x={};Object.keys(e||{}).forEach(function(k){x[k]=e[k];});
-  if(jbcUsbTraceEvent(e)){
-    let f=jbcFrame(e);x.decoded_semantic=diagSemanticDecoded(e);
-    if(f)x.jbc={protocol:f.protocol,role:jbcTraceRole(e),src:f.src,dst:f.dst,fid:f.fid,command:f.ctrl,command_name:jbcUsbCommandName(f)||'',declared_len:f.declared,payload:f.payload.map(hex2).join(' '),truncated:!!f.truncated};
+    target=type+'-'+hx(addr);
   }
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+  return 'open-fume-extractor-'+mode+'-'+target+'-'+stamp+'.'+ext;
+}
+// Read the same decoder output as the trace UI, preserving field boundaries.
+function diagExportFields(html){
+  let box=document.createElement('div');box.innerHTML=html||'';
+  return Array.from(box.querySelectorAll('.jbc-value,.proto-result-value,.diag-result-value')).map(node=>{
+    let label=node.querySelector('.jbc-chip-label'),value=node.querySelector('.jbc-chip-value');
+    return {label:label?label.textContent.trim():'',value:(value||node).textContent.trim()};
+  }).filter(field=>field.label||field.value);
+}
+function diagExportFieldText(fields){return fields.map(f=>f.label?f.label+'='+f.value:f.value).join(' | ')}
+function diagSemanticDecoded(e){return diagExportEvent(e).decoded_semantic}
+function diagExportEvent(e,txn=null){
+  let x={};Object.keys(e||{}).forEach(function(k){x[k]=e[k];});
+  x.decoded_semantic=String(e&&e.text||'');x.decoded_fields=[];
+  if(String(e&&e.dir).indexOf('UART_')!==0)return x;
+  let addr=Number(e.addr),html='',summary='';x.protocol=diagProto(e);
+  if(addr>=0x10&&addr<=0x1F){
+    let f=jbcFrame(e);
+    if(f){
+      let role=jbcTraceRole(e),info=jbcPayloadInfo(f,role);
+      x.command_name=jbcCtrlLabelFrame(f);x.role=role;
+      x.jbc={protocol:f.protocol,role:role,src:f.src,dst:f.dst,fid:f.fid,command:f.ctrl,command_name:x.command_name,declared_len:f.declared,payload:f.payload.map(hex2).join(' '),truncated:!!f.truncated,length_valid:f.declared===f.payload.length};
+      x.payload_format=info.format;html=info.html;summary=info.summary;
+    }
+  }else if(addr>=0x30&&addr<=0x3F){
+    let f=wellerFrame(e);x.command_name=wellerLabel(f.cmd);x.role=String(e.dir)==='UART_TX'?'request':'response';
+    x.weller={command:f.cmd,value:f.value,checksum_valid:f.check,checksum_expected:f.calc,checksum_received:f.frameCs};
+    html=wellerValueHtml(f);
+  }else if(addr>=0x50&&addr<=0x5F){
+    let f=universalFrame(e);x.command_name=universalLabel(f);x.role=f.tx?'request':'response';
+    x.universal={action:f.action,bad_checksum:f.badChecksum,bad_pattern:f.badPattern,entities:(f.decoded_all||[]).filter(v=>v.decoded).map(v=>({id:v.def.id,key:v.def.key,label:v.def.label,decoded:v.decoded}))};
+    html=universalResultHtml(f.tx?{request:f}:{response:f});
+  }else if(addr>=0x60&&addr<=0x6F){
+    let f=modbusFrame(e);x.command_name=modbusFuncLabel(f.func);x.role=f.tx?'request':'response';
+    x.modbus={slave:f.slave,function:f.func,exception:f.exception,crc_valid:f.crcOk,crc_expected:f.crcCalc,crc_received:f.crcFrame};
+    // Register scaling/names for a response require its matching request.
+    let values=txn&&(!f.tx||[5,6].includes(f.baseFunc))?modbusDescriptorDecoded(txn):[];
+    x.modbus.entities=values.map(v=>({id:v.def.id,key:v.def.key,label:v.def.label,raw:v.raw,decoded:v.decoded}));
+    html=values.length?modbusResultHtml(txn):modbusDecode(f,x.role).html;
+  }
+  x.decoded_fields=diagExportFields(html);
+  let text=diagExportFieldText(x.decoded_fields)||summary;
+  if(x.command_name)x.decoded_semantic=[x.command_name,x.payload_format,text].filter(Boolean).join(' · ');
   return x;
+}
+function diagExportTransactions(events){
+  // FIDs and register addresses are local to each module, not the whole bus.
+  let groups=new Map();events.filter(e=>String(e.dir).indexOf('UART_')===0).forEach(e=>{
+    let addr=Number(e.addr);if(!groups.has(addr))groups.set(addr,[]);groups.get(addr).push(e);
+  });
+  let txns=[];groups.forEach(group=>txns.push(...buildLocalTransactions(group)));
+  // Malformed frames have no protocol transaction, but must not disappear.
+  let covered=new Set(txns.flatMap(t=>t.events));
+  events.filter(e=>String(e.dir).indexOf('UART_')===0&&!covered.has(e)).forEach(e=>{
+    txns.push({proto:diagProto(e),kind:'single',request:null,response:null,events:[e],raw:e,unpaired:true});
+  });
+  return txns.sort((a,b)=>diagExportOrder(a.events[0],b.events[0]));
+}
+function diagExportOrder(a,b){return Number(a.ms)-Number(b.ms)||Number(a.seq)-Number(b.seq)}
+function diagExportTransaction(t){
+  let html=t.proto==='JBC'?jbcResultHtml(t):(t.proto==='Weller'?wellerValueHtml(t.response||t.request):
+    (t.proto==='Universal'?universalResultHtml(t):(t.proto==='Modbus'?modbusResultHtml(t):'')));
+  let fields=diagExportFields(html);
+  return {addr:t.events[0].addr,protocol:t.proto,kind:t.kind,unpaired:!!t.unpaired,
+    request_seq:t.request?t.request.e.seq:null,response_seq:t.response?t.response.e.seq:null,
+    event_seqs:t.events.map(e=>e.seq),latency_ms:t.delta==null?null:t.delta,
+    decoded_semantic:diagExportFieldText(fields),decoded_fields:fields};
+}
+function diagBuildExport(){
+  let events=diagFilteredEvents.slice().sort(diagExportOrder),txns=diagExportTransactions(events),byEvent=new Map();
+  txns.forEach(t=>t.events.forEach(e=>byEvent.set(e,t)));
+  let stats=Object.assign({},lastDiag);delete stats.events;
+  return {format_version:2,exported_at:new Date().toISOString(),language:UI_DE?'de':'en',
+    view:lastDiag.view||document.getElementById('diag_view').value,target:lastDiag.target_addr,
+    layout:(lastDiag.view==='local'?diagLocalLayout:diagTraceLayout),
+    scope:{source:'filtered_browser_events',available_events:(lastDiag.events||[]).length,exported_events:events.length},
+    stats:stats,events:events.map(e=>diagExportEvent(e,byEvent.get(e))),transactions:txns.map(diagExportTransaction)};
+}
+function diagCsvHex(bytes){return bytes.map(v=>'0x'+hex2(v)).join(' ')}
+function diagLocalTransactionCsv(exported){
+  const bySeq=new Map(exported.events.map(e=>[e.seq,e]));
+  const head=[u('Nr.','No.'),u('Master-Zeit (ms)','Master time (ms)'),u('Modul','Module'),
+    u('Protokoll','Protocol'),u('Befehl','Command'),u('Ergebnis','Result'),u('Zuordnung','Pairing'),
+    u('Anfrage (B)','Request (B)'),u('Antwort (B)','Response (B)'),
+    u('Anfrage-Trace-Nr.','Request trace no.'),u('Antwort-Trace-Nr.','Response trace no.'),
+    u('Anfrage HEX','Request HEX'),u('Antwort HEX','Response HEX'),u('Einzelframe HEX','Single frame HEX')];
+  const rows=[head];
+  (exported.transactions||[]).forEach((t,index)=>{
+    const req=bySeq.get(t.request_seq),resp=bySeq.get(t.response_seq);
+    const first=req||resp||bySeq.get(t.event_seqs[0]);if(!first)return;
+    const result=t.decoded_semantic||(resp||req||first).decoded_semantic||'';
+    const pairing=req&&resp?u('Anfrage + Antwort','Request + response'):
+      req?u('Nur Anfrage','Request only'):resp?u('Nur Antwort','Response only'):u('Einzelframe','Single frame');
+    rows.push([index+1,first.ms,addrText(t.addr),first.protocol||t.protocol,
+      first.command_name||'',result,pairing,req?req.len:'',resp?resp.len:'',
+      req?req.seq:'',resp?resp.seq:'',req?diagCsvHex(hexBytes(req.data||'')):'',
+      resp?diagCsvHex(hexBytes(resp.data||'')):'',!req&&!resp?diagCsvHex(hexBytes(first.data||'')):'']);
+  });
+  return '\uFEFF'+rows.map(row=>row.map(csvCell).join(';')).join('\r\n');
+}
+function diagCsvExport(exported){
+  const local=exported.view==='local';
+  if(local&&exported.layout==='transactions')return diagLocalTransactionCsv(exported);
+  const ev=exported.events.slice().sort(diagExportOrder);
+  const labels=Array.from(new Set(local?ev.flatMap(e=>(e.decoded_fields||[]).map(f=>f.label||'Value')):[])).sort();
+  const head=local
+    ?['event_no','trace_seq','master_received_ms','module_addr','direction','protocol','frame_len_bytes','frame_age_ms','command_name','command_hex','role','source_addr','destination_addr','frame_id','declared_payload_len','payload_format','decoded','raw_hex','payload_hex','decoded_fields',...labels.map(label=>'field:'+label)]
+    :['event_no','master_received_ms','frame_seq','module_addr','direction','command_name','status','payload_len_bytes','latency_ms','decoded','payload_hex'];
+  const rows=[head.map(csvCell).join(';')];
+  ev.forEach((e,index)=>{
+    let values;
+    if(local){
+      const f=e.jbc,fields=e.decoded_fields||[],byLabel=new Map();
+      fields.forEach(field=>{
+        const label=field.label||'Value';
+        if(!byLabel.has(label))byLabel.set(label,[]);
+        byLabel.get(label).push(field.value);
+      });
+      const address=v=>v==null?'':'0x'+hex2(v);
+      const cmd=f?f.command:(e.weller?e.weller.command:(e.modbus?e.modbus.function:null));
+      values=[index+1,e.seq??'',e.ms,addrText(e.addr),String(e.dir).replace('UART_',''),
+        e.protocol||diagProto(e),e.len,e.latency??'',e.command_name||'',address(cmd),e.role||'',
+        f?address(f.src):'',f?address(f.dst):'',f&&f.protocol==='P02'?address(f.fid):'',
+        f?f.declared_len:'',e.payload_format||'',e.decoded_semantic,diagCsvHex(hexBytes(e.data||'')),
+        f?diagCsvHex(f.payload?hexBytes(f.payload):[]):'',JSON.stringify(fields),
+        ...labels.map(label=>(byLabel.get(label)||[]).join(' | '))];
+    }else{
+      values=[index+1,e.ms,e.frame_seq===255?'':e.frame_seq,addrText(e.addr),e.dir,e.cmd,
+        e.status===255?'':e.status,e.len,e.latency??'',e.decoded_semantic,diagCsvHex(hexBytes(e.data||''))];
+    }
+    rows.push(values.map(csvCell).join(';'));
+  });
+  return '\uFEFF'+rows.join('\r\n');
 }
 function diagDownload(fmt){
   if(!lastDiag)return;
-  let ev=diagFilteredEvents.slice();
-  let view=lastDiag.view||document.getElementById('diag_view').value;
+  let exported=diagBuildExport();
   let data,mime,name;
   if(fmt==='json'){
-    data=JSON.stringify({view:view,target:lastDiag.target_addr,stats:lastDiag,events:ev.map(diagExportEvent)},null,2);
-    mime='application/json';name=diagFilename('json');
+    data=JSON.stringify(exported,null,2);
+    mime='application/json';name=diagFilename('json',exported);
   }else{
-    let head=view==='local'
-      ?['#','ms','addr','dir','protocol','len','age_or_latency_ms','decoded','raw']
-      :['#','ms','frame_seq','addr','dir','cmd','status','len','latency_ms','decoded','payload'];
-    let rows=[head.join(';')];let n=0;
-    ev.forEach(function(e){++n;
-      if(view==='local'){
-        rows.push([n,e.ms,addrText(e.addr),String(e.dir).replace('UART_',''),diagProto(e),e.len,e.latency||'',diagSemanticDecoded(e),e.data||''].map(csvCell).join(';'));
-      }else{
-        rows.push([n,e.ms,e.frame_seq===255?'':e.frame_seq,addrText(e.addr),e.dir,e.cmd,e.status===255?'':e.status,e.len,e.latency||'',e.text||'',e.data||''].map(csvCell).join(';'));
-      }
-    });
-    data=rows.join('\r\n');mime='text/csv';name=diagFilename('csv');
+    data=diagCsvExport(exported);mime='text/csv;charset=utf-8';name=diagFilename('csv',exported);
   }
   let blob=new Blob([data],{type:mime});let url=URL.createObjectURL(blob);let a=document.createElement('a');
   a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
@@ -1949,10 +2063,10 @@ function jbcPedalMode(v){
 }
 function jbcSuctionLevel(v){
   return ({
-    0:u('High · 100 %','High · 100%'),
-    1:u('Medium · 60 %','Medium · 60%'),
-    2:u('Low · 30 %','Low · 30%'),
-    3:u('Custom','Custom')
+    0:u('Hoch · 100 %','High · 100%'),
+    1:u('Mittel · 60 %','Medium · 60%'),
+    2:u('Niedrig · 30 %','Low · 30%'),
+    3:u('Benutzer','Custom')
   })[Number(v)]||('Level '+Number(v));
 }
 function jbcSelectFlowText(v){
@@ -2108,8 +2222,51 @@ function jbcUsbInfoPortDecode(f,response,fam){
   else if(fam==='SF'&&p.length===2){h=jbcField('DispenserMode',String(p[0])+' · raw 0x'+hex2(p[0]),'primary')+jbcField(u('Programm','Program'),String(p[1]));summary='Mode '+p[0]+' · Program '+p[1];}
   return h?{h:h,format:format,summary:summary}:null;
 }
+function jbcFaeIdentityInfo(f,role){
+  const p=f.payload||[],c=Number(f.ctrl),response=role==='response';
+  let h='',format='',summary='';
+  if(c===0x1C){
+    format='8-byte hardware ID';
+    if(p.length){
+      const value=p.map(hex2).join(' ');
+      h=jbcField(u('Hardware-ID','Hardware ID'),value,p.length===8?'primary':'warn');
+      if(p.length!==8)h+=jbcField(u('Laenge','Length'),p.length+' / 8 B','warn');
+      summary=value;
+    }
+  }else if(c===0x1F&&response){
+    format='device ID write acknowledgement';
+    const ack=p.length===1&&p[0]===0x06;
+    summary=ack?'ACK':u('Unerwartete Bestaetigung','Unexpected acknowledgement');
+    h=jbcField('ACK',ack?'0x06':(p.map(hex2).join(' ')||'-'),ack?'primary':'warn');
+  }else if(c===0x21){
+    format='ASCII firmware';
+    const text=cleanAscii(p);
+    if(p.length){
+      h=text!==null?jbcTextField('Firmware',text):jbcField('Firmware HEX',p.map(hex2).join(' '),'warn');
+      summary=text||'Firmware';
+      const fields=text===null?[]:text.split(':');
+      if(fields.length===5&&fields[0]==='02'&&fields[1]==='F2'&&/^\d{7}$/.test(fields[2])&&/^\d{7}$/.test(fields[3])){
+        h+=jbcField(u('Softwarekennung','Software ID'),fields[2])+jbcField(u('Hardwarekennung','Hardware code'),fields[3]);
+        const model=fields[4].split('_');
+        h+=jbcField(u('Modellkennung','Model ID'),fields[4]);
+        if(model.length===3&&/^\d+$/.test(model[2])){
+          h+=jbcField(u('Modell','Model'),model[0])+jbcField('ModelType',model[1])+jbcField('ModelVersion',String(Number(model[2])));
+        }
+      }
+    }
+  }else if(c===0x1E||c===0x1F){
+    format='ASCII device-id';
+    if(p.length){
+      const text=cleanAscii(p);
+      h=text!==null?jbcTextField('Device ID',text):jbcField('Device ID HEX',p.map(hex2).join(' '),'warn');
+      summary=text||'Device ID';
+    }
+  }else return null;
+  return {html:'<div class="jbc-decode">'+h+'</div>',format:format,summary:summary};
+}
 function jbcUsbPayloadInfo(f,role){
   let p=(f&&f.payload)||[],c=Number(f&&f.ctrl||0),response=role==='response',fam=jbcUsbFamilyForEvent(f&&f.e),h='',format=(fam||'JBC')+' '+(jbcUsbCommandName(f)||('0x'+hex2(c))),summary='';
+  if(fam==='FE'){const identity=jbcFaeIdentityInfo(f,role);if(identity)return identity;}
   const raw=()=>p.map(hex2).join(' '), bool=(l,v)=>jbcField(l,jbcBool(v),Number(v)?'bool-on':'bool-off'), portTail=()=>p.length?jbcField('Port',jbcUsbPortText(p[p.length-1])):'', req=()=>jbcUsbRequestPayload(f), reqPort=()=>{let q=req();return q.length?Number(q[0]):null;};
   const addContext=(label='Port')=>{let v=reqPort();return v===null?'':jbcField(label,jbcUsbPortText(v));};
   const stationError=()=>{let v=p.length>=2?u16le(p):Number(p[0]||0);h=jbcField(u('Stationsfehler','Station error'),jbcUsbStationErrorNameDiag(v),v?'warn':'ok');summary=jbcUsbStationErrorNameDiag(v);};
@@ -2304,6 +2461,7 @@ function jbcUsbPayloadInfo(f,role){
 }
 function jbcPayloadInfo(f,role){
   if(f&&jbcUsbTraceEvent(f.e))return jbcUsbPayloadInfo(f,role);
+  if(f){const identity=jbcFaeIdentityInfo(f,role);if(identity)return identity;}
   let p=(f&&f.payload)||[],c=Number(f&&f.ctrl||0),response=role==='response';
   let h='',format='raw',summary='';
   const boolField=(label,v)=>jbcField(label,jbcBool(v),Number(v)?'bool-on':'bool-off');
@@ -2321,12 +2479,7 @@ function jbcPayloadInfo(f,role){
     format='sync';
     h=jbcField('SYNC',p.length&&p[0]===0x06?'ACK 0x06':(p.map(hex2).join(' ')||'—'),'primary');
     summary='SYNC';
-  }else if(c===0x21){
-    format='ASCII firmware';
-    let s=cleanAscii(p);
-    h=s!==null?jbcTextField('Firmware',s):jbcField('Firmware HEX',p.map(hex2).join(' '),'warn');
-    summary=s||'Firmware';
-  }else if(c===0x1C||c===0x1D||c===0x1E||c===0x1F){
+  }else if(c===0x1D){
     format='ASCII device-id';
     if(p.length){
       let s=cleanAscii(p);

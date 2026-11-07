@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 #include "Rs485PeripheralBus.h"
+#include "../../../Module/DisplayModule_320x480/src/OfeDisplayUpdateExit.h"
+static OfeDisplayUpdateExit display_update_exit;
 using namespace jbc_rs485;
 static uint32_t clock_ms=100;
 static uint32_t millis() { return clock_ms; }
@@ -22,6 +24,7 @@ struct FakeUpdate {
   bool end(bool) { ++ends; return end_ok; }
   void abort() { ++aborts; }
 } Update;
+static auto& display_firmware_writer=Update;
 struct FakeWifi {
   bool allowed=true, wireless=true, locked=false;
   bool beginUpdate() { if (!allowed) return false; locked=true; return true; }

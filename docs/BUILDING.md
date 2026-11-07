@@ -67,7 +67,7 @@ Restart Arduino IDE and select **OFE P4 High Performance > OFE Display P4
 
 The separate board menu offers Software, PPA fills and PPA fills + images.
 Unsupported drawing still uses software; PPA does not accelerate every LVGL
-operation. The owner's exported alpha uses the fills + images profile and
+operation. The current P4 firmware uses the fills + images profile and
 24 MHz panel clock. Keep the matching partition layout for OTA.
 
 `tools/boards/prepare_elecrow_p4.py --check` verifies the generated P4 sketch

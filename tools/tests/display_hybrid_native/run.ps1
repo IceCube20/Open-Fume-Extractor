@@ -60,6 +60,10 @@ foreach ($resolution in @('320x480', '800x480', 'ST7796_320x480')) {
 if ($LASTEXITCODE -ne 0) { throw 'Master routing test build failed' }
 & "$build\test_master_route.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master routing tests failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_master_bulk.cpp" "/Fo$build\" "/Fe$build\test_master_bulk.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Master bulk ACK test build failed' }
+& "$build\test_master_bulk.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Master bulk ACK tests failed' }
 
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$build" "$PSScriptRoot\test_display_interaction.cpp" "/Fo$build\" "/Fe$build\test_display_interaction.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Display interaction test build failed' }

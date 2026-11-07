@@ -7,9 +7,25 @@ NAMES = ("DisplayModule_320x480", "DisplayModule_ST7796_320x480")
 
 class SmallDisplayProfiles(unittest.TestCase):
     def test_identical_helpers(self):
-        for file in ("OfeSmallDisplayProfile.h", "OfeSmallDisplayProfileUi.inc.h"):
+        for file in ("OfeSmallDisplayProfile.h", "OfeSmallDisplayProfileUi.inc.h", "OfeSmallDisplayTiming.h"):
             copies = [(ROOT / "Module" / name / "src" / file).read_bytes() for name in NAMES]
             self.assertEqual(copies[0], copies[1])
+
+    def test_real_refresh_and_input_timers_are_configured_without_gesture_changes(self):
+        for name in NAMES:
+            folder = ROOT / "Module" / name
+            source = (folder / (name + ".ino")).read_text(encoding="utf-8-sig")
+            helper = (folder / "src/OfeSmallDisplayTiming.h").read_text()
+            self.assertIn("#define OFE_SMALL_REFRESH_MS 16", helper)
+            self.assertIn("#define OFE_SMALL_TOUCH_MS 16", helper)
+            self.assertIn("lv_display_get_refr_timer(display)", helper)
+            self.assertIn("lv_indev_get_read_timer(input)", helper)
+            self.assertIn("lv_indev_set_display(input, display)", helper)
+            self.assertLess(source.index("lv_indev_set_read_cb(indev, lvgl_touch_cb);"),
+                            source.index("ofe_small_display::configureTiming(lvgl_disp, indev);"))
+            self.assertNotIn("lv_indev_set_scroll", helper)
+            self.assertNotIn("lv_obj_", helper)
+            self.assertNotIn("heap_caps_", helper)
 
     def test_gui_owns_switch_not_cli(self):
         for name in NAMES:

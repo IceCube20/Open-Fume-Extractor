@@ -2,6 +2,9 @@
 #include "OfeDisplayTunnel.h"
 #include "../OfeP4Board.h"
 #include "OfeDisplayMemory.h"
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+#include "OfeDisplayOtaTiming.h"
+#endif
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -12,6 +15,16 @@
 
 #ifndef OFE_DISPLAY_HOSTNAME_PREFIX
 #define OFE_DISPLAY_HOSTNAME_PREFIX "OFE-Display"
+#endif
+
+#ifndef OFE_DISPLAY_WIFI_SDK_BUFFERS
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// Match the small S3 panels: retain the SDK's eight static RX buffers.
+#define OFE_DISPLAY_WIFI_SDK_BUFFERS 1
+#else
+// Preserve the generated P4 port's existing hosted-WiFi configuration.
+#define OFE_DISPLAY_WIFI_SDK_BUFFERS 0
+#endif
 #endif
 
 class OfeDisplayWifi {
@@ -61,8 +74,20 @@ public:
     const bool ok=!save_pending_ && !shared_.scanning && !update_transport_.load();
     if (ok) update_transport_.store(network_origin_ ? 2 : 1);
     portEXIT_CRITICAL(&mux_);
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+    if (ok) ota_timing_.reset();
+#endif
     return ok;
   }
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+  void logOtaTiming() const {
+    if (!updateWireless()) return;
+    const auto s=ota_timing_.snapshot();
+    Serial.printf("OTA WIFI: rx=%u dup=%u reject=%u ack-fail=%u | max us: poll=%u check=%u handle=%u ack-send=%u\n",
+      (unsigned)s.packets,(unsigned)s.duplicates,(unsigned)s.rejected,(unsigned)s.ack_failures,
+      (unsigned)s.poll_max_us,(unsigned)s.check_max_us,(unsigned)s.handle_max_us,(unsigned)s.ack_max_us);
+  }
+#endif
   void finishUpdate() { update_transport_.store(0); }
   bool updateWireless() const { return update_transport_.load()==2; }
   bool save(const ofe_wifi::Config& c) {
@@ -127,6 +152,9 @@ private:
   bool save_pending_=false,scan_requested_=false;
   bool boot_radio_ready_=false;
   std::atomic<uint8_t> update_transport_{0}; // 0 idle, 1 RS485, 2 authenticated WiFi
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+  OfeDisplayOtaTiming ota_timing_;
+#endif
   std::atomic<bool> last_transport_wireless_{false};
   uint32_t resolved_ip_=0;
   uint32_t config_revision_=0;
@@ -217,6 +245,9 @@ private:
   }
   bool poll(jbc_rs485::Frame& frame) {
     using namespace ofe_wifi;
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+    if (updateWireless()) ota_timing_.poll(micros());
+#endif
     if (update_transport_.load()==1) return false;
     // This runs on every OFE poll, including idle polls. Do not copy the scan
     // list/UI view with interrupts disabled; only config changes need a copy.
@@ -261,22 +292,42 @@ private:
     if (n<=0 || !samePeer(from,endpoint_)) return false;
     if (n >= (int)(BULK_HEADER + TAG) && (!memcmp(raw,"OFB1",4) || !memcmp(raw,"OFA1",4))) {
       BulkPacketView bulk;
-      if (!decodeBulk(raw,n,active_config_.key,bulk) || bulk.ack || !connected_ ||
-          bulk.uid!=uid_ || bulk.client!=client_ || bulk.server!=server_ ||
-          bulk.mode!=active_config_.mode || !bulk.request) return false;
+      const bool valid_bulk=decodeBulk(raw,n,active_config_.key,bulk) && !bulk.ack && connected_ &&
+          bulk.uid==uid_ && bulk.client==client_ && bulk.server==server_ &&
+          bulk.mode==active_config_.mode && bulk.request;
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+      ota_timing_.received();
+      ota_timing_.checked(uint32_t(micros()-received_us),valid_bulk);
+#endif
+      if (!valid_bulk) return false;
       uint8_t status=STATUS_BUSY;
       uint32_t accepted=bulk.offset;
-      if (bulk.request==bulk_last_request_ && bulk.offset==bulk_last_offset_) {
+      const bool duplicate=bulk.request==bulk_last_request_ && bulk.offset==bulk_last_offset_;
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+      const uint32_t handle_started_us=micros();
+#endif
+      if (duplicate) {
         status=bulk_last_status_; accepted=bulk_last_accepted_;
       } else if (firmware_chunk_) {
         status=firmware_chunk_(bulk.offset,bulk.data,bulk.length,accepted);
         bulk_last_request_=bulk.request; bulk_last_offset_=bulk.offset;
         bulk_last_status_=status; bulk_last_accepted_=accepted;
       }
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+      ota_timing_.handled(uint32_t(micros()-handle_started_us),duplicate);
+#endif
       seen_=millis(); network_origin_=true;
       last_transport_wireless_.store(true,std::memory_order_relaxed);
-      sendBulkPacket(fd_,endpoint_,true,active_config_.mode,status,uid_,client_,server_,
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+      const uint32_t ack_started_us=micros();
+#endif
+      const bool ack_sent=sendBulkPacket(fd_,endpoint_,true,active_config_.mode,status,uid_,client_,server_,
                      bulk.request,accepted,nullptr,0,active_config_.key);
+#if defined(OFE_DISPLAY_OTA_TIMING) && OFE_DISPLAY_OTA_TIMING
+      ota_timing_.acknowledged(uint32_t(micros()-ack_started_us),ack_sent);
+#else
+      (void)ack_sent;
+#endif
       return false;
     }
     Packet p;
@@ -340,11 +391,12 @@ private:
   void prepareHostname() {
     if (device_hostname_[0]) return;
     uint8_t mac[6]={0};
-    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    // The P4 has no local WiFi MAC; use its factory eFuse identity, not the hosted C6.
+    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
       snprintf(device_hostname_,sizeof(device_hostname_),"%s-%02X%02X%02X",
                OFE_DISPLAY_HOSTNAME_PREFIX,(unsigned)mac[3],(unsigned)mac[4],(unsigned)mac[5]);
     } else {
-      // Extremely defensive fallback; normal ESP32-S3 hardware always has a base MAC.
+      // Defensive fallback if the P4 factory eFuse MAC cannot be read.
       snprintf(device_hostname_,sizeof(device_hostname_),"%s-000000",OFE_DISPLAY_HOSTNAME_PREFIX);
     }
   }
@@ -353,7 +405,17 @@ private:
     constexpr uint32_t caps=MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t free_before=heap_caps_get_free_size(caps), block_before=heap_caps_get_largest_free_block(caps);
     WiFi.persistent(false);
-    WiFi.useStaticBuffers(false);
+    WiFi.useStaticBuffers(OFE_DISPLAY_WIFI_SDK_BUFFERS != 0);
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (OFE_DISPLAY_WIFI_SDK_BUFFERS) {
+      Serial.printf("[Display WiFi] SDK buffer profile: static RX=%u, dynamic RX=%u, TX type=%u\n",
+        (unsigned)CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM,
+        (unsigned)CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM,
+        (unsigned)CONFIG_ESP_WIFI_TX_BUFFER_TYPE);
+    } else {
+      Serial.println("[Display WiFi] Arduino reduced-buffer profile");
+    }
+#endif
     // Arduino-ESP32 applies the DHCP hostname while STA is started. Set it
     // before WiFi.mode()/WiFi.begin(), otherwise routers can keep esp32s3.
     prepareHostname();

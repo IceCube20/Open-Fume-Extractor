@@ -41,11 +41,21 @@ class DisplayGuiTaskSourceTests(unittest.TestCase):
         for name, checksum in zip(NAMES, expected):
             source = (ROOT / "Module" / name / (name + ".ino")).read_text(encoding="utf-8-sig")
             service = source.split("static void process_display_ui_once() {\n", 1)[1].split("\n}\n\nvoid setup()", 1)[0] + "\n"
+            # The separately tested abort navigation is GUI-owned, not a redraw change.
+            self.assertEqual(service.count("    update_exit_tick();\n"), 1)
+            service = service.replace("    update_exit_tick();\n", "")
             if name != "DisplayModule_800x480":
                 # The small-display experiment adds a GUI-owned buffer switch,
                 # not changes to the original UI service below it.
                 self.assertTrue(service.startswith("  small_profile_tick();\n"))
                 service = service.removeprefix("  small_profile_tick();\n")
+            else:
+                # A separately tested opt-in probe precedes the original UI;
+                # retain the original checksum for the UI itself.
+                self.assertTrue(service.startswith("#if defined(CONFIG_IDF_TARGET_ESP32S3)\n"))
+                probe, service = service.split("#endif\n", 1)
+                self.assertIn("rgb_ota_probe.service(", probe)
+                self.assertNotIn("lvgl_timer_handler_profiled", probe)
             self.assertEqual(hashlib.sha256(service.encode()).hexdigest(), checksum, name)
 
     def test_transport_cannot_bypass_owner(self):

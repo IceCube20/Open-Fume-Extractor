@@ -155,11 +155,15 @@ bool MasterDisplayWifi::routeHook(void* self,const Frame& f) {
   return static_cast<MasterDisplayWifi*>(self)->route(f);
 }
 void MasterDisplayWifi::beginFirmware(uint8_t addr) {
+  firmware_bulk_diagnostics_.reset();
   firmware_wifi_=active(addr);
   const Peer* p=peer(addr);
   firmware_uid_=p ? p->uid : 0;
   firmware_bulk_available_=firmware_wifi_ && p && p->connected;
   firmware_bulk_confirmed_=false;
+  firmware_bulk_retry_pending_=false;
+  firmware_bulk_retry_started_ms_=0;
+  firmware_bulk_retry_delay_ms_=2000;
   firmware_bulk_request_=esp_random();
   if (!firmware_bulk_request_) firmware_bulk_request_=1;
   firmware_addr_.store(addr);
@@ -170,6 +174,9 @@ void MasterDisplayWifi::endFirmware() {
   firmware_wifi_=false;
   firmware_bulk_available_=false;
   firmware_bulk_confirmed_=false;
+  firmware_bulk_retry_pending_=false;
+  firmware_bulk_retry_started_ms_=0;
+  firmware_bulk_retry_delay_ms_=2000;
 }
 bool MasterDisplayWifi::firmwareBulkChunk(uint8_t addr, uint32_t offset,
                                           const uint8_t* data, uint16_t len) {
@@ -185,10 +192,19 @@ bool MasterDisplayWifi::firmwareBulkChunk(uint8_t addr, uint32_t offset,
   constexpr uint8_t attempts=3;
   constexpr uint32_t ack_timeout_ms=750;
   for (uint8_t attempt=0;attempt<attempts;++attempt) {
+    firmware_bulk_diagnostics_.note(ofe_wifi_ota::Tx);
     if (!sendBulkPacket(fd_,p->endpoint,false,p->mode,STATUS_OK,p->uid,p->client,p->server,
-                        request,offset,data,len,key)) continue;
+                        request,offset,data,len,key)) {
+      firmware_bulk_diagnostics_.note(ofe_wifi_ota::TxFail);
+      continue;
+    }
     const uint32_t started=millis();
+    uint32_t last_poll_us=micros();
+    bool replied=false;
     while ((uint32_t)(millis()-started)<ack_timeout_ms) {
+      const uint32_t poll_us=micros();
+      firmware_bulk_diagnostics_.pollGap(uint32_t(poll_us-last_poll_us));
+      last_poll_us=poll_us;
       uint8_t magic[4]; sockaddr_in peek_from={}; socklen_t peek_len=sizeof(peek_from);
       const int peeked=recvfrom(fd_,magic,sizeof(magic),MSG_PEEK|MSG_DONTWAIT,
                                 reinterpret_cast<sockaddr*>(&peek_from),&peek_len);
@@ -196,27 +212,36 @@ bool MasterDisplayWifi::firmwareBulkChunk(uint8_t addr, uint32_t offset,
       if (peeked==4 && (!memcmp(magic,"OFA1",4) || !memcmp(magic,"OFB1",4))) {
         uint8_t raw[BULK_PACKET_MAX]; sockaddr_in from={}; socklen_t from_len=sizeof(from);
         const int n=recvfrom(fd_,raw,sizeof(raw),MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&from),&from_len);
+        if (n<=0) { firmware_bulk_diagnostics_.note(ofe_wifi_ota::ReadFail); continue; }
+        firmware_bulk_diagnostics_.note(ofe_wifi_ota::Rx);
         BulkPacketView ack;
-        if (n>0 && samePeer(from,p->endpoint) && decodeBulk(raw,n,key,ack) && ack.ack &&
-            ack.uid==p->uid && ack.client==p->client && ack.server==p->server &&
-            ack.mode==p->mode && ack.request==request) {
-          p->seen=millis(); publish(*p);
-          if (ack.status==STATUS_OK && ack.offset==offset+len) {
-            firmware_bulk_confirmed_=true;
-            return true;
-          }
-          break;
+        if (!samePeer(from,p->endpoint)) { firmware_bulk_diagnostics_.note(ofe_wifi_ota::Endpoint); continue; }
+        if (!decodeBulk(raw,n,key,ack) || !ack.ack) { firmware_bulk_diagnostics_.note(ofe_wifi_ota::Invalid); continue; }
+        if (ack.uid!=p->uid || ack.client!=p->client || ack.server!=p->server || ack.mode!=p->mode) {
+          firmware_bulk_diagnostics_.note(ofe_wifi_ota::Session); continue;
         }
+        if (ack.request!=request) { firmware_bulk_diagnostics_.note(ofe_wifi_ota::Request); continue; }
+        p->seen=millis(); publish(*p);
+        firmware_bulk_diagnostics_.pollGap(uint32_t(micros()-last_poll_us));
+        replied=true;
+        if (ack.status==STATUS_OK && ack.offset==offset+len) {
+          firmwareBulkSucceeded();
+          return true;
+        }
+        firmware_bulk_diagnostics_.note(ack.status!=STATUS_OK ? ofe_wifi_ota::Status : ofe_wifi_ota::Offset);
+        break;
       } else {
         // Keep control/keepalive traffic moving while awaiting the bulk ACK.
         Frame ignored;
         receive(ignored);
       }
     }
+    firmware_bulk_diagnostics_.pollGap(uint32_t(micros()-last_poll_us));
+    if (!replied) firmware_bulk_diagnostics_.note(ofe_wifi_ota::Timeout);
   }
-  // Old display firmware or an unhealthy UDP path: use the proven OFE frame path.
-  firmware_bulk_available_=false;
-  firmware_bulk_confirmed_=false;
+  // Fall back for this block without permanently slowing an already proven
+  // bulk-capable display after a transient flash-write or radio stall.
+  firmwareBulkFailed();
   return false;
 }
 bool MasterDisplayWifi::rebindAddress(uint64_t uid, uint8_t new_addr) {
@@ -291,6 +316,12 @@ bool MasterDisplayWifi::receive(Frame& frame) {
   const uint32_t received_us=micros();
   if (timingEnabled()) for (auto& peer:peers_) peer.timing.polled(received_us);
   received_packet_=n>=0;
+  if (n>=int(BULK_HEADER+TAG) && !memcmp(raw,"OFA1",4) && firmware_addr_.load()) {
+    // A shaped ACK consumed outside a bulk wait; not authenticated here. It
+    // may be late, unrelated or malformed, so this is diagnostic evidence only.
+    firmware_bulk_diagnostics_.note(ofe_wifi_ota::Unclaimed);
+    return false;
+  }
   if (n<(int)(HEADER+TAG) || n>(int)PACKET_MAX) return false;
   uint64_t uid=get_u64_le(raw+6); uint8_t key[16]; Packet msg;
   if (!derive(uid,key) || !decode(raw,n,key,msg)) return false;

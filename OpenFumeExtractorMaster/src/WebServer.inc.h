@@ -5,7 +5,8 @@
 #include "WebHomeAssistant.inc.h"
 
 static void wifi_start_setup_ap() {
-  WiFi.mode(WIFI_AP);
+  // A fallback portal must not permanently disable reconnection to saved WiFi.
+  WiFi.mode(wifi_ssid[0] ? WIFI_AP_STA : WIFI_AP);
   WiFi.setSleep(false);
   apply_ap_hostname();
   if (strlen(master_ap_password) < 8) generate_setup_password(master_ap_password, sizeof(master_ap_password));
@@ -13,6 +14,7 @@ static void wifi_start_setup_ap() {
   dns.start(53, "*", WiFi.softAPIP());
   captive_active = true;
   wifi_sta_pending = false;
+  wifi_sta_was_connected = false;
   Serial.print("Web hostname ");
   Serial.println(master_hostname);
   Serial.print("Web AP ");
@@ -25,15 +27,16 @@ static void wifi_start_setup_ap() {
 }
 
 static void wifi_start_sta_connect() {
-  WiFi.mode(WIFI_STA);
+  // Keep the recovery portal usable throughout background association attempts.
+  WiFi.mode(captive_active ? WIFI_AP_STA : WIFI_STA);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   apply_sta_hostname();
   if (wifi_static_enabled) {
     WiFi.config(wifi_static_ip, wifi_static_gateway, wifi_static_subnet, wifi_static_dns1, wifi_static_dns2);
   }
   apply_sta_hostname();
   WiFi.begin(wifi_ssid, wifi_password);
-  captive_active = false;
   wifi_sta_pending = true;
   wifi_sta_start_ms = millis();
   wifi_next_retry_ms = wifi_sta_start_ms + 30000UL;
@@ -43,7 +46,12 @@ static void wifi_start_sta_connect() {
 }
 
 static void wifi_on_sta_connected() {
+  if (captive_active) {
+    dns.stop();
+    WiFi.softAPdisconnect(true);
+  }
   wifi_sta_pending = false;
+  wifi_sta_was_connected = true;
   captive_active = false;
   if (!wifi_time_configured) {
     configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.cloudflare.com", "time.google.com");
@@ -57,16 +65,23 @@ static void wifi_on_sta_connected() {
 
 static void wifi_service_tick() {
   const uint32_t now = millis();
+  if (!wifi_ssid[0]) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifi_sta_was_connected || wifi_sta_pending || captive_active) wifi_on_sta_connected();
+    return;
+  }
+  if (wifi_sta_was_connected) {
+    wifi_sta_was_connected = false;
+    wifi_next_retry_ms = now;
+  }
   if (wifi_sta_pending) {
-    if (WiFi.status() == WL_CONNECTED) {
-      wifi_on_sta_connected();
-    } else if ((uint32_t)(now - wifi_sta_start_ms) >= 12000UL) {
+    if ((uint32_t)(now - wifi_sta_start_ms) >= 12000UL) {
       Serial.println("Web STA connect timeout, starting setup AP");
       wifi_start_setup_ap();
     }
     return;
   }
-  if (!captive_active && strlen(wifi_ssid) > 0 && WiFi.status() != WL_CONNECTED && (uint32_t)(now - wifi_next_retry_ms) < 0x80000000UL) {
+  if ((uint32_t)(now - wifi_next_retry_ms) < 0x80000000UL) {
     wifi_start_sta_connect();
   }
 }

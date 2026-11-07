@@ -6,7 +6,7 @@ $build = Join-Path $env:TEMP 'ofe-home-metrics-native'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
-$src = Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/src'
+$src = (Resolve-Path (Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/src')).Path
 $python = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
 & $python "$PSScriptRoot/extract_builder.py" "$build/builder.inc.h"
 if ($LASTEXITCODE) { throw 'Metrics source extraction failed' }
@@ -14,6 +14,10 @@ if ($LASTEXITCODE) { throw 'Metrics source extraction failed' }
 if ($LASTEXITCODE) { throw 'Metrics native build failed' }
 & "$build/test_metrics.exe"
 if ($LASTEXITCODE) { throw 'Metrics regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$PSScriptRoot/../display_hybrid_native/stubs" "/I$src" "/I$build" "$PSScriptRoot/test_live_priority.cpp" "/Fo$build\test_live_priority.obj" "/Fe$build/test_live_priority.exe"
+if ($LASTEXITCODE) { throw 'Live priority native build failed' }
+& "$build/test_live_priority.exe"
+if ($LASTEXITCODE) { throw 'Live priority regressions failed' }
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$PSScriptRoot/../display_hybrid_native/stubs" "/I$src" "/I$src/../../Module/DisplayModule_800x480/src" "$PSScriptRoot/test_values.cpp" "/Fo$build\test_values.obj" "/Fe$build/test_values.exe"
 if ($LASTEXITCODE) { throw 'Value stream native build failed' }
 & "$build/test_values.exe"

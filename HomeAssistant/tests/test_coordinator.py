@@ -214,7 +214,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
     def test_polling_interval_default_and_boundaries(self):
         self.assertEqual(self.coordinator.update_interval, timedelta(seconds=5))
-        for seconds in (1, 60):
+        for seconds in (0.5, 0.75, 1, 60):
             with self.subTest(seconds=seconds):
                 entry = types.SimpleNamespace(unique_id=MASTER, entry_id="test-entry",
                                               options={"scan_interval": seconds})

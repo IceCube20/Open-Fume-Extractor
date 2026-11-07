@@ -56,7 +56,8 @@ static String update_page(const String& msg = String()) {
     html += F("</option>");
   }
   if (!update_module_found) { html += F("<option value=''>"); html += web_text("Kein updatefähiges Modul online", "No update-capable module online"); html += F("</option>"); }
-  html += F("</select><label>"); html += web_text("Modul-Firmware (.bin)", "Module firmware (.bin)"); html += F("</label><input id='module_fw_file' type='file' name='firmware' accept='.bin'><div id='module_fw_info' class='muted' style='margin-top:8px'></div><label class='dev-fw-override' style='display:none;margin-top:10px;padding:10px;border:1px solid #5b4a22;border-radius:8px;background:#211b10;color:#f4c25b'><input type='checkbox' name='unsafe' value='1' style='width:auto;min-height:0;margin-right:8px'><span>"); html += web_text("Entwicklermodus: Modultyp-Prüfung überspringen", "Developer mode: skip module type check"); html += F("</span></label><button id='module_update_btn' type='submit' style='margin-top:16px'>"); html += web_text("Modul aktualisieren", "Update Module"); html += F("</button><div class='progress'><div id='moduleBar' class='bar'></div></div><div id='moduleStat' class='upload-stat'></div></form></section></div>");
+  html += F("</select>");
+  html += F("<label>"); html += web_text("Modul-Firmware (.bin)", "Module firmware (.bin)"); html += F("</label><input id='module_fw_file' type='file' name='firmware' accept='.bin'><div id='module_fw_info' class='muted' style='margin-top:8px'></div><label class='dev-fw-override' style='display:none;margin-top:10px;padding:10px;border:1px solid #5b4a22;border-radius:8px;background:#211b10;color:#f4c25b'><input type='checkbox' name='unsafe' value='1' style='width:auto;min-height:0;margin-right:8px'><span>"); html += web_text("Entwicklermodus: Modultyp-Prüfung überspringen", "Developer mode: skip module type check"); html += F("</span></label><button id='module_update_btn' type='submit' style='margin-top:16px'>"); html += web_text("Modul aktualisieren", "Update Module"); html += F("</button><div class='progress'><div id='moduleBar' class='bar'></div></div><div id='moduleStat' class='upload-stat'></div></form></section></div>");
   html += F("<script>");
   html += web_is_german() ? F("const UI_DE=true;") : F("const UI_DE=false;");
   html += developer_override_active() ? F("let DEV_MODE=true;") : F("let DEV_MODE=false;");
@@ -76,7 +77,8 @@ static String update_page(const String& msg = String()) {
   html += F("function fwSigVersion(sig){var m=String(sig||'').match(/(?:^|;)version=([^;]+)/);return m?m[1]:'-';}function fwSigTarget(sig){var m=String(sig||'').match(/(?:^|;)target=([^;]+)/);return m?m[1]:'-';}function fwSigTargetLabel(sig){var t=fwSigTarget(sig);var map={MASTER:'Master',JBC_BUS:'JBC Bus',FAN_IO:'Fan/IO',FAN_IO_PRO:'Fan/IO Pro',WELLER_ZERO_SMOG:'Weller Zero Smog',DISPLAY:'Display',DISPLAY_320X480:'Display 320x480',DISPLAY_ST7796_320X480:'Display ST7796 320x480',DISPLAY_800X480:'Display 800x480',DISPLAY_P4_800X480:'Display P4 800x480',UNIVERSAL_RS232:'Universal RS232',MODBUS_RTU:'Modbus RTU',SENSOR:'Sensor'};return map[t]||t.replace(/_/g,' ');}");
   html += F("function fwSigComplete(sig){return !!sig&&sig.indexOf(';version=')>=0;}function fwSigOk(type,sig,caps){var e=fwExpectedSig(type,caps);if(!e||!sig||!fwSigComplete(sig))return false;if(Number(type)==6){var c=Number(caps||0),isST7796=!!(c&134217728),is800=!!(c&8388608),is320=!!(c&4194304);if(c&268435456)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_P4_800X480;')>=0;if(isST7796)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;')>=0;if(is800)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0;if(is320)return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0;return sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_320X480;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_800X480;')>=0||sig.indexOf('OFE_FW_SIG:v1;target=DISPLAY_ST7796_320X480;')>=0;}return sig.indexOf(e)>=0;}");
   html += F("async function getState(){var r=await fetch('/state',{cache:'no-store'});return await r.json();}");
-  html += F("function moduleStatsFmt(s){if(!DEV_MODE||!s)return '';return '  -  Dev Queue '+s.queue_count+'/'+s.queue_size+' low '+s.queue_low+' empty '+s.empty_polls+' starve '+s.starve_count+'/'+s.starve_max_ms+' ms http '+s.http_age_ms+'/'+s.http_max_gap_ms+' ms ack '+s.ack_last_ms+'/'+s.ack_max_ms+' ms pump '+s.pump_gap_last_ms+'/'+s.pump_gap_max_ms+' ms retry '+s.retry_total+'/'+s.retry_last+' frames '+s.frames;}function moduleChunkStatsText(t){if(!DEV_MODE||!t)return '';try{return moduleStatsFmt(JSON.parse(t));}catch(e){return '';}}async function moduleStatsText(){if(!DEV_MODE)return '';try{var r=await fetch('/update/module/stats',{cache:'no-store'});if(!r.ok)return '';return moduleStatsFmt(await r.json());}catch(e){return '';}}");
+  html += F("function bulkAckDiagFmt(s){var d=s&&s.bulk_ack;if(!DEV_MODE||!d)return '';return ' ACK-Diag tx/rx '+d.tx+'/'+d.rx+' sendfail '+d.tx_fail+' invalid '+d.invalid+' peer '+d.endpoint+' session '+d.session+' request '+d.request+' offset '+d.offset+' status '+d.status+' timeout '+d.timeout+' unclaimed '+d.unclaimed+' readfail '+d.read_fail+' pollmax '+(d.poll_gap_us/1000).toFixed(1)+' ms';}");
+  html += F("function moduleStatsFmt(s){if(!DEV_MODE||!s)return '';return '  -  Dev Queue '+s.queue_count+'/'+s.queue_size+' low '+s.queue_low+' empty '+s.empty_polls+' starve '+s.starve_count+'/'+s.starve_max_ms+' ms http '+s.http_age_ms+'/'+s.http_max_gap_ms+' ms ack '+s.ack_last_ms+'/'+s.ack_max_ms+' ms pump '+s.pump_gap_last_ms+'/'+s.pump_gap_max_ms+' ms retry '+s.retry_total+'/'+s.retry_last+' frames '+s.frames+' OTA '+(s.wifi_bulk?'Bulk':'OFE')+' '+(s.packet_limit||0)+' B fallbacks '+(s.bulk_fallbacks||0)+bulkAckDiagFmt(s);}function moduleChunkStatsText(t){if(!DEV_MODE||!t)return '';try{return moduleStatsFmt(JSON.parse(t));}catch(e){return '';}}async function moduleStatsText(){if(!DEV_MODE)return '';try{var r=await fetch('/update/module/stats',{cache:'no-store'});if(!r.ok)return '';return moduleStatsFmt(await r.json());}catch(e){return '';}}");
   html += F("function updateChunkText(name,size,extra){return DEV_MODE?'  -  '+name+': '+size+' B'+(extra||''):'';}function updateStartText(base,name,size){return DEV_MODE?base+' '+name+': '+size+' B':base;}function updateProgressText(p,label,offset,total,bps,eta,name,size,extra){return p+'% '+label+' ('+fmt(offset)+' / '+fmt(total)+')  -  '+fmtSpeed(bps)+'  -  '+u('Restzeit','ETA')+': '+fmtEta(eta)+updateChunkText(name,size,extra);}function updateAverageText(base,avg,name,size,extra){return base+': '+fmtSpeed(avg)+updateChunkText(name,size,extra);}function updateFailText(base,e,name,size,extra){return base+e+updateChunkText(name,size,extra);}");
   html += F("async function waitOnline(addr,type,minSeen,stat){for(var i=0;i<20;i++){stat.textContent=u('Update geschrieben. Warte auf Modul 0x','Update written. Waiting for module 0x')+Number(addr).toString(16).toUpperCase()+'... '+(i+1)+'s';try{await fetch('/scan?addr='+addr,{cache:'no-store'});var d=await getState();for(var j=0;j<d.modules.length;j++){var m=d.modules[j];if(Number(m.addr)==Number(addr)&&m.online&&(Number(type)<0||Number(m.type)==Number(type))&&Number(m.last_seen_ms)>=minSeen){return m;}}}catch(e){}await sleep(1000);}return null;}");
   html += F("async function showFwInfo(file,el,type,isMaster,caps){if(!el)return;if(!file){el.textContent='';return;}el.textContent=u('Firmware wird geprüft...','Checking firmware...');var want=isMaster?'OFE_FW_SIG:v1;target=MASTER;':fwExpectedSig(type,caps),sig=await findFwSig(file,(Number(type)==6&&!isMaster)?'OFE_FW_SIG:v1;':want),auth=await findFwAuth(file),legacyOk=isMaster?(sig.indexOf(want)>=0&&fwSigComplete(sig)):fwSigOk(type,sig,caps),authOk=!!auth&&fwTargetOk(type,auth.target,caps,isMaster)&&auth.version===fwSigVersion(sig);if(legacyOk&&authOk){el.textContent=u('Firmware erkannt: ','Firmware detected: ')+auth.version+' '+fwSigTargetLabel(sig)+' · Ed25519 V1';el.style.color='#9fb6cc';}else if(legacyOk){el.textContent=u('Firmware erkannt, aber nicht kryptografisch signiert','Firmware detected but not cryptographically signed')+': '+fwSigVersion(sig)+' '+fwSigTargetLabel(sig);el.style.color='#ffb86b';}else{el.textContent=u('Keine passende OFE-Firmware-Signatur gefunden','No matching OFE firmware signature found');el.style.color='#ffb86b';}}");
@@ -107,6 +109,9 @@ static String module_update_stats_json() {
   size_t queue_low = 0;
   uint32_t empty_polls = 0;
   uint32_t frames_sent = 0;
+  uint16_t packet_limit = 0;
+  bool last_bulk = false;
+  uint32_t bulk_fallbacks = 0;
   uint32_t http_chunks = 0;
   uint32_t last_http_ms = 0;
   uint32_t max_http_gap_ms = 0;
@@ -126,6 +131,9 @@ static String module_update_stats_json() {
   queue_low = module_update_queue_low_water;
   empty_polls = module_update_queue_empty_polls;
   frames_sent = module_update_frames_sent;
+  packet_limit = module_update_packet_limit;
+  last_bulk = module_update_last_bulk;
+  bulk_fallbacks = module_update_bulk_fallbacks;
   http_chunks = module_update_http_chunks;
   last_http_ms = module_update_last_http_ms;
   max_http_gap_ms = module_update_max_http_gap_ms;
@@ -145,7 +153,7 @@ static String module_update_stats_json() {
   if (starve_age_ms > starve_max_ms) starve_max_ms = starve_age_ms;
 
   String json;
-  json.reserve(480);
+  json.reserve(768);
   json += F("{\"active\":");
   json += module_update_addr ? F("true") : F("false");
   json += F(",\"addr\":");
@@ -170,6 +178,12 @@ static String module_update_stats_json() {
   json += empty_polls;
   json += F(",\"frames\":");
   json += frames_sent;
+  json += F(",\"packet_limit\":");
+  json += (uint32_t)packet_limit;
+  json += F(",\"wifi_bulk\":");
+  json += last_bulk ? F("true") : F("false");
+  json += F(",\"bulk_fallbacks\":");
+  json += bulk_fallbacks;
   json += F(",\"http_chunks\":");
   json += http_chunks;
   json += F(",\"http_age_ms\":");
@@ -194,6 +208,17 @@ static String module_update_stats_json() {
   json += retry_total;
   json += F(",\"retry_last\":");
   json += (uint32_t)retry_last;
+  const auto bulk_diag=master_display_wifi.firmwareBulkDiagnostics();
+  static const char* const bulk_keys[]={"tx","tx_fail","rx","invalid","endpoint","session",
+    "request","offset","status","timeout","unclaimed","read_fail"};
+  static_assert(sizeof(bulk_keys)/sizeof(bulk_keys[0])==ofe_wifi_ota::EventCount,"Bulk diagnostic keys must match counters");
+  json += F(",\"bulk_ack\":{");
+  for (size_t i=0;i<ofe_wifi_ota::EventCount;++i) {
+    if (i) json += ',';
+    json += '"'; json += bulk_keys[i]; json += F("\":"); json += bulk_diag.events[i];
+  }
+  json += F(",\"poll_gap_us\":"); json += bulk_diag.poll_gap_max_us;
+  json += '}';
   json += F("}");
   return json;
 }
@@ -648,6 +673,9 @@ static void module_update_queue_reset() {
   module_update_queue_low_water = MODULE_FW_QUEUE_SIZE;
   module_update_queue_empty_polls = 0;
   module_update_frames_sent = 0;
+  module_update_packet_limit = 0;
+  module_update_last_bulk = false;
+  module_update_bulk_fallbacks = 0;
   module_update_http_chunks = 0;
   module_update_last_http_ms = 0;
   module_update_max_http_gap_ms = 0;
@@ -889,7 +917,7 @@ static void module_update_pump() {
     const bool use_bulk = master_display_wifi.firmwareBulkAvailable(target_addr);
     const size_t chunk_size = use_bulk
       ? (master_display_wifi.firmwareBulkConfirmed(target_addr)
-          ? (size_t)ofe_wifi::BULK_DATA_MAX
+          ? (size_t)module_update_wifi_bulk_limit
           : (size_t)module_update_fw_chunk_size(target_addr))
       : (size_t)module_update_fw_chunk_size(target_addr);
     uint8_t* frame = module_update_wifi_bulk;
@@ -901,12 +929,16 @@ static void module_update_pump() {
     const uint32_t target_offset = module_update_offset;
     const uint32_t ack_start = millis();
     bool chunk_ok=false;
+    bool bulk_ok=false;
     if (use_bulk) {
       chunk_ok=master_display_wifi.firmwareBulkChunk(target_addr,target_offset,frame,(uint16_t)n);
+      bulk_ok=chunk_ok;
       if (!chunk_ok) {
-        // Bulk is an optimization only. Its first failure permanently falls
-        // back to authenticated OFE frames for this update, including peers
-        // running an older display firmware.
+        // The complete popped block is replayed at the same offsets. Duplicate
+        // chunks remain idempotent if only the bulk ACK was lost.
+        portENTER_CRITICAL(&module_update_queue_mux);
+        module_update_bulk_fallbacks++;
+        portEXIT_CRITICAL(&module_update_queue_mux);
         chunk_ok=module_update_send_legacy_chunks(target_addr,target_offset,frame,n);
       }
     } else {
@@ -922,6 +954,11 @@ static void module_update_pump() {
     module_update_last_ack_ms = ack_ms;
     if (ack_ms > module_update_max_ack_ms) module_update_max_ack_ms = ack_ms;
     module_update_frames_sent++;
+    const uint16_t packet_limit=bulk_ok ? module_update_wifi_bulk_limit : module_update_fw_chunk_size(target_addr);
+    portENTER_CRITICAL(&module_update_queue_mux);
+    module_update_last_bulk=bulk_ok;
+    module_update_packet_limit=packet_limit;
+    portEXIT_CRITICAL(&module_update_queue_mux);
 
     if (module_update_addr != target_addr) return;
     module_update_offset = target_offset + n;
@@ -1233,6 +1270,7 @@ static void web_handle_module_chunk_begin() {
   }
 
   module_update_queue_reset();
+  module_update_wifi_bulk_limit = ofe_wifi::BULK_DATA_MAX;
   module_update_signature_reset();
   if (!unsafe_fw_type) {
     const String expected_sig = module_firmware_signature_hint_for(*rec);
@@ -1434,6 +1472,10 @@ static void web_handle_module_update_upload() {
       module_update_last_ack_ms = ack_ms;
       if (ack_ms > module_update_max_ack_ms) module_update_max_ack_ms = ack_ms;
       module_update_frames_sent++;
+      portENTER_CRITICAL(&module_update_queue_mux);
+      module_update_last_bulk=false;
+      module_update_packet_limit=fw_chunk_size;
+      portEXIT_CRITICAL(&module_update_queue_mux);
 
       module_update_offset += n;
       module_update_sample_speed();

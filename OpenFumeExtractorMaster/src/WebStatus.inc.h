@@ -165,6 +165,7 @@ static String module_display_name(const ModuleRecord& m) {
     if (m.type == MODULE_DISPLAY || (m.caps & CAP_DISPLAY)) {
       const char* type_name = module_type_name_for(m);
       if ((m.caps & (CAP_DISPLAY_320X480 | CAP_DISPLAY_800X480)) != 0) {
+        if (label.equalsIgnoreCase(type_name)) return label;
         String out = label;
         out += " (";
         out += type_name;
@@ -1773,7 +1774,13 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}input,se
 @media(min-width:1200px){main{width:min(1240px,100%)}}
 #details{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:stretch}
 #details .module-card{display:flex;flex-direction:column;height:100%;border-radius:10px!important}
-.module-card>.module-head{flex:0 0 136px}
+.module-card>.module-head{flex:0 0 136px;position:relative;box-shadow:none}
+.module-card>.module-head::before{content:"";position:absolute;left:var(--module-accent-left,4px);top:12px;bottom:12px;width:var(--module-accent-width,3px);border-radius:0;background:var(--accent);pointer-events:none}
+.module-card>.module-head.pixel-lines-ready::before{display:none}
+.status-pixel-accent{position:absolute;left:var(--module-accent-left,4px);top:12px;width:var(--module-accent-width,3px);height:calc(100% - 24px);color:var(--accent);overflow:visible;pointer-events:none}
+.module-list-type{display:inline-flex;align-items:center;gap:9px;min-height:28px;white-space:nowrap}
+.module-list-icon{display:inline-flex;align-items:center;justify-content:center;flex:0 0 28px;width:28px;height:28px;border-radius:6px;background:#252b33;color:var(--module-color,#4a90d9)}
+.module-list-icon svg{display:block;width:20px;height:20px}
 .module-card>.metric-line{margin:0 16px;padding:16px 0;gap:20px;background:transparent;border:0;border-bottom:1px solid #2b3139;border-radius:0;overflow:visible}
 .module-card>.metric-line>div{padding:0;background:transparent;border:0!important}
 .module-card .metric-line .k{font-size:10px;letter-spacing:0;text-transform:uppercase}
@@ -1963,6 +1970,16 @@ button,.btn{min-height:40px;background:#326da5;color:#fff;border:1px solid #417f
 .module-card .module-footer b{font:inherit;color:inherit}.module-card .module-head .module-identity{min-width:0;flex:1 1 auto}.module-card .module-statuses{flex:0 0 auto;min-width:78px}.module-card .module-statuses .pill{min-width:78px;height:22px;padding:0 9px;font-size:11px;white-space:nowrap;word-break:normal;line-height:1}.module-card .module-icon{width:42px;min-width:42px;height:42px;flex:0 0 42px}.module-card .module-statuses{height:74px;min-height:74px;flex-direction:column;flex-wrap:nowrap;align-items:flex-end;justify-content:center;gap:3px}.module-card .module-head .uni-save-state{min-height:0;margin:0;font-size:10px;line-height:1.1}.module-card .module-head .uni-save-state:empty{display:none}.overview-board{display:grid;gap:12px;margin-bottom:14px}.overview-group{border:1px solid #303640;background:#171a1f;border-radius:8px;overflow:hidden}.section-title{padding:11px 14px;border-bottom:1px solid #2d333b;color:#dce5ef;font-size:13px;font-weight:700}.master-section-title{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px}.master-section-title>span{grid-column:1;justify-self:start}.master-section-title .master-led-pair{grid-column:2;justify-self:center;margin:0;gap:18px}.master-section-title .master-led-pair .led-word{font-size:13px;min-width:40px}.stat-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr))}.extraction-stats{grid-template-columns:repeat(7,minmax(0,1fr))}.connection-stats{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}.stat-cell{min-width:0;padding:13px 14px;border-right:1px solid #292f37}.stat-cell:last-child{border-right:0}.stat-cell .v{font-size:19px}.stat-cell .mini{font-size:14px}.stat-cell .bar{margin-top:8px}.stat-cell .work-line{min-height:34px}.control-layout{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);gap:12px;margin:14px 0 12px}.control-panel{border:1px solid #303640;background:#171a1f;border-radius:8px;padding:16px;margin-bottom:12px}.control-layout .control-panel{margin-bottom:0}.panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.panel-heading h2{font-size:16px;margin:0}.panel-heading p{margin:5px 0 0;color:#87929e;font-size:12px;line-height:1.4}.output-control{display:grid;gap:10px}.output-control button{width:100%}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 12px}.settings-grid label{margin-top:0}.form-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.routing-panel{margin-bottom:14px}.routing-master{display:flex;align-items:center;gap:10px;color:#aab4bf;font-size:12px}.rule-head,.routing-rule{display:grid;grid-template-columns:42px minmax(0,1fr) 34px minmax(0,1fr);gap:10px;align-items:center}.rule-head{padding:0 10px 7px;color:#7f8a96;font-size:11px}.routing-rule{padding:10px;border-top:1px solid #292f37}.rule-number{width:29px;height:29px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#25303a;color:#dce7f1;font-size:12px;font-weight:700}.rule-arrow{text-align:center;color:#4a90d9;font-size:20px}.routing-rule select{min-width:0}
 .mqtt-perf-cell{grid-column:span 2;overflow-wrap:anywhere}.mqtt-perf-cell .v{font-size:14px}.mqtt-perf-cell .mini{margin-top:5px}
 .runtime-profile-cell{grid-column:1/-1;border-top:1px solid #292f37;overflow-wrap:anywhere}
+.master-stats>.stat-cell{position:relative;border-right:0}
+.master-stats>.stat-cell::after{content:"";position:absolute;top:0;bottom:0;right:var(--master-divider-right,0px);width:var(--master-divider-width,1px);background:#292f37;display:var(--master-divider-display,block);pointer-events:none}
+.master-stats>.stat-cell.pixel-lines-ready::after{display:none}
+.status-pixel-divider{position:absolute;top:0;right:var(--master-divider-right,0px);width:var(--master-divider-width,1px);height:100%;color:var(--status-divider-color,#292f37);display:var(--master-divider-display,block);overflow:visible;pointer-events:none}
+.module-card .module-system{--status-divider-color:#2b3139;position:relative;border-top-color:transparent}
+.module-card .module-system>span{position:relative;border-left:0}
+.module-card .module-system>span+span{border-left:0}
+.module-card .module-footer{position:relative;border-top-color:transparent}
+.status-pixel-rule{position:absolute;left:0;top:var(--status-rule-top,0px);width:100%;height:var(--status-rule-height,1px);color:#2b3139;overflow:visible;pointer-events:none}
+@media(max-width:520px){.master-stats>.stat-cell::after,.master-stats .status-pixel-divider{display:none}}
 @media(max-width:520px){.mqtt-perf-cell{grid-column:auto}}
 @media(max-width:1050px){.stat-strip,.extraction-stats,.connection-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.stat-cell{border-bottom:1px solid #292f37}}
 @media(max-width:760px){.control-layout{grid-template-columns:1fr}.settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.rule-head{display:none}.routing-rule{grid-template-columns:32px 1fr}.routing-rule .rule-arrow{grid-column:1;text-align:center;transform:rotate(90deg)}.routing-rule select:last-child{grid-column:2}}
@@ -2414,6 +2431,52 @@ de:{diagnostics:'Bus Diagnose',alarm_center:'Alarmzentrale',no_active_alarms:'Ke
 I18N.en.master_serial_number='Serial number';I18N.de.master_serial_number='Seriennummer';
 let uiLang='de';
 let devMode=localStorage.getItem('ofe_dev_mode')==='1';
+// Fractional grid tracks and browser zoom must not change the painted line width.
+function statusPixelLine(parent,kind){
+  if(parent.querySelector(':scope > .'+kind))return;
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg'),rect=document.createElementNS(ns,'rect');
+  svg.setAttribute('class',kind);svg.setAttribute('aria-hidden','true');svg.setAttribute('focusable','false');
+  rect.setAttribute('width','100%');rect.setAttribute('height','100%');rect.setAttribute('fill','currentColor');rect.setAttribute('shape-rendering','crispEdges');
+  svg.appendChild(rect);parent.appendChild(svg);parent.classList.add('pixel-lines-ready');
+}
+function alignStatusLines(){
+  const dpr=window.devicePixelRatio||1,snap=v=>Math.round(v*dpr)/dpr;
+  const accentWidth=Math.max(1,Math.round(3*dpr))/dpr;
+  document.querySelectorAll('#details .module-card>.module-head').forEach(head=>{
+    statusPixelLine(head,'status-pixel-accent');
+    const x=head.getBoundingClientRect().left;
+    head.style.setProperty('--module-accent-left',(snap(x+4)-x)+'px');
+    head.style.setProperty('--module-accent-width',accentWidth+'px');
+  });
+  document.querySelectorAll('.master-stats,#details .module-system').forEach(grid=>{
+    const edge=grid.getBoundingClientRect().right;
+    grid.style.setProperty('--master-divider-width',(1/dpr)+'px');
+    Array.from(grid.children).filter(cell=>cell.matches('.stat-cell,span')).forEach(cell=>{
+      const box=cell.getBoundingClientRect();if(!box.width)return;
+      statusPixelLine(cell,'status-pixel-divider');
+      cell.style.setProperty('--master-divider-right',(box.right-snap(box.right))+'px');
+      cell.style.setProperty('--master-divider-display',Math.abs(box.right-edge)<1/dpr?'none':'block');
+    });
+  });
+  document.querySelectorAll('#details .module-system,#details .module-footer').forEach(section=>{
+    const box=section.getBoundingClientRect(),border=parseFloat(getComputedStyle(section).borderTopWidth)||0;
+    statusPixelLine(section,'status-pixel-rule');
+    section.style.setProperty('--status-rule-top',(snap(box.top)-box.top-border)+'px');
+    section.style.setProperty('--status-rule-height',(1/dpr)+'px');
+  });
+}
+let statusLineFrame=0;
+function scheduleStatusLineAlignment(){
+  if(!statusLineFrame)statusLineFrame=requestAnimationFrame(()=>{statusLineFrame=0;alignStatusLines()});
+}
+window.addEventListener('resize',scheduleStatusLineAlignment);
+const statusLineResize=new ResizeObserver(scheduleStatusLineAlignment);
+document.querySelectorAll('#details,.master-stats').forEach(node=>{
+  statusLineResize.observe(node);
+  new MutationObserver(scheduleStatusLineAlignment).observe(node,{childList:true});
+});
+new MutationObserver(scheduleStatusLineAlignment).observe(document.body,{attributes:true,attributeFilter:['class']});
+scheduleStatusLineAlignment();
 function t(k){return (I18N[uiLang]&&I18N[uiLang][k])||I18N.en[k]||k}
 function applyDevMode(){document.body.classList.toggle('dev-mode',devMode);let b=document.getElementById('dev_btn');if(b)b.textContent=(devMode?'✓ ':'')+t('developer_mode')}
 async function toggleDevMode(){let next=!devMode,body=new URLSearchParams();body.set('enabled',next?'1':'0');if(next){let pw=prompt(uiLang==='de'?'Entwicklerpasswort':'Developer password');if(pw===null)return;body.set('password',pw)}try{let r=await fetch('/developer/mode',{method:'POST',body,cache:'no-store'});if(!r.ok)throw await r.text();let j=await r.json().catch(()=>({enabled:next}));devMode=!!j.enabled;localStorage.setItem('ofe_dev_mode',devMode?'1':'0');applyDevMode();load(true)}catch(e){alert((uiLang==='de'?'Entwicklermodus: ':'Developer mode: ')+e)}}
@@ -2421,6 +2484,16 @@ function applyLang(){document.querySelectorAll('[data-i18n]').forEach(e=>e.textC
 async function setLang(lang){let sel=document.getElementById('lang_sel');if(sel)clearFieldDirty(sel);uiLang=lang=='en'?'en':'de';applyLang();routingSig='';detailsSig='';await fetch('/language/set?lang='+uiLang,{method:'POST',cache:'no-store'});if(sel)clearFieldDirty(sel);setTimeout(()=>{load();if(sel)clearFieldDirty(sel)},120)}
 function hx(n){return '0x'+Number(n||0).toString(16).toUpperCase().padStart(2,'0')}
 function mn(m){return m.label||m.display_name||m.name||m.type_name||hx(m.addr)}
+function moduleListType(m){
+  const type=Number(m.type),caps=Number(m.caps||0);
+  let glyph=moduleSerialGlyph(),color='#4a90d9';
+  if(type===1||type===9){glyph=type===9?jbcUsbPortGlyph():moduleSerialGlyph();color='#39c779'}
+  else if(type===6){glyph=moduleMonitorGlyph();color='#b58cff'}
+  else if(type===5){glyph=moduleFanGlyph();color='#55b9ca'}
+  else if(type===7||type===8){color=type===8?'#e28b52':'#f1b84b'}
+  else if(type===2||type===3||(caps&18432)){glyph=moduleSwitchGlyph()}
+  return '<span class="module-list-type"><span class="module-list-icon" style="--module-color:'+color+'" aria-hidden="true">'+glyph+'</span><span>'+escHtml(m.type_name||m.name||'-')+'</span></span>';
+}
 function amn(m){return hx(m.addr)+' '+mn(m)}
 function set(id,t){let e=document.getElementById(id);if(e){e.textContent=t;if(id.startsWith('jbu_stationname_')){e.tabIndex=0;e.setAttribute('role','button');e.title=uiLang=='de'?'Stationsname bearbeiten':'Edit station name'}}}
 function isFormField(e){return e&&e.matches&&e.matches('input,select,textarea')}
@@ -4707,7 +4780,7 @@ val('jbc_suction',d.jbc.suction_level);val('jbc_select',customPower(d.jbc.select
 set('ofb',d.output_module.valid?((d.output_module.enabled?t('on'):t('off'))+' | '+Math.max(0,Math.min(100,Math.round(Number(d.output_module.power||0)/10)))+'%'):'-');
 set('rpm',d.output_module.valid?d.output_module.rpm:'-');set('fault',d.output_module.valid?(d.output_module.fault_text||faultText(d.output_module.fault_mask,d.active_output_type)):'-');
 let mi=document.getElementById('main_input_sel');if(!fieldBusy(mi)){let mic=Number(d.main_input_source_type)==4?'0,0,0':enc(d.main_input_source_type,d.main_input_source_addr,d.main_input_source_bit);mi.innerHTML=sourceOptions(d,mic,false);val(mi,mic,true)}let os=document.getElementById('output_sel');if(!fieldBusy(os)){let current=String(d.preferred_output_addr||0),hasPreferred=!Number(d.preferred_output_addr||0);let opts=`<option value="0">${escHtml(mainOutputText(d,true))}</option>`;(d.modules||[]).forEach(m=>{let fanConfigured=(m.type==2||m.type==3)?fanIoMainConfigured(m):true;if(m.online&&fanConfigured&&((m.caps&36)!=0||((m.caps&65536)&&universalOutputDefs(m).length))){opts+=`<option value="${m.addr}">${escHtml(hx(m.addr)+' '+mn(m))}</option>`;if(Number(m.addr)==Number(d.preferred_output_addr||0))hasPreferred=true}});if(Number(d.preferred_output_addr||0)&&!hasPreferred)opts+=`<option value="${d.preferred_output_addr}">${escHtml(mainOutputText(d,false))}</option>`;os.innerHTML=opts;val(os,current,true);}
-let rows='';(d.modules||[]).forEach(m=>{let role=moduleRoleText(d,m);let tv=m.online&&m.telemetry_valid;let mh=tv?kb(m.module_heap_free):'-';let ml=tv?('CPU '+Number(m.module_cpu_load_pct||0)+'%'):'-';let mu=tv?ups(m.module_uptime_s):'-';let off=Number(m.offline_events||0);let label=(m.label||m.type_name||m.name||'').replace(/"/g,'&quot;');let cq=commText(m),cc=commClass(m),ct=commTitle(m,d),state=m.eco_mode?(uiLang=='de'?(m.light_sleep?'Schlafmodus':'Energiesparen'):(m.light_sleep?'Sleeping':'Power saving')):(m.online?t('online'):t('offline'));rows+=`<tr><td>${hx(m.addr)}</td><td>${role}</td><td>${m.type_name}</td><td><input class="label-edit" value="${label}" data-saved="${label}" data-uid="${m.uid}" data-addr="${m.addr}" onkeydown="if(event.key==='Enter'){event.preventDefault();saveLabel(this)}" onblur="saveLabel(this)"></td><td>${m.fw}</td><td>${m.uid}</td><td class="${m.online?'on':'warn'}">${state}</td><td class="dev-only">${mh}</td><td>${ml}</td><td>${mu}</td><td>${off}</td><td class="dev-only" title="${ct}">${Number(m.miss_total||0)} / ${m.misses||0}</td><td class="${cc}" title="${ct}">${cq}</td><td><button class="secondary" onclick="rebootModule(this,${m.addr})" ${m.online?'':'disabled'}>${t('reboot_module')}</button></td></tr>`});
+let rows='';(d.modules||[]).forEach(m=>{let role=moduleRoleText(d,m);let tv=m.online&&m.telemetry_valid;let mh=tv?kb(m.module_heap_free):'-';let ml=tv?('CPU '+Number(m.module_cpu_load_pct||0)+'%'):'-';let mu=tv?ups(m.module_uptime_s):'-';let off=Number(m.offline_events||0);let label=(m.label||m.type_name||m.name||'').replace(/"/g,'&quot;');let cq=commText(m),cc=commClass(m),ct=commTitle(m,d),state=m.eco_mode?(uiLang=='de'?(m.light_sleep?'Schlafmodus':'Energiesparen'):(m.light_sleep?'Sleeping':'Power saving')):(m.online?t('online'):t('offline'));rows+=`<tr><td>${hx(m.addr)}</td><td>${role}</td><td>${moduleListType(m)}</td><td><input class="label-edit" value="${label}" data-saved="${label}" data-uid="${m.uid}" data-addr="${m.addr}" onkeydown="if(event.key==='Enter'){event.preventDefault();saveLabel(this)}" onblur="saveLabel(this)"></td><td>${m.fw}</td><td>${m.uid}</td><td class="${m.online?'on':'warn'}">${state}</td><td class="dev-only">${mh}</td><td>${ml}</td><td>${mu}</td><td>${off}</td><td class="dev-only" title="${ct}">${Number(m.miss_total||0)} / ${m.misses||0}</td><td class="${cc}" title="${ct}">${cq}</td><td><button class="secondary" onclick="rebootModule(this,${m.addr})" ${m.online?'':'disabled'}>${t('reboot_module')}</button></td></tr>`});
 if(!document.activeElement||!document.activeElement.classList.contains('label-edit'))document.getElementById('mt').innerHTML=rows||`<tr><td colspan="14" class="muted">${t('no_modules')}</td></tr>`;
 let sig=moduleSig(d);if(sig!==detailsSig){detailsSig=sig;renderDetails(d)}updateDetails(d);applyModuleEcoBadges(d);updateRules(d);loadLogicSummary(force);
 }catch(e){console.log(e)}finally{stateLoadBusy=false}}setInterval(load,500);setInterval(loadLedState,200);load();loadLedState();

@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-NAMES = ("DisplayModule_320x480", "DisplayModule_800x480", "DisplayModule_ST7796_320x480")
+NAMES = ("DisplayModule_320x480", "DisplayModule_800x480", "DisplayModule_ST7796_320x480", "DisplayModule_P4_800x480")
 
 class DisplayBacklightSourceTests(unittest.TestCase):
     def test_mqtt_dynamic_options_match_const_char_publisher_contract(self):

@@ -168,9 +168,9 @@ class DisplayUiTests(unittest.TestCase):
         master = (ROOT / 'OpenFumeExtractorMaster/src').resolve()
         wire = (master / 'DisplayHomeMetrics.h').read_bytes()
         scheduler = (master / 'MasterScheduler.cpp').read_text(encoding='utf-8')
-        self.assertIn('display->display_home_metrics_supported ? 3U : 2U', scheduler)
+        self.assertIn('const uint8_t slots_per_module = 2U;', scheduler)
         self.assertEqual(scheduler.count('display_home_metrics_supported = resp.payload[rp++] == ofe_home_metrics::VERSION'), 2)
-        self.assertIn('live_can_write_to(1U + ofe_home_metrics::WIRE_SIZE, native_end)', scheduler)
+        self.assertIn('live_can_write_to(1U + ofe_home_metrics::WIRE_SIZE, budget_end)', scheduler)
         for name in NAMES:
             base = ROOT / 'Module' / name
             self.assertEqual(wire, (base / 'src/DisplayHomeMetrics.h').read_bytes())

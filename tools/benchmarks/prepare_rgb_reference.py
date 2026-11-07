@@ -30,7 +30,7 @@ def generated_files(lvgl):
     production_defaults = {}
     for name in ("DISPLAY_RGB_WIDTH", "DISPLAY_RGB_HEIGHT", "DISPLAY_RGB_PCLK_HZ",
                  "DISPLAY_RGB_BOUNCE_BUFFER_LINES", "DISPLAY_RGB_INVERT_COLORS", "DISPLAY_ROTATION"):
-        values = re.findall(r"^#define " + name + r" (\d+)\s*$", source, re.M)
+        values = re.findall(r"^#define " + name + r" (\d+)[ \t]*(?://[^\n]*)?$", source, re.M)
         if len(values) != 1:
             raise ValueError("Ambiguous production default: " + name)
         defaults += f"#define {name} {values[0]}\n"

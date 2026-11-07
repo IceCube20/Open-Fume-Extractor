@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0rc26
+
+- Allow native status polling from 0.5 to 60 seconds, preserving fractional intervals.
+- Keep the existing 5-second default and saved polling preferences.
+
 ## 0.1.0rc25
 
 - Automatically register the bundled dashboard module in Lovelace storage mode.

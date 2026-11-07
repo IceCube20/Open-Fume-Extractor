@@ -6149,12 +6149,17 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
       if (display && registry_.count()) {
         const uint8_t module_count = registry_.count();
 
-        // Phase 1: native masks and JBC Work/Stand. Give these hot states up
-        // to 56 record bytes per packet. With 17 native modules this still
-        // completes a full round in only a few DISPLAY_STATUS packets.
+        // Phase 1: hot masks and JBC only. Larger Home metrics must not consume
+        // this budget or delay short Fan/IO input/output changes.
         uint16_t native_end = (uint16_t)payload_len + native_record_budget;
         if (native_end > budget_end) native_end = budget_end;
-        const uint8_t slots_per_module = display->display_home_metrics_supported ? 3U : 2U;
+        const uint16_t metrics_bytes = 1U + ofe_home_metrics::WIRE_SIZE;
+        if (display->display_home_metrics_supported &&
+            (uint16_t)payload_len + 9U + metrics_bytes + 4U <= budget_end) {
+          const uint16_t hot_end = budget_end - metrics_bytes - 4U;
+          if (native_end > hot_end) native_end = hot_end;
+        }
+        const uint8_t slots_per_module = 2U;
         const uint8_t native_span = (uint8_t)(module_count * slots_per_module);
         uint8_t native_cursor = native_span ? (uint8_t)(display->display_live_io_native_cursor % native_span) : 0;
         uint8_t native_visited = 0;
@@ -6192,15 +6197,6 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             payload_write_u8(rec.jbc_link_flags);
             payload_write_u8(rec.jbc_work_mask);
             payload_write_u8(rec.jbc_stand_mask);
-          } else {
-            if (rec.type != MODULE_FAN_IO && rec.type != MODULE_FAN_IO_PRO &&
-                rec.type != MODULE_WELLER_ZERO_SMOG && rec.type != MODULE_UNIVERSAL_RS232 &&
-                rec.type != MODULE_MODBUS_RTU) continue;
-            if (!live_can_write_to(1U + ofe_home_metrics::WIRE_SIZE, native_end)) break;
-            const auto metrics = display_home_metrics(rec, moduleProvidesExtractorOutput(rec));
-            payload_write_u8(ofe_home_metrics::KIND);
-            ofe_home_metrics::encode(payload + payload_len, MAX_PAYLOAD - payload_len, metrics);
-            payload_len += ofe_home_metrics::WIRE_SIZE;
           }
 
           ++record_count;
@@ -6208,6 +6204,27 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
           native_next = (uint8_t)((slot + 1U) % native_span);
         }
         if (native_written) display->display_live_io_native_cursor = native_next;
+
+        // One rotating Home-metrics record per packet leaves room for boolean
+        // entities, while every metric-capable module still receives service.
+        if (display->display_home_metrics_supported &&
+            live_can_write_to(1U + ofe_home_metrics::WIRE_SIZE, budget_end)) {
+          const uint8_t cursor = display->display_home_metrics_cursor % module_count;
+          for (uint8_t visited = 0; visited < module_count; ++visited) {
+            const uint8_t index = (uint8_t)((cursor + visited) % module_count);
+            const ModuleRecord& rec = registry_.at(index);
+            if (!rec.online || (rec.type != MODULE_FAN_IO && rec.type != MODULE_FAN_IO_PRO &&
+                rec.type != MODULE_WELLER_ZERO_SMOG && rec.type != MODULE_UNIVERSAL_RS232 &&
+                rec.type != MODULE_MODBUS_RTU)) continue;
+            const auto metrics = display_home_metrics(rec, moduleProvidesExtractorOutput(rec));
+            payload_write_u8(ofe_home_metrics::KIND);
+            ofe_home_metrics::encode(payload + payload_len, MAX_PAYLOAD - payload_len, metrics);
+            payload_len += ofe_home_metrics::WIRE_SIZE;
+            ++record_count;
+            display->display_home_metrics_cursor = (uint8_t)((index + 1U) % module_count);
+            break;
+          }
+        }
 
         // Phase 2: Universal/Modbus entity readback. Only one-byte values are
         // needed for live switch/binary-sensor status; the Display descriptor

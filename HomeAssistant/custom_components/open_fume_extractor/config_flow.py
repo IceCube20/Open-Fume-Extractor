@@ -88,5 +88,5 @@ class OfeOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
         return self.async_show_form(step_id="init", data_schema=vol.Schema({
             vol.Required(CONF_INTERVAL, default=self.config_entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL)):
-                vol.All(vol.Coerce(int), vol.Range(min=MIN_INTERVAL, max=MAX_INTERVAL)),
+                vol.All(vol.Coerce(float), vol.Range(min=MIN_INTERVAL, max=MAX_INTERVAL)),
         }))

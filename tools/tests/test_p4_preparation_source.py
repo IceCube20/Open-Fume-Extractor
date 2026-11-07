@@ -61,6 +61,19 @@ class P4Preparation(unittest.TestCase):
             with self.subTest(file=name):
                 self.assertEqual((P4 / name).read_bytes(), data)
 
+    def test_hostname_uses_p4_factory_mac_before_hosted_wifi_starts(self):
+        wifi = (P4 / "src/OfeDisplayWifi.h").read_text()
+        hostname = wifi.split('  void prepareHostname() {', 1)[1].split('  bool startRadio(', 1)[0]
+        self.assertIn('esp_efuse_mac_get_default(mac)', hostname)
+        self.assertNotIn('ESP_MAC_WIFI_STA', hostname)
+        self.assertNotIn('esp_read_mac(', hostname)
+        self.assertIn('(unsigned)mac[3],(unsigned)mac[4],(unsigned)mac[5]', hostname)
+        radio = wifi.split('  bool startRadio(', 1)[1].split('  void finishScan(', 1)[0]
+        self.assertLess(radio.index('prepareHostname();'), radio.index('WiFi.setHostname('))
+        self.assertLess(radio.index('WiFi.setHostname('), radio.index('WiFi.mode(WIFI_STA)'))
+        s3 = (S3 / "src/OfeDisplayWifi.h").read_text()
+        self.assertIn('esp_read_mac(mac, ESP_MAC_WIFI_STA)', s3)
+
     def test_visual_assets_and_protocol_unchanged(self):
         for name in ("OpenFumeBootLogo.h", "SolderIronIcon.h", "SproutIcon.h",
                      "openfume_montserrat_14_de.c", "openfume_montserrat_18_de.c",
@@ -80,7 +93,7 @@ class P4Preparation(unittest.TestCase):
         self.assertIn("CAP_DISPLAY_P4 | CAP_DISPLAY_800X480 | CAP_FW_UPDATE", source)
         self.assertNotIn("req.cmd >= CMD_FW_BEGIN && req.cmd <= CMD_FW_REBOOT", source)
         self.assertIn("}, handle_wifi_fw_bulk);", source)
-        self.assertIn("p4_firmware_guard.complete() && fw_update_buffer_flush() && Update.end(true)", source)
+        self.assertIn("p4_firmware_guard.complete() && fw_update_buffer_flush() && display_firmware_writer.end(true)", source)
         self.assertIn("if (!p4_firmware_guard.append(data, len)) return false", source)
         self.assertIn("p4_firmware_guard.reset();", source)
 
