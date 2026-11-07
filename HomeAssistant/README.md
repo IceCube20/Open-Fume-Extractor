@@ -1,5 +1,8 @@
 # Open Fume Extractor for Home Assistant
 
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=IceCube20&repository=Open-Fume-Extractor-Home-Assistant&category=integration)
+[![Add integration to Home Assistant](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=open_fume_extractor)
+
 Local Home Assistant integration and dashboard cards for
 [Open Fume Extractor](https://github.com/IceCube20/Open-Fume-Extractor).
 Connect directly to your master over the local network; no MQTT broker or cloud
@@ -23,6 +26,13 @@ repository**.
 
 ## Install with HACS
 
+Use **Open in HACS** above to open this custom repository in your own Home
+Assistant instance, add it if prompted, and download the integration. After
+**restarting Home Assistant**, use **Add integration to Home Assistant** to start
+setup. The setup button does not install the integration or HACS itself.
+
+Manual HACS steps:
+
 1. Open HACS and select **three-dot menu > Custom repositories**.
 2. Add `https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant`.
 3. Select type **Integration**, then add the repository.
@@ -34,8 +44,18 @@ repository**.
 8. Enter the master's IP/hostname and its **web** login, not a developer password.
 
 The master and supported modules are created automatically. The native polling
-interval is configurable from **1 to 60 seconds** in the integration options.
+interval is configurable from **0.5 to 60 seconds** in the integration options.
 MQTT Discovery does not need to be enabled for this native integration.
+
+### HACS catalogue status
+
+This repository is currently **not included in the default HACS catalogue**.
+Anyone can install it through the HACS button or custom-repository steps above;
+it becomes searchable in their HACS after adding it. Passing the HACS validation
+action does not automatically add a repository to the default catalogue.
+Default inclusion requires a reviewed and merged contribution to
+[`hacs/default`](https://github.com/hacs/default), following the
+[HACS inclusion requirements](https://www.hacs.xyz/docs/publish/include/).
 
 ### Existing manual installations
 
