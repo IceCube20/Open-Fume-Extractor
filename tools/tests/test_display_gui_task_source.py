@@ -44,6 +44,10 @@ class DisplayGuiTaskSourceTests(unittest.TestCase):
             # The separately tested abort navigation is GUI-owned, not a redraw change.
             self.assertEqual(service.count("    update_exit_tick();\n"), 1)
             service = service.replace("    update_exit_tick();\n", "")
+            # Automation wake is also consumed only by the existing GUI owner.
+            wake = "    if (display_backlight.takeAutomationWake()) screensaver_wake();\n"
+            self.assertEqual(service.count(wake), 1)
+            service = service.replace(wake, "")
             if name != "DisplayModule_800x480":
                 # The small-display experiment adds a GUI-owned buffer switch,
                 # not changes to the original UI service below it.

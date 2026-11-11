@@ -6,6 +6,7 @@
 #include "ModuleRegistry.h"
 #include "ExtractorLogic.h"
 #include "RequestWaitProbe.h"
+#include "OfeAutomationState.h"
 
 #ifndef JBC_MODULE_ADDR
 #define JBC_MODULE_ADDR 0x10
@@ -195,6 +196,7 @@ public:
     INPUT_SRC_IO_INPUT = 2,
     INPUT_SRC_UNIVERSAL_ENTITY = 3,
     INPUT_SRC_SYSTEM_STATE = 4,
+    INPUT_SRC_MARKER = 5,
   };
 
 
@@ -210,7 +212,17 @@ public:
     INPUT_STATE_OUTPUT_SELECTED_AUTO = 8,
     INPUT_STATE_OUTPUT_SELECTED = 9,
     INPUT_STATE_OUTPUT_ACTIVE = 10,
-    INPUT_STATE_LAST = INPUT_STATE_OUTPUT_ACTIVE,
+    INPUT_STATE_ECO_ACTIVE = 11,
+    INPUT_STATE_ALARM_ACTIVE = 12,
+    INPUT_STATE_WARNING_ACTIVE = 13,
+    INPUT_STATE_ERROR_ACTIVE = 14,
+    INPUT_STATE_FILTER_WARNING = 15,
+    INPUT_STATE_FILTER_CHANGE = 16,
+    INPUT_STATE_FILTER_VALID = 17,
+    INPUT_STATE_MODULE_ONLINE = 18,
+    INPUT_STATE_DEVICE_CONNECTED = 19,
+    INPUT_STATE_JBC_STAND = 20,
+    INPUT_STATE_LAST = INPUT_STATE_JBC_STAND,
   };
 
   enum InputTargetType : uint8_t {
@@ -221,6 +233,14 @@ public:
     INPUT_TGT_EXTRACTOR_ACTION = 4,
     INPUT_TGT_CONTINUOUS = 5,
     INPUT_TGT_SELECT_OUTPUT = 6,
+    INPUT_TGT_SYSTEM = 7,
+    INPUT_TGT_MARKER = 8,
+  };
+
+  enum SystemOutput : uint8_t {
+    SYSTEM_OUT_ECO_INHIBIT = 1,
+    SYSTEM_OUT_DISPLAY_WAKE = 2,
+    SYSTEM_OUT_DISPLAY_HOLD = 3,
   };
 
   enum ExtractorAction : uint8_t {
@@ -304,6 +324,15 @@ public:
   uint8_t mainInputSourceAddr() const { return main_input_source_addr_; }
   uint8_t mainInputSourceBit() const { return main_input_source_bit_; }
   bool mainInputSourceAvailable() const;
+  bool systemInputActive(uint8_t state, uint8_t addr = 0) const;
+  uint32_t systemInputMask(uint8_t addr = 0) const;
+  uint8_t automationMarkers() const { return logic_system_requests_.markers | rule_system_requests_.markers; }
+  bool automationMarker(uint8_t number) const { return number >= 1 && number <= 8 && (automationMarkers() & (1U << (number - 1))); }
+  bool automationEcoInhibited() const { return logic_system_requests_.eco_inhibit || rule_system_requests_.eco_inhibit; }
+  bool automationDisplayHeld(uint8_t addr) const { return logic_system_requests_.holdsDisplay(addr) || rule_system_requests_.holdsDisplay(addr); }
+  void setLogicSystemOutput(uint8_t action, uint8_t addr, bool active);
+  void setLogicMarker(uint8_t number, bool active) { logic_system_requests_.setMarker(number, active); }
+  void requestDisplayWake(uint8_t addr);
   void setLogicExternalInput(bool active);
   bool logicExternalInput() const { return logic_external_input_; }
   void setLogicContinuous(bool active);
@@ -463,6 +492,8 @@ private:
   };
   struct DisplayAlarmSnapshot {
     uint8_t alarm_count = 0;
+    uint8_t warning_count = 0;
+    uint8_t error_count = 0;
     uint8_t item_count = 0;
     uint8_t critical_mask = 0;
     uint16_t jbc_error = 0;
@@ -530,6 +561,12 @@ private:
   bool led_enabled_ = true;
   uint8_t led_brightness_pct_ = 20;
   bool power_save_enabled_ = false;
+  OfeAutomationRequests logic_system_requests_;
+  OfeAutomationRequests rule_system_requests_;
+  uint32_t last_system_rule_update_ms_ = 0;
+  mutable uint32_t system_alarm_sample_ms_ = 0;
+  mutable uint32_t system_alarm_mask_ = 0;
+  mutable bool system_alarm_sample_valid_ = false;
   bool power_save_active_ = false;
   bool background_poll_active_ = false;
   uint16_t power_save_idle_minutes_ = 30;

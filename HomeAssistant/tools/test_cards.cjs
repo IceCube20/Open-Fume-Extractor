@@ -13,6 +13,7 @@ function fixture(lang) {
     const entity_id = `${domain}.${uid}_${key}`;
     states[entity_id] = {entity_id, state: String(state), attributes: {
       ofe_master_uid: 'master', ofe_uid: uid, ofe_active: true, ofe_key: key,
+      ofe_address: {master:1,fae:16,usb:17,fan:32,weller:48,display:64,universal:80,modbus:96}[uid],
       ofe_device_type: type, ofe_device_name: uid === 'master' ? 'Open Fume Extractor Master' :
         `0x${{usb:'11',fae:'10',fan:'20',weller:'30',display:'40',universal:'50',modbus:'60'}[uid]} ${
           {usb:'JBC USB CLMU',fae:'JBC FAE Bus DDE',fan:'Fan/IO Pro Testbank mit langem Namen',weller:'Weller Zero Smog',
@@ -116,14 +117,71 @@ async function host(page, lang, dark, icons) {
     window.loadCardHelpers=async()=>({createCardElement(config){const card=document.createElement('test-entities-card');card.setConfig(config);return card;}});
   },{icons});
   await page.addScriptTag({path:path.join(component,'frontend/ofe-cards.js')});
-  await page.evaluate(({states,lang}) => {
+  await page.evaluate(async ({states,lang}) => {
     window.hass={states,locale:{language:lang},formatEntityState(state){return ['on','off'].includes(state.state)?({de:{on:'Ein',off:'Aus'},en:{on:'On',off:'Off'}}[lang][state.state]):state.state+(state.attributes.unit_of_measurement?' '+state.attributes.unit_of_measurement:'');}};
     for(const [type,extra] of [['master',{}],['module',{module_uid:'fan'}],['alarms',{entity:'sensor.master_alarm_count'}]]){
       const card=document.createElement(`ofe-${type}-card`);card.setConfig({type:`custom:ofe-${type}-card`,...extra});card.hass=window.hass;document.querySelector('#single').append(card);
     }
-    const overview=document.createElement('ofe-overview-card');overview.setConfig({type:'custom:ofe-overview-card'});overview.hass=window.hass;document.querySelector('#overview').append(overview);
+    const Strategy=customElements.get('ll-strategy-dashboard-ofe-dashboard');
+    window.dashboard=await Strategy.generate({type:'custom:ofe-dashboard'},window.hass);
+    const overview=document.createElement('ofe-overview-card');overview.setConfig(window.dashboard.views[0].cards[0]);overview.hass=window.hass;document.querySelector('#overview').append(overview);
   },{states:fixture(lang),lang});
   await settle(page);
+}
+
+async function testDashboard(page) {
+  const result=await page.evaluate(async()=>{
+    const Strategy=customElements.get('ll-strategy-dashboard-ofe-dashboard');
+    const assert=(value,message)=>{if(!value)throw new Error(message);};
+    const snapshot=()=>structuredClone(window.hass.states);
+    const host=states=>({...window.hass,states});
+    const config={type:'custom:ofe-dashboard'};
+    assert(window.customStrategies.filter(s=>s.type==='ofe-dashboard'&&s.strategyType==='dashboard').length===1,'Dashboard picker registration');
+    assert(Strategy.getCreateSuggestions().icon==='mdi:fan','Dashboard icon');
+    const editor=Strategy.getConfigElement();editor.setConfig(config);editor.hass=window.hass;
+    assert(editor.shadowRoot.querySelector('[data-field="master_uid"] select option').textContent==='Alle Master','Localized dashboard editor');
+    const empty=host({}), initial=await Strategy.generate(config,empty);
+    assert(initial.views.length===1&&!initial.views[0].cards[0].master_uid,'Empty setup must still have a usable dashboard');
+    assert(Strategy.shouldRegenerate(config,empty,window.hass),'Discover first master');
+    const valueChange=snapshot();valueChange['sensor.master_output_power'].state='22';
+    assert(!Strategy.shouldRegenerate(config,window.hass,host(valueChange)),'Live values must not rebuild controls');
+    assert(Strategy.shouldRegenerate(config,window.hass,{...window.hass,locale:{language:'en'}}),'Localize tabs');
+    const two=snapshot();
+    for(const entity of Object.values(snapshot())){
+      const clone=structuredClone(entity);clone.entity_id=clone.entity_id.replace('.', '.second_');
+      clone.attributes.ofe_master_uid='second-master';
+      clone.attributes.ofe_uid=entity.attributes.ofe_uid==='master'?'second-master':`second-${entity.attributes.ofe_uid}`;
+      two[clone.entity_id]=clone;
+    }
+    const multiple=await Strategy.generate(config,host(two));
+    assert(multiple.views.length===2&&new Set(multiple.views.map(v=>v.path)).size===2,'One stable tab per master');
+    assert(Strategy.shouldRegenerate(config,window.hass,host(two)),'Master additions rebuild tabs');
+    const filtered=await Strategy.generate({...config,master_uid:'master',show_summary:false,show_diagnostics:true,title:'Werkstatt'},host(two));
+    assert(filtered.views.length===1&&filtered.views[0].cards[0].master_uid==='master'&&filtered.views[0].cards[0].show_summary===false&&filtered.views[0].cards[0].show_diagnostics===true&&filtered.title==='Werkstatt','Explicit settings retained');
+    const card=document.querySelector('ofe-overview-card');
+    const update=async states=>{card.hass=host(states);for(let n=0;n<3;n++)await new Promise(resolve=>requestAnimationFrame(resolve));};
+    await update(two);
+    assert(card._panels.length===8&&card._panels.every(p=>!p.uid.startsWith('second')),'Never mix masters');
+    const added=snapshot();
+    for(const entity of Object.values(snapshot()).filter(s=>s.attributes.ofe_uid==='fan')){
+      const clone=structuredClone(entity);clone.entity_id=clone.entity_id.replace('.fan_', '.fan2_');
+      Object.assign(clone.attributes,{ofe_uid:'fan2',ofe_address:33,ofe_device_name:'Second Fan/IO'});added[clone.entity_id]=clone;
+    }
+    assert(!Strategy.shouldRegenerate(config,window.hass,host(added)),'Module updates are handled by the live card');
+    await update(added);
+    assert(card._panels.length===9&&card._panels.some(p=>p.uid==='fan2'),'New modules appear without dashboard edits');
+    for(const entity of Object.values(added).filter(s=>s.attributes.ofe_uid==='fan2'))entity.attributes.ofe_active=false;
+    await update(added);
+    assert(card._panels.length===8&&!card._panels.some(p=>p.uid==='fan2'),'Removed modules disappear');
+    assert(card._panels.some(p=>p.uid==='weller'),'Offline registered modules stay visible');
+    const reordered=snapshot();
+    for(const entity of Object.values(reordered).filter(s=>s.attributes.ofe_uid==='fan'))entity.attributes.ofe_address=9;
+    await update(reordered);
+    assert(card._panels[0].uid==='master'&&card._panels[1].uid==='fan','Sort numeric bus addresses, not labels');
+    await update(window.hass.states);
+    return true;
+  });
+  assert(result);
 }
 
 (async()=>{
@@ -153,6 +211,11 @@ async function host(page, lang, dark, icons) {
       assert(geometry.width<=geometry.viewport+1);
       await page.screenshot({path:path.join(output,`${lang}-${dark?'dark':'light'}-${width}.png`),fullPage:true});
       if(lang==='de'&&dark&&[390,1440].includes(width))await page.screenshot({path:path.join(output,`preview-${width}.png`)});
+      if(lang==='de'&&dark&&[390,1440].includes(width)){
+        await page.locator('#single').evaluate(el=>el.style.display='none');
+        await page.screenshot({path:path.join(output,`dashboard-${width}.png`)});
+        await page.locator('#single').evaluate(el=>el.style.removeProperty('display'));
+      }
       assert.equal(await page.locator('ofe-module-card').evaluate(el=>el._panels[0].root.style.getPropertyValue('--ofe-accent')),'#4a90d9');
       await page.evaluate(()=>{
         window.moreInfo=[];document.addEventListener('hass-more-info',event=>window.moreInfo.push(event.detail.entityId));
@@ -165,7 +228,7 @@ async function host(page, lang, dark, icons) {
       await page.locator('ofe-master-card .metric').first().click();
       await page.locator('ofe-master-card .led-word').first().click();
       assert.deepEqual(await page.evaluate(()=>window.moreInfo),['sensor.master_output_power','sensor.master_led_ofe']);
-      assert.equal(await page.locator('ofe-overview-card .device').last().locator('.led-word').first().getAttribute('data-live'),'false');
+      assert.equal(await page.locator('ofe-overview-card').evaluate(el=>el._panels.find(panel=>panel.uid==='weller').root.querySelector('.led-word').dataset.live),'false');
       await page.evaluate(()=>{
         const alarm=document.querySelector('ofe-alarms-card');window.hass.states['sensor.master_alarm_count'].attributes.alarms=[];alarm.hass=window.hass;
       });
@@ -176,6 +239,7 @@ async function host(page, lang, dark, icons) {
       });
       assert.equal(await page.locator('ofe-alarms-card ha-card').getAttribute('data-state'),'unknown');
       if(lang==='de'&&dark&&width===390){
+        await testDashboard(page);
         await page.evaluate(()=>{
           window.hass.states['sensor.master_alarm_count'].state='1';
           window.hass.states['sensor.master_alarm_count'].attributes.alarms=['<img src=x onerror="alert(1)">'];
@@ -191,7 +255,7 @@ async function host(page, lang, dark, icons) {
       }
       await page.close();
     }
-    console.log('PASS: actual OFE card bundle in DE/EN, light/dark, 320-1440px, live values, stable native-control focus and alarm states.');
+    console.log('PASS: generated OFE dashboards in DE/EN, light/dark, 320-1440px, dynamic inventory, multiple masters, live values, stable native-control focus and alarm states.');
     console.log('Screenshots: '+output);
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -36,6 +36,9 @@ class OfeEntity(CoordinatorEntity):
     def extra_state_attributes(self):
         active = self.key in self.coordinator.specs and self.spec.platform == self.entity_kind
         module = self.coordinator.modules.get(self.uid, {})
+        address = 1 if self.uid == self.coordinator.master_uid else module.get("addr")
+        if isinstance(address, bool) or not isinstance(address, int) or not 0 <= address <= 255:
+            address = None
         attributes = {
             "ofe_master_uid": self.coordinator.master_uid,
             "ofe_uid": self.uid, "ofe_key": self.spec.key,
@@ -43,6 +46,7 @@ class OfeEntity(CoordinatorEntity):
             "ofe_device_name": MASTER_DEVICE_NAME if self.uid == self.coordinator.master_uid else module_device_name(module),
             "ofe_device_model": MASTER_DEVICE_MODEL if self.uid == self.coordinator.master_uid else module.get("type_name"),
             "ofe_device_type": 0 if self.uid == self.coordinator.master_uid else module.get("type"),
+            "ofe_address": address,
             "ofe_transport": "wifi" if self.uid == self.coordinator.master_uid else module.get("transport"),
             "ofe_active": active,
         }

@@ -1,15 +1,15 @@
 /* OFE cards delegate all controls to Home Assistant's native entities card. */
-const VERSION = "0.1.28rc1";
+const VERSION = "0.1.29rc1";
 let helpersPromise;
 const words = {
-  en: {master: "Master", module: "Module", overview: "Overview", auto: "Automatic",
+  en: {master: "Master", module: "Module", overview: "Overview", auto: "Automatic", allMasters: "All masters",
     status: "Status", controls: "Controls", filter: "Filter", diagnostics: "Diagnostics", alarms: "Active alarms",
     thermocouples: "Thermocouples", port: "Port", title: "Title", diagnostic: "Show diagnostics",
     summary: "Show summary", online: "Connected", offline: "Disconnected", unknown: "Unknown", unavailable: "Unavailable", on: "On", off: "Off", eco: "Power saving",
     noAlarms: "No active alarms", alarmSensor: "Alarm count sensor (MQTT or native)", chooseAlarm: "Select an alarm count sensor in the card editor.",
     empty: "No Open Fume Extractor entities found.", chooseMaster: "Select a master in the card editor.",
     chooseModule: "Select a module in the card editor.", missing: "The selected device is not available."},
-  de: {master: "Master", module: "Modul", overview: "Übersicht", auto: "Automatisch",
+  de: {master: "Master", module: "Modul", overview: "Übersicht", auto: "Automatisch", allMasters: "Alle Master",
     status: "Status", controls: "Bedienung", filter: "Filter", diagnostics: "Diagnose", alarms: "Aktive Alarme",
     thermocouples: "Thermoelemente", port: "Port", title: "Titel", diagnostic: "Diagnose anzeigen",
     summary: "Zusammenfassung anzeigen", online: "Verbunden", offline: "Getrennt", unknown: "Unbekannt", unavailable: "Nicht verfügbar", on: "Ein", off: "Aus", eco: "Energiesparen",
@@ -21,8 +21,11 @@ const language = hass => String(hass?.locale?.language || hass?.language || "en"
 const entities = hass => Object.values(hass?.states || {}).filter(s =>
   s.attributes?.ofe_master_uid && s.attributes.ofe_uid && s.attributes.ofe_active === true);
 const masters = rows => [...new Set(rows.map(s => s.attributes.ofe_master_uid))].sort();
+const addressRank = address => Number.isInteger(address) && address >= 0 && address <= 255 ? address : 256;
 const devices = (rows, master) => [...new Map(rows.filter(s => s.attributes.ofe_master_uid === master)
-  .map(s => [s.attributes.ofe_uid, s.attributes.ofe_device_name])).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  .map(s => [s.attributes.ofe_uid, {name: s.attributes.ofe_device_name, address: s.attributes.ofe_address}])).entries()]
+  .sort((a, b) => addressRank(a[1].address) - addressRank(b[1].address) || a[0].localeCompare(b[0]))
+  .map(([uid, data]) => [uid, data.name]);
 const groupRank = group => ({status: 0, controls: 1, filter: 2, thermocouples: 4, diagnostics: 5}[group] ?? 3);
 const leafKey = state => String(state.attributes.ofe_key || "").replace(/^entity_\d+_/, "");
 const hasValue = state => state && !["unknown", "unavailable"].includes(state.state);
@@ -304,7 +307,7 @@ class OfeCard extends HTMLElement {
       ids = ids.filter(id => id === uid);
     }
     if (!ids.length && !message) message = text.missing;
-    ids.sort((a, b) => (a === master ? -1 : b === master ? 1 : a.localeCompare(b)));
+    ids.sort((a, b) => Number(b === master) - Number(a === master));
     const configs = message ? [] : ids.map(uid => deviceConfig(rows, uid, this._config.show_diagnostics, text,
       this._config.type !== "custom:ofe-overview-card" ? this._config.title : null, this._config.show_summary !== false));
     const signature = JSON.stringify([configs, message, language(this._hass)]);
@@ -447,7 +450,8 @@ class OfeCardEditor extends HTMLElement {
     this.shadowRoot.querySelector('[data-field="module_uid"]').hidden = this._config.type !== "custom:ofe-module-card";
     for (const [field, options] of [["master_uid", hubs.map(uid => [uid, `${text.master} ${uid}`])], ["module_uid", mods]]) {
       const select = this.shadowRoot.querySelector(`[data-field="${field}"] select`);
-      select.replaceChildren(...[["", text.auto], ...options].map(([value, label]) => {
+      const automatic = this._config.type === "custom:ofe-dashboard" ? text.allMasters : text.auto;
+      select.replaceChildren(...[["", automatic], ...options].map(([value, label]) => {
         const option = document.createElement("option"); option.value = value; option.textContent = label; return option;
       }));
       select.value = this._config[field] || "";
@@ -456,6 +460,38 @@ class OfeCardEditor extends HTMLElement {
     this.shadowRoot.querySelector('[data-field="show_diagnostics"] input').checked = !!this._config.show_diagnostics;
     this.shadowRoot.querySelector('[data-field="show_summary"] input').checked = this._config.show_summary !== false;
   }
+}
+class OfeDashboardStrategy extends HTMLElement {
+  static registryDependencies = [];
+  static getConfigElement() { return document.createElement("ofe-card-editor"); }
+  static getCreateSuggestions() { return {title: "Open Fume Extractor", icon: "mdi:fan"}; }
+  static async generate(config, hass) {
+    const text = words[language(hass)];
+    const ids = config.master_uid ? [config.master_uid] : masters(entities(hass));
+    // Cards consume live HA state themselves, including module additions/removals.
+    // Only a changed set of masters requires rebuilding the dashboard's tabs.
+    const views = (ids.length ? ids : [null]).map(uid => ({
+      title: ids.length > 1 ? `${text.master} ${String(uid).slice(-6)}` : text.overview,
+      path: uid ? `master-${encodeURIComponent(uid)}` : "overview", type: "panel", icon: "mdi:fan",
+      cards: [{type: "custom:ofe-overview-card", ...(uid ? {master_uid: uid} : {}),
+        title: config.title || "Open Fume Extractor", show_summary: config.show_summary !== false,
+        show_diagnostics: config.show_diagnostics === true}],
+    }));
+    return {title: config.title || "Open Fume Extractor", views};
+  }
+  static shouldRegenerate(config, oldHass, newHass) {
+    if (language(oldHass) !== language(newHass)) return true;
+    if (config.master_uid) return false;
+    return JSON.stringify(masters(entities(oldHass))) !== JSON.stringify(masters(entities(newHass)));
+  }
+}
+if (!customElements.get("ll-strategy-dashboard-ofe-dashboard")) {
+  customElements.define("ll-strategy-dashboard-ofe-dashboard", OfeDashboardStrategy);
+}
+window.customStrategies ||= [];
+if (!window.customStrategies.some(strategy => strategy.type === "ofe-dashboard" && strategy.strategyType === "dashboard")) {
+  window.customStrategies.push({type: "ofe-dashboard", strategyType: "dashboard", name: "Open Fume Extractor",
+    documentationURL: "https://github.com/IceCube20/Open-Fume-Extractor-Home-Assistant#automatic-dashboard"});
 }
 if (!customElements.get("ofe-card-editor")) customElements.define("ofe-card-editor", OfeCardEditor);
 if (!customElements.get("ofe-alarms-card")) customElements.define("ofe-alarms-card", OfeAlarmsCard);

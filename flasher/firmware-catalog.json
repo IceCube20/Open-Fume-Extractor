@@ -2,14 +2,14 @@
   {
     "id": "OpenFumeExtractor-Master",
     "label": "Open Fume Extractor Master",
-    "version": "2.0.87RC",
+    "version": "2.0.91RC",
     "signatureTarget": "MASTER",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/OpenFumeExtractor-Master.json",
-    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.87RC-merged.bin",
-    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.87RC.bin",
-    "mergedSha256": "0a9f475141aa54c21dbc2671cf03f4814e471bd9178886a8de64ea67fa2d3e8b"
+    "merged": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.91RC-merged.bin",
+    "ota": "firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.0.91RC.bin",
+    "mergedSha256": "82ae68eb9d687eeaa0a8cf10856dd2699425eefc0d75f5760bd93629b13c924c"
   },
   {
     "id": "JBC-FAE-Bus",
@@ -74,50 +74,50 @@
   {
     "id": "Display-320x480",
     "label": "Display 320x480",
-    "version": "1.4.34RC",
+    "version": "1.4.35RC",
     "signatureTarget": "DISPLAY_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-320x480.json",
-    "merged": "firmware/Display-320x480/Display-320x480-1.4.34RC-merged.bin",
-    "ota": "firmware/Display-320x480/Display-320x480-1.4.34RC.bin",
-    "mergedSha256": "254862b26a7ddad85fc175771733f8a3c7195e5473da8181b14fa5ec9122e890"
+    "merged": "firmware/Display-320x480/Display-320x480-1.4.35RC-merged.bin",
+    "ota": "firmware/Display-320x480/Display-320x480-1.4.35RC.bin",
+    "mergedSha256": "e9e0ef9564ad5bf305e0053e66ff97ec35d926606eb5ce79ad1b505a8dc91d19"
   },
   {
     "id": "Display-800x480",
     "label": "Display 800x480",
-    "version": "1.4.50RC",
+    "version": "1.4.51RC",
     "signatureTarget": "DISPLAY_800X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-800x480.json",
-    "merged": "firmware/Display-800x480/Display-800x480-1.4.50RC-merged.bin",
-    "ota": "firmware/Display-800x480/Display-800x480-1.4.50RC.bin",
-    "mergedSha256": "819ed8b88387d46c8f31fa003a19b2bd41fe5d81f7eb6504b3fc124bba43e95d"
+    "merged": "firmware/Display-800x480/Display-800x480-1.4.51RC-merged.bin",
+    "ota": "firmware/Display-800x480/Display-800x480-1.4.51RC.bin",
+    "mergedSha256": "b27307a28442e45c65760a17106728268c02c5f7514f96fba86a13cb3150d878"
   },
   {
     "id": "Display-P4-800x480",
     "label": "Display P4 800x480 (PRE-V3)",
-    "version": "1.0.13RC",
+    "version": "1.0.14RC",
     "signatureTarget": "DISPLAY_P4_800X480",
     "chipFamily": "ESP32-P4",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-P4-800x480.json",
-    "merged": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.13RC-merged.bin",
-    "ota": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.13RC.bin",
-    "mergedSha256": "15213e60cdc7499cfb6efbd3caa8b0ea5bc178c2af87e8dfcc9c8629f8ebce2b"
+    "merged": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.14RC-merged.bin",
+    "ota": "firmware/Display-P4-800x480/Display-P4-800x480-1.0.14RC.bin",
+    "mergedSha256": "e1c1e540a1e36b2dc9c19450e31eed72a1381a6ac138f86270dead8d747e085a"
   },
   {
     "id": "Display-ST7796-320x480",
     "label": "Display ST7796 320x480",
-    "version": "1.0.44RC",
+    "version": "1.0.45RC",
     "signatureTarget": "DISPLAY_ST7796_320X480",
     "chipFamily": "ESP32-S3",
     "flashSize": "16 MB",
     "manifest": "flasher/manifests/Display-ST7796-320x480.json",
-    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.44RC-merged.bin",
-    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.44RC.bin",
-    "mergedSha256": "24c64e2e1d4465434d96c0c77185e22f0447a0278d978b79754caf961f4122c4"
+    "merged": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.45RC-merged.bin",
+    "ota": "firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.45RC.bin",
+    "mergedSha256": "e01770f23a04cf1cabbca8af8334375b216a5e1d06097c6be7f0a2c84e413977"
   },
   {
     "id": "Universal-RS232",

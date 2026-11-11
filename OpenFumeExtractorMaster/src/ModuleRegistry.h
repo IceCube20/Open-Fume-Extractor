@@ -502,6 +502,7 @@ struct ModuleRecord {
   uint32_t fanio_filter_runtime_minutes = 0;
   uint32_t fanio_filter_lifetime_minutes = 0;
   bool telemetry_valid = false;
+  uint32_t telemetry_last_ms = 0;
   uint32_t module_heap_free = 0;
   uint32_t module_heap_min = 0;
   uint32_t module_uptime_s = 0;
@@ -554,6 +555,7 @@ struct ModuleRecord {
   uint8_t display_home_metrics_cursor = 0;
   bool display_home_metrics_supported = false;
   bool display_values_supported = false;
+  uint16_t display_automation_wake_sequence = 0;
   ofe_display_values::Request display_value_request;
   uint16_t display_live_io_cursor = 0;
   // Display cache servicing is intentionally rate-limited by the Master.

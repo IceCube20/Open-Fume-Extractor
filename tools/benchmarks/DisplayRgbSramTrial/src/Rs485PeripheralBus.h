@@ -206,6 +206,7 @@ enum Caps : uint32_t {
   CAP_POWER_SAVE = 1UL << 26,
   CAP_DISPLAY_ST7796 = 1UL << 27,
   CAP_DISPLAY_P4 = 1UL << 28,
+  CAP_DISPLAY_AUTOMATION = 1UL << 29,
 };
 
 static const uint32_t CAP_JBC_ACTIVITY = CAP_JBC_BUS | CAP_JBC_USB;

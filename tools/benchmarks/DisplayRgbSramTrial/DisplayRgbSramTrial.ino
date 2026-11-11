@@ -331,7 +331,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 4
-#define OFE_MODULE_FW_PATCH 50
+#define OFE_MODULE_FW_PATCH 51
 #if OFE_RGB_RENDER_DIAGNOSTICS
 #define OFE_MODULE_FW_SUFFIX "RC-Diag"
 #elif defined(OFE_RGB_SRAM_TRIAL) && OFE_RGB_SRAM_TRIAL
@@ -9383,7 +9383,7 @@ static void send_info(const Frame& req) {
   resp.payload[o++] = suffix_len;
   for (uint8_t i = 0; i < suffix_len && o < MAX_PAYLOAD; ++i) resp.payload[o++] = (uint8_t)FW_SUFFIX[i];
   const char* shown_name = module_label[0] ? module_label :
-    ofe_module_default_name(MODULE_DISPLAY, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
+    ofe_module_default_name(MODULE_DISPLAY, CAP_DISPLAY | CAP_DISPLAY_AUTOMATION | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
   while (*shown_name && o < MAX_PAYLOAD) resp.payload[o++] = (uint8_t)*shown_name++;
   resp.len = o;
   bus.send(resp);
@@ -9397,7 +9397,7 @@ static void send_caps(const Frame& req) {
   resp.cmd = CMD_GET_CAPS | 0x80;
   resp.len = 5;
   resp.payload[0] = STATUS_OK;
-  put_u32_le(resp.payload + 1, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
+  put_u32_le(resp.payload + 1, CAP_DISPLAY | CAP_DISPLAY_AUTOMATION | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID);
   bus.send(resp);
 }
 
@@ -9457,7 +9457,7 @@ static void send_discover_response(uint8_t dst, uint8_t seq) {
   resp.payload[o++] = FW_MAJOR;
   resp.payload[o++] = FW_MINOR;
   resp.payload[o++] = FW_PATCH;
-  put_u32_le(resp.payload + o, CAP_DISPLAY | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID); o += 4;
+  put_u32_le(resp.payload + o, CAP_DISPLAY | CAP_DISPLAY_AUTOMATION | CAP_DISPLAY_800X480 | CAP_FW_UPDATE | CAP_POWER_SAVE | CAP_DISPLAY_HYBRID); o += 4;
   resp.len = o;
   bus.send(resp);
 }
@@ -9854,6 +9854,7 @@ static void handle_display_status(const Frame& req) {
     if (selected_jbc_detail_changed) sync_selected_module_detail_to_home_cache();
   }
 
+  display_backlight.applyAutomationFrame(req.payload, req.len, millis());
   status.developer_mode = req.len >= 9 &&
     req.payload[req.len - 9] == 0xA5 && req.payload[req.len - 7] == 0xA6 &&
     req.payload[req.len - 8] != 0;
@@ -11184,6 +11185,7 @@ static void process_display_ui_once() {
       apply_backlight();
     }
     ofe_home_activity::update_saver(master_link_online() && status.output_enabled, !display_backlight.isOff(), status.output_power / 10U);
+    if (display_backlight.takeAutomationWake()) screensaver_wake();
     if (screensaver_wake_deferred) {
       screensaver_wake_deferred = false;
       screensaver_wake();

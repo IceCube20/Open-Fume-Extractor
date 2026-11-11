@@ -263,7 +263,7 @@ class DisplayHybridIntegration(unittest.TestCase):
         self.assertIn("master_developer_mode_enabled_for_modules()", diagnostics)
         self.assertIn("payload_write_u8(0xA5);", scheduler)
         self.assertIn("master_developer_mode_enabled_for_modules() ? 1 : 0", scheduler)
-        self.assertIn("payload_can_write(2U + 2U + 7U)", scheduler)
+        self.assertIn("payload_can_write(2U + 5U + 2U + 7U)", scheduler)
         for display in DISPLAYS:
             sketch = read(display / (display.name + ".ino"))
             self.assertIn("bool developer_mode = false;", sketch)

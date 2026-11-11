@@ -19,10 +19,11 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.0.87 RC release notes](docs/RELEASE-2.0.87RC.md)
+- [2.0.91 RC release notes](docs/RELEASE-2.0.91RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [Master setup and configuration](docs/MASTER.md)
+- [System signals, routing and Boolean logic](docs/System-Automation.md)
 - [Module setup and configuration](docs/MODULES.md)
 - [Operation and diagnostics](docs/OPERATION.md)
 - [Hardware and pinout](docs/PINOUT.md)
@@ -45,6 +46,10 @@ integration configuration. This is a custom repository, not a default HACS listi
 From integration 0.1.0rc25, dashboard resources are registered and versioned
 automatically in normal Lovelace UI/storage mode. Restart HA and fully reload
 the browser/app after updating; YAML resources remain user-managed.
+From integration 0.1.29RC, an optional Open Fume Extractor community dashboard
+automatically follows the master's module inventory. Create it once under
+Settings > Dashboards > Add dashboard > Community dashboards. Existing
+dashboards are not changed.
 
 ## Source layout
 

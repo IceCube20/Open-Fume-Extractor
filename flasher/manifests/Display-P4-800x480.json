@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Display P4 800x480 (PRE-V3)",
-  "version": "1.0.13RC",
+  "version": "1.0.14RC",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/Display-P4-800x480/Display-P4-800x480-1.0.13RC-merged.bin",
+          "path": "../../firmware/Display-P4-800x480/Display-P4-800x480-1.0.14RC-merged.bin",
           "offset": 0
         }
       ]

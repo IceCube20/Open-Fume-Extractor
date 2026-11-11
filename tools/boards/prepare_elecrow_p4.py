@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "Module/DisplayModule_800x480"
 DEST = ROOT / "Module/DisplayModule_P4_800x480"
 TEMPLATES = Path(__file__).resolve().parent / "elecrow_p4_5inch"
-P4_FW_PATCH = 13
+P4_FW_PATCH = 14
 P4_FW_SUFFIX = "RC"
 
 

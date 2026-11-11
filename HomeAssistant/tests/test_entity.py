@@ -202,11 +202,21 @@ class EntityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attrs["ofe_uid"], "MODULE")
         self.assertEqual(attrs["ofe_master_uid"], "MASTER")
         self.assertTrue(attrs["ofe_active"])
+        self.assertEqual(attrs["ofe_address"], 0x20)
         self.coordinator.modules["MODULE"]["display_name"] = "Changed"
         self.assertEqual(self.entity.extra_state_attributes["ofe_device_name"], "0x20 Changed")
         self.coordinator.specs.clear()
         self.assertFalse(self.entity.extra_state_attributes["ofe_active"])
         self.assertNotIn("password", attrs)
+
+    def test_dashboard_address_is_numeric_and_never_invented(self):
+        for bad in (None, True, "32", -1, 256):
+            self.coordinator.modules["MODULE"]["addr"] = bad
+            self.assertIsNone(self.entity.extra_state_attributes["ofe_address"])
+        self.coordinator.modules["MODULE"]["addr"] = 0x30
+        self.assertEqual(self.entity.extra_state_attributes["ofe_address"], 0x30)
+        spec = model.Spec("MASTER", "serial_number", "sensor", "Serial number", "MASTER")
+        self.assertEqual(sensor.OfeSensor(self.coordinator, spec).extra_state_attributes["ofe_address"], 1)
 
     def test_replaced_entity_kind_is_excluded_from_auto_cards(self):
         self.coordinator.specs[self.spec.id] = model.Spec("MODULE", "power", "number", "Power", 55)

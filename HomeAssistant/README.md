@@ -39,7 +39,7 @@ Manual HACS steps:
 4. Search HACS for **Open Fume Extractor** and download it.
 5. Enable pre-release/beta versions for this repository if needed. Under
    **Need a different version?**, choose a numbered RC release, such as
-   **v0.1.28rc1** (release title **0.1.28RC**). The `main` development branch is
+   **v0.1.29rc1** (release title **0.1.29RC**). The `main` development branch is
    hidden from the HACS download
    selector; it is not the recommended installation source.
 6. **Restart Home Assistant**, not just the integration.
@@ -76,7 +76,7 @@ can then appear as an update even though the integration code is unchanged.
 
 In HACS, open this repository and select **three-dot menu > Update information**,
 then **Redownload > Need a different version?**. Enable pre-release/beta versions
-if needed and choose **v0.1.28rc1** (or a newer numbered release). Download it,
+if needed and choose **v0.1.29rc1** (or a newer numbered release). Download it,
 restart Home Assistant and fully reload the browser/app. Do not remove the
 integration, devices or entities.
 
@@ -134,8 +134,41 @@ lovelace:
 Use the unversioned URL there and fully reload the browser after updates.
 If automatic registration fails, a manual storage-mode fallback is available
 under **Settings > Dashboards > Resources** (Advanced Mode): add/update
-`/open_fume_extractor/ofe-cards.js?v=0.1.28rc1` as a JavaScript module, not a second
+`/open_fume_extractor/ofe-cards.js?v=0.1.29rc1` as a JavaScript module, not a second
 duplicate entry. Check HA logs for the underlying resource-registration error.
+
+## Automatic dashboard
+
+From **0.1.29RC**, the bundled module also provides a Home Assistant dashboard
+strategy. Create a separate dashboard once; existing dashboards are not modified.
+
+1. Update the integration, restart Home Assistant and fully reload the browser.
+2. Open **Settings > Dashboards > Add dashboard > Community dashboards** and
+   select **Open Fume Extractor**. If it is not listed yet, open an existing
+   dashboard once so Lovelace loads the registered JavaScript module, then retry.
+3. Keep **All masters** selected or choose one master. Set a title and optionally
+   enable diagnostics, then create the dashboard and add it to the sidebar.
+
+It shows the master and its registered modules, sorted by numeric bus address.
+New modules appear without editing cards; modules removed from the master's
+inventory disappear after integration reconciliation. Temporarily offline modules
+stay visible with their connection state. Multiple masters get separate tabs.
+Only modules and entities provided by the native integration are included; MQTT
+devices are not duplicated. No additional master polling is started.
+
+For a YAML-managed dashboard, use this dashboard configuration:
+
+```yaml
+strategy:
+  type: custom:ofe-dashboard
+  title: Open Fume Extractor
+  show_summary: true
+  show_diagnostics: false
+```
+
+The optional `master_uid` setting restricts the dashboard to one master. It uses
+the same UID shown in the OFE card editor, not an HA entity ID. The JavaScript
+resource must also be registered as described above.
 
 ## Documentation and support
 
@@ -174,8 +207,8 @@ npx playwright install chromium
 OFE_MDI_MODULE=node_modules/@mdi/js/mdi.js node tools/test_cards.cjs
 ```
 
-Tags must match the integration manifest version, for example `v0.1.28rc1`.
-The human-readable release title is **0.1.28RC**; machine-readable versions retain
+Tags must match the integration manifest version, for example `v0.1.29rc1`.
+The human-readable release title is **0.1.29RC**; machine-readable versions retain
 the RC number so Home Assistant and HACS can compare updates reliably.
 CI tests the component and HACS layout before publishing a manual-install ZIP.
 No firmware binaries, credentials or signing keys belong in this repository.

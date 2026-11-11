@@ -6,7 +6,7 @@ from homeassistant.components.lovelace import LOVELACE_DATA
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.exceptions import HomeAssistantError
 
-CARD_VERSION = "0.1.28rc1"
+CARD_VERSION = "0.1.29rc1"
 CARD_PATH = "/open_fume_extractor/ofe-cards.js"
 CARD_URL = f"{CARD_PATH}?v={CARD_VERSION}"
 _LOGGER = logging.getLogger(__name__)

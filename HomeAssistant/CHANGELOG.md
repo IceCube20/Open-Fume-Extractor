@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.29RC (0.1.29rc1)
+
+- Add an optional Open Fume Extractor community dashboard strategy. Create the
+  dashboard once; master and module cards then follow the live integration inventory.
+- Separate multiple masters into individual tabs and allow selecting one master.
+- Keep registered offline modules visible and remove cards for deleted inventory.
+- Sort module cards by numeric bus address, with the master first. Existing card
+  configurations, controls and dashboards are preserved; no extra polling is added.
+
 ## 0.1.28RC (0.1.28rc1)
 
 - Refresh the master, module and overview cards with the master's module accent

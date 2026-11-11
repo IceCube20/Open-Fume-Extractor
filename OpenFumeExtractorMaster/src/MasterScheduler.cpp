@@ -6,6 +6,7 @@
 #include "DisplayHomeMetrics.h"
 #include "DisplayValueSnapshot.h"
 #include "DisplayJbcCatalog.h"
+#include "AutomationInputSignals.h"
 #include "ModulePowerSaveState.h"
 #include <Preferences.h>
 #include <WiFi.h>
@@ -1553,7 +1554,7 @@ void MasterScheduler::refreshPowerSaveActive() {
 }
 
 bool MasterScheduler::powerSaveIdle() const {
-  if (module_fw_active_ || display_update_active_ || scan_job_active_ ||
+  if (automationEcoInhibited() || module_fw_active_ || display_update_active_ || scan_job_active_ ||
       trace_stats_.active || extractor_.outputEnabled() ||
       extractor_.workMask() != 0 || extractor_.externalInputActive() ||
       extractor_.afterrunLeftMs() != 0 || extractor_.continuous()) return false;
@@ -2644,20 +2645,36 @@ bool MasterScheduler::setIoInputRoute(uint8_t addr, uint8_t bit, bool enabled) {
 bool MasterScheduler::setInputRule(uint8_t index, const InputActionRule& rule) {
   if (index >= MAX_INPUT_RULES) return false;
   InputActionRule next = rule;
-  if (next.source_type > INPUT_SRC_SYSTEM_STATE) next.source_type = INPUT_SRC_NONE;
-  if (next.target_type > INPUT_TGT_SELECT_OUTPUT) next.target_type = INPUT_TGT_NONE;
+  if (next.source_type > INPUT_SRC_MARKER) next.source_type = INPUT_SRC_NONE;
+  if (next.target_type > INPUT_TGT_MARKER) next.target_type = INPUT_TGT_NONE;
   if ((next.source_type == INPUT_SRC_IO_INPUT && next.source_bit > 15) ||
+      (next.source_type == INPUT_SRC_MARKER && (next.source_addr != 0 || next.source_bit < 1 || next.source_bit > 8)) ||
+      (next.target_type == INPUT_TGT_MARKER && (next.target_addr != 0 || next.target_bit < 1 || next.target_bit > 8)) ||
+      (next.target_type == INPUT_TGT_SYSTEM &&
+       (next.target_bit < SYSTEM_OUT_ECO_INHIBIT || next.target_bit > SYSTEM_OUT_DISPLAY_HOLD ||
+        !OfeAutomationRequests::validDisplayAddress(next.target_addr) ||
+        (next.target_bit == SYSTEM_OUT_ECO_INHIBIT && next.target_addr != 0))) ||
       (next.source_type == INPUT_SRC_SYSTEM_STATE &&
        (next.source_bit == INPUT_STATE_NONE || next.source_bit > INPUT_STATE_LAST ||
-        ((next.source_bit <= INPUT_STATE_OUTPUT_SELECTED_AUTO) && next.source_addr != 0) ||
+        ((next.source_bit <= INPUT_STATE_OUTPUT_SELECTED_AUTO ||
+          (next.source_bit >= INPUT_STATE_ECO_ACTIVE && next.source_bit <= INPUT_STATE_ERROR_ACTIVE)) && next.source_addr != 0) ||
+        (next.source_bit >= INPUT_STATE_FILTER_WARNING && !OfeAutomationRequests::validDisplayAddress(next.source_addr)) ||
         ((next.source_bit == INPUT_STATE_OUTPUT_SELECTED || next.source_bit == INPUT_STATE_OUTPUT_ACTIVE) &&
          (next.source_addr < 0x10 || next.source_addr > 0x6F)))) ||
-      (next.target_type == INPUT_TGT_IO_OUTPUT && next.target_bit > 15) ||
+      (next.target_type == INPUT_TGT_IO_OUTPUT &&
+       (next.target_bit > 15 || next.target_addr < 0x10 || next.target_addr > 0x6F)) ||
       (next.target_type == INPUT_TGT_EXTRACTOR_ACTION &&
        (next.target_bit == EXTRACTOR_ACTION_NONE || next.target_bit > EXTRACTOR_ACTION_LAST)) ||
       (next.target_type == INPUT_TGT_SELECT_OUTPUT &&
        next.target_addr != 0 && (next.target_addr < 0x10 || next.target_addr > 0x6F)) ||
       next.source_bit == 0xFF || next.target_bit == 0xFF) return false;
+  if (next.enabled && next.target_type == INPUT_TGT_IO_OUTPUT) {
+    // An IO target must actually support the legacy digital output command.
+    // Unknown/offline modules remain configurable so stored routes survive
+    // module outages and can be applied after reconnect.
+    const ModuleRecord* target = registry_.find(next.target_addr);
+    if (target && target->online && !(target->caps & CAP_DIGITAL_OUTPUT)) return false;
+  }
   InputActionRule old = input_rules_[index];
   if (old.enabled && old.last_active) {
     const bool extractor_owns_target =
@@ -3711,7 +3728,11 @@ void MasterScheduler::updateJbcAggregate() {
     if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY)) continue;
     if (main_input_source_type_ == INPUT_SRC_JBC_WORK && (main_input_source_addr_ == 0 || rec.addr == main_input_source_addr_)) {
       work |= rec.jbc_work_mask;
-      stand |= rec.jbc_stand_mask;
+      const bool stand_active = ofe_automation_inputs::jbcStandActive(
+        rec.online, (rec.caps & CAP_JBC_BUS) != 0,
+        (rec.jbc_link_flags & FAST_FLAG_CONNECTED) != 0,
+        rec.station_addr != 0, rec.jbc_work_mask, rec.jbc_stand_mask);
+      stand |= stand_active ? (rec.jbc_stand_mask ? rec.jbc_stand_mask : 1U) : 0U;
     }
   }
   if (extractor_.updateAggregateJbcState(work, stand, continuous)) {
@@ -3721,6 +3742,115 @@ void MasterScheduler::updateJbcAggregate() {
     Serial.println(continuous ? "on" : "off");
   }
   updateInputRouting();
+}
+
+void MasterScheduler::setLogicSystemOutput(uint8_t action, uint8_t addr, bool active) {
+  if (action == SYSTEM_OUT_ECO_INHIBIT && addr == 0) logic_system_requests_.eco_inhibit = active;
+  if (action == SYSTEM_OUT_DISPLAY_HOLD) logic_system_requests_.holdDisplay(addr, active);
+}
+
+void MasterScheduler::requestDisplayWake(uint8_t addr) {
+  if (!OfeAutomationRequests::validDisplayAddress(addr)) return;
+  for (uint8_t i = 0; i < registry_.count(); ++i) {
+    ModuleRecord& rec = registry_.at(i);
+    if (!rec.online || !(rec.caps & CAP_DISPLAY_AUTOMATION) || (addr && rec.addr != addr)) continue;
+    if (++rec.display_automation_wake_sequence == 0) ++rec.display_automation_wake_sequence;
+  }
+}
+
+uint32_t MasterScheduler::systemInputMask(uint8_t addr) const {
+  uint32_t mask = 0;
+  // Mirror the directly evaluated routing/logic system inputs in /state too.
+  // Module-specific output-selection bits are only meaningful with an address.
+  if (!addr) {
+    if (extractor_.outputEnabled()) mask |= 1UL << INPUT_STATE_EXTRACTOR_ACTIVE;
+    if (extractor_.continuous()) mask |= 1UL << INPUT_STATE_CONTINUOUS_ACTIVE;
+    if (extractor_.afterrunLeftMs() != 0) mask |= 1UL << INPUT_STATE_AFTERRUN_ACTIVE;
+    const uint8_t level = desired_jbc_settings_.suction_level;
+    if (level <= 3) mask |= 1UL << (INPUT_STATE_LEVEL_HIGH + level);
+    if (preferred_output_addr_ == 0) mask |= 1UL << INPUT_STATE_OUTPUT_SELECTED_AUTO;
+    if (power_save_active_) mask |= 1UL << INPUT_STATE_ECO_ACTIVE;
+    const uint32_t now = millis();
+    if (!system_alarm_sample_valid_ || uint32_t(now - system_alarm_sample_ms_) >= 50U) {
+      bool jbc = false;
+      for (uint8_t i = 0; i < registry_.count(); ++i) {
+        const auto& rec = registry_.at(i);
+        if (rec.online && (rec.caps & CAP_JBC_ACTIVITY)) jbc = true;
+      }
+      DisplayAlarmSnapshot alarms;
+      buildDisplayAlarmSnapshot(jbc, alarms);
+      system_alarm_mask_ = (alarms.alarm_count ? 1UL << INPUT_STATE_ALARM_ACTIVE : 0) |
+        (alarms.warning_count ? 1UL << INPUT_STATE_WARNING_ACTIVE : 0) |
+        (alarms.error_count ? 1UL << INPUT_STATE_ERROR_ACTIVE : 0);
+      system_alarm_sample_ms_ = now;
+      system_alarm_sample_valid_ = true;
+    }
+    mask |= system_alarm_mask_;
+  } else {
+    if (ofe_automation_inputs::mainOutputSelected(preferred_output_addr_, addr))
+      mask |= 1UL << INPUT_STATE_OUTPUT_SELECTED;
+    if (ofe_automation_inputs::mainOutputActive(active_output_addr_, addr, extractor_.outputEnabled()))
+      mask |= 1UL << INPUT_STATE_OUTPUT_ACTIVE;
+  }
+  for (uint8_t i = 0; i < registry_.count(); ++i) {
+    const ModuleRecord& rec = registry_.at(i);
+    if ((addr && rec.addr != addr) || !rec.online) continue;
+    mask |= 1UL << INPUT_STATE_MODULE_ONLINE;
+    bool connected = false;
+    if (rec.caps & CAP_JBC_ACTIVITY) {
+      connected = (rec.jbc_link_flags & FAST_FLAG_CONNECTED) &&
+        ((rec.caps & CAP_JBC_USB) || rec.station_addr);
+      if (ofe_automation_inputs::jbcStandActive(
+            rec.online, (rec.caps & CAP_JBC_BUS) != 0, connected,
+            rec.station_addr != 0, rec.jbc_work_mask, rec.jbc_stand_mask)) {
+        mask |= 1UL << INPUT_STATE_JBC_STAND;
+      }
+    } else if (rec.type == MODULE_WELLER_ZERO_SMOG) {
+      connected = rec.telemetry_valid && rec.weller_uart_age_sec <= 10;
+    } else if ((rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU) &&
+               rec.universal_entities_valid && uint32_t(millis() - rec.universal_entities_last_ms) <= 10000UL) {
+      for (uint8_t e = 0; e < rec.universal_entity_count; ++e) {
+        const auto& entity = rec.universal_entities[e];
+        if (entity.id == 1 && entity.len == 1) connected = entity.data[0] != 0 && entity.data[0] != '0';
+      }
+    }
+    if (connected) mask |= 1UL << INPUT_STATE_DEVICE_CONNECTED;
+    if (!rec.telemetry_valid || uint32_t(millis() - rec.telemetry_last_ms) > 10000UL) continue;
+    bool valid = false, warning = false, change = false;
+    if (rec.type == MODULE_WELLER_ZERO_SMOG && connected) {
+      valid = rec.weller_filter_status == 1 || rec.weller_filter_status == 10 || rec.weller_filter_status == 100;
+      warning = rec.weller_filter_status == 10;
+      change = rec.weller_filter_status == 100;
+    } else if (rec.type == MODULE_FAN_IO_PRO && rec.fanio_filter_runtime_valid && rec.fanio_filter_mode) {
+      valid = !(rec.fanio_filter_mode & 2) || (rec.fanio_filter_flags & 2);
+      warning = (rec.output_fault_mask | rec.io_fault_mask) & 2;
+      change = (rec.output_fault_mask | rec.io_fault_mask) & 4;
+    }
+    if (valid) mask |= 1UL << INPUT_STATE_FILTER_VALID;
+    // Preserve explicit fault bits even when a simultaneous sensor error has
+    // invalidated detailed filter telemetry. Validity is its own input.
+    if (warning) mask |= 1UL << INPUT_STATE_FILTER_WARNING;
+    if (change) mask |= 1UL << INPUT_STATE_FILTER_CHANGE;
+  }
+  return mask;
+}
+
+bool MasterScheduler::systemInputActive(uint8_t state, uint8_t addr) const {
+  switch (state) {
+    case INPUT_STATE_EXTRACTOR_ACTIVE: return extractor_.outputEnabled();
+    case INPUT_STATE_CONTINUOUS_ACTIVE: return extractor_.continuous();
+    case INPUT_STATE_AFTERRUN_ACTIVE: return extractor_.afterrunLeftMs() != 0;
+    case INPUT_STATE_LEVEL_HIGH: return desired_jbc_settings_.suction_level == 0;
+    case INPUT_STATE_LEVEL_MEDIUM: return desired_jbc_settings_.suction_level == 1;
+    case INPUT_STATE_LEVEL_LOW: return desired_jbc_settings_.suction_level == 2;
+    case INPUT_STATE_LEVEL_CUSTOM: return desired_jbc_settings_.suction_level == 3;
+    case INPUT_STATE_OUTPUT_SELECTED_AUTO: return preferred_output_addr_ == 0;
+    case INPUT_STATE_OUTPUT_SELECTED:
+      return ofe_automation_inputs::mainOutputSelected(preferred_output_addr_, addr);
+    case INPUT_STATE_OUTPUT_ACTIVE:
+      return ofe_automation_inputs::mainOutputActive(active_output_addr_, addr, extractor_.outputEnabled());
+    default: return state <= INPUT_STATE_LAST && (systemInputMask(addr) & (1UL << state));
+  }
 }
 
 bool MasterScheduler::inputRuleSourceActive(const InputActionRule& rule) const {
@@ -3744,20 +3874,9 @@ bool MasterScheduler::inputRuleSourceActive(const InputActionRule& rule) const {
     return rec && universalEntityBoolActive(*rec, rule.source_bit);
   }
   if (rule.source_type == INPUT_SRC_SYSTEM_STATE) {
-    switch (rule.source_bit) {
-      case INPUT_STATE_EXTRACTOR_ACTIVE: return extractor_.outputEnabled();
-      case INPUT_STATE_CONTINUOUS_ACTIVE: return extractor_.continuous();
-      case INPUT_STATE_AFTERRUN_ACTIVE: return extractor_.afterrunLeftMs() != 0;
-      case INPUT_STATE_LEVEL_HIGH: return desired_jbc_settings_.suction_level == 0;
-      case INPUT_STATE_LEVEL_MEDIUM: return desired_jbc_settings_.suction_level == 1;
-      case INPUT_STATE_LEVEL_LOW: return desired_jbc_settings_.suction_level == 2;
-      case INPUT_STATE_LEVEL_CUSTOM: return desired_jbc_settings_.suction_level == 3;
-      case INPUT_STATE_OUTPUT_SELECTED_AUTO: return preferred_output_addr_ == 0;
-      case INPUT_STATE_OUTPUT_SELECTED: return preferred_output_addr_ == rule.source_addr;
-      case INPUT_STATE_OUTPUT_ACTIVE: return active_output_addr_ == rule.source_addr;
-      default: return false;
-    }
+    return systemInputActive(rule.source_bit, rule.source_addr);
   }
+  if (rule.source_type == INPUT_SRC_MARKER) return automationMarker(rule.source_bit);
   return false;
 }
 
@@ -3845,6 +3964,14 @@ void MasterScheduler::setLogicContinuousPresent(bool present) {
 }
 void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
   if (!rule.enabled) return;
+  if (rule.target_type == INPUT_TGT_SYSTEM && rule.target_bit == SYSTEM_OUT_DISPLAY_WAKE) {
+    if (!active) { rule.last_active = false; rule.edge_armed = true; }
+    else if (rule.edge_armed && !rule.last_active) {
+      rule.last_active = true;
+      requestDisplayWake(rule.target_addr);
+    }
+    return;
+  }
   if (rule.target_type == INPUT_TGT_EXTRACTOR_ACTION) {
     if (!active) {
       rule.last_active = false;
@@ -4013,10 +4140,18 @@ void MasterScheduler::updateInputRouting() {
   }
   bool continuous_signal = logic_continuous_;
   bool continuous_source_present = logic_continuous_present_;
+  OfeAutomationRequests system_requests;
 
   for (uint8_t i = 0; i < MAX_INPUT_RULES; ++i) {
     InputActionRule& rule = input_rules_[i];
     const bool rule_active = inputRuleSourceActive(rule);
+    if (rule.enabled && rule_active) {
+      if (rule.target_type == INPUT_TGT_MARKER) system_requests.setMarker(rule.target_bit, true);
+      if (rule.target_type == INPUT_TGT_SYSTEM) {
+        if (rule.target_bit == SYSTEM_OUT_ECO_INHIBIT) system_requests.eco_inhibit = true;
+        if (rule.target_bit == SYSTEM_OUT_DISPLAY_HOLD) system_requests.holdDisplay(rule.target_addr, true);
+      }
+    }
     if (rule.enabled && rule.target_type == INPUT_TGT_EXTRACTOR && rule_active) active = true;
     if (rule.enabled && rule.target_type == INPUT_TGT_CONTINUOUS) {
       continuous_source_present = true;
@@ -4024,6 +4159,8 @@ void MasterScheduler::updateInputRouting() {
     }
     applyInputRuleTarget(rule, rule_active);
   }
+
+  rule_system_requests_ = system_requests;
 
   // Boolean/additional-rule Continuous targets operate the *real* Continuous
   // switch on edges. HIGH sets the same switch used by Web/JBC/MQTT to ON;
@@ -4599,6 +4736,7 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
     if (resp.len >= 30) {
       if (module_update_uptime(*rec, get_u32_le(resp.payload + 23))) last_power_save_apply_ms_ = 0;
       rec->telemetry_valid = true;
+      rec->telemetry_last_ms = millis();
       rec->module_heap_free = get_u32_le(resp.payload + 15);
       rec->module_heap_min = get_u32_le(resp.payload + 19);
       rec->module_cpu_load_pct = resp.payload[27];
@@ -4609,6 +4747,7 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
     // heap/min/uptime, USB RX/TX bytes, JBC RX/TX frames and protocol errors.
     if (module_update_uptime(*rec, get_u32_le(resp.payload + 10))) last_power_save_apply_ms_ = 0;
     rec->telemetry_valid = true;
+    rec->telemetry_last_ms = millis();
     rec->module_heap_free = get_u32_le(resp.payload + 2);
     rec->module_heap_min = get_u32_le(resp.payload + 6);
     rec->module_cpu_load_pct = 0;
@@ -5318,6 +5457,7 @@ bool MasterScheduler::processTelemetryResponse(uint8_t addr, const Frame& resp) 
   } else if (resp.len >= 17) {
     if (module_update_uptime(*rec, get_u32_le(resp.payload + 10))) last_power_save_apply_ms_ = 0;
     rec->telemetry_valid = true;
+    rec->telemetry_last_ms = millis();
     rec->module_heap_free = get_u32_le(resp.payload + 2);
     rec->module_heap_min = get_u32_le(resp.payload + 6);
     rec->module_cpu_load_pct = resp.payload[14];
@@ -6127,7 +6267,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   //   2: addr, JBC link flags, WORK mask, STAND mask
   //   3: addr, entity id, boolean/raw one-byte value
   {
-    const uint16_t live_tail_reserve = 9U; // A5 developer marker + A6 clock
+    const uint16_t live_tail_reserve = 14U; // A3 automation + A5 developer + A6 clock
     const uint16_t live_budget = 88U;
     const uint16_t native_record_budget = 56U;
     if ((uint16_t)payload_len + 4U + live_tail_reserve <= MAX_PAYLOAD) {
@@ -6271,7 +6411,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   // A7: compact list of all currently connected JBC stations for the display
   // screensaver. Each entry is flags plus a zero-padded four-character model.
   // Known JBC model names fit in four characters (DDE, JTSE, PHXL, F4W, ...).
-  if (payload_can_write(2U + 2U + 7U)) {
+  if (payload_can_write(2U + 5U + 2U + 7U)) {
     const uint8_t marker_pos = payload_len;
     payload_write_u8(0xA7);
     const uint8_t count_pos = payload_len;
@@ -6282,7 +6422,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
       if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY) ||
           !(rec.jbc_link_flags & FAST_FLAG_CONNECTED)) continue;
       // Keep two bytes for the developer flag and seven for the clock.
-      if (!payload_can_write(5U + 2U + 7U)) break;
+      if (!payload_can_write(5U + 5U + 2U + 7U)) break;
 
       uint8_t flags = 0;
       if (rec.jbc_work_mask) flags |= 0x01;
@@ -6317,6 +6457,15 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
   // DISPLAY_STATUS is now strictly Home/Live data only.
   // Module lists, module details and Universal/Modbus entities are sent via
   // dedicated display frames so missing blocks never clear unrelated UI caches.
+
+  // A3/v1 is runtime-only and idempotent. Repeated status frames renew a hold
+  // lease, while a sequence change represents one wake event, not a timer reset.
+  if (payload_can_write(14U)) {
+    payload_write_u8(0xA3);
+    payload_write_u8(1);
+    payload_write_u8(automationDisplayHeld(addr) ? 1 : 0);
+    payload_write_u16(display ? display->display_automation_wake_sequence : 0);
+  }
 
   // A5: developer-only display features. It deliberately sits directly in
   // front of A6 so displays can detect it without scanning variable blocks.
@@ -6491,6 +6640,8 @@ void MasterScheduler::buildDisplayAlarmSnapshot(
   bool active_output_fault_alarm = false;
 
   auto set_alarm = [&](uint8_t addr, uint8_t type, uint8_t code, uint16_t value, bool critical) {
+    if (critical) { if (snapshot.error_count < 99) ++snapshot.error_count; }
+    else { if (snapshot.warning_count < 99) ++snapshot.warning_count; }
     if (snapshot.item_count < DISPLAY_ALARM_MAX_ITEMS) {
       DisplayAlarmItem& item = snapshot.items[snapshot.item_count];
       item.addr = addr;
@@ -6530,8 +6681,12 @@ void MasterScheduler::buildDisplayAlarmSnapshot(
     }
 
     if (faults) {
-      const bool critical = faults != 0x0002U;
-      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, faults, critical);
+      // A mixed mask must raise BOTH Warning and Error for routing and logic.
+      // Keep separate display items so the warning remains visible as well.
+      const uint16_t warning = ofe_automation_inputs::warningFaults(faults);
+      const uint16_t error = ofe_automation_inputs::errorFaults(faults);
+      if (warning) set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, warning, false);
+      if (error) set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, error, true);
       if (rec.addr == active_output_addr_) active_output_fault_alarm = true;
       continue;
     }
@@ -6557,12 +6712,10 @@ void MasterScheduler::buildDisplayAlarmSnapshot(
 
   snapshot.jbc_error = systemJbcError();
   if (active_output_addr_ && jbc_present && snapshot.jbc_error && !active_output_fault_alarm) {
-    set_alarm(
-      ADDR_MASTER,
-      MODULE_UNKNOWN,
-      DISPLAY_ALARM_JBC_STATUS,
-      snapshot.jbc_error,
-      (snapshot.jbc_error & (uint16_t)~0x0002U) != 0);
+    const uint16_t warning = ofe_automation_inputs::warningFaults(snapshot.jbc_error);
+    const uint16_t error = ofe_automation_inputs::errorFaults(snapshot.jbc_error);
+    if (warning) set_alarm(ADDR_MASTER, MODULE_UNKNOWN, DISPLAY_ALARM_JBC_STATUS, warning, false);
+    if (error) set_alarm(ADDR_MASTER, MODULE_UNKNOWN, DISPLAY_ALARM_JBC_STATUS, error, true);
   }
 }
 
@@ -9373,8 +9526,16 @@ void MasterScheduler::tick() {
     ((uint32_t)(desired_jbc_settings_.suction_level & 0x03U) << 3) |
     ((uint32_t)preferred_output_addr_ << 8) |
     ((uint32_t)active_output_addr_ << 16);
-  if (input_rule_state_sig != input_rule_system_state_signature_) {
+  bool extended_system_rules = false;
+  for (uint8_t i = 0; i < MAX_INPUT_RULES; ++i) {
+    const auto& rule = input_rules_[i];
+    if (rule.enabled && ((rule.source_type == INPUT_SRC_SYSTEM_STATE && rule.source_bit >= INPUT_STATE_ECO_ACTIVE) ||
+        rule.source_type == INPUT_SRC_MARKER || rule.target_type == INPUT_TGT_MARKER)) extended_system_rules = true;
+  }
+  if (input_rule_state_sig != input_rule_system_state_signature_ ||
+      (extended_system_rules && uint32_t(now - last_system_rule_update_ms_) >= 50U)) {
     input_rule_system_state_signature_ = input_rule_state_sig;
+    last_system_rule_update_ms_ = now;
     updateInputRouting();
   }
 
