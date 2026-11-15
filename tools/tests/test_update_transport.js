@@ -3,9 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/WebUpdate.inc.h'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebUpdate.inc.h'), 'utf8');
 const lines = source.split(/\r?\n/);
 const scripts = [];
+const server = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebServer.inc.h'), 'utf8');
+const postRoutes = new Set([...server.matchAll(/web\.on\("([^"]+)",\s*HTTP_POST/g)].map(match => match[1]));
+const routeExists = url => postRoutes.has(new URL(url, 'http://ofe.test').pathname);
 for (const line of lines) {
   const m = line.match(/^  html \+= F\(("(?:\\.|[^"\\])*")\);$/);
   if (!m) continue;
@@ -62,7 +65,8 @@ async function exerciseMasterFailure(stage) {
   const stat={set textContent(v){statuses.push(v);},get textContent(){return statuses.at(-1);}};
   const context=vm.createContext({UI_DE:true,DEV_MODE:false,MASTER_FW_CHUNK:4096,
     performance:{now:()=>100000},document:{getElementById:()=>({style:{}})},
-    fetch:async(url)=>{requests.push(url);if(stage==='end-lost'&&url==='/update/master/end')throw new TypeError('NetworkError');
+    fetch:async(url)=>{requests.push(url);if(!routeExists(url))return {ok:false,status:404,text:async()=> 'Not found'};
+      if(stage==='end-lost'&&url==='/update/master/end')throw new TypeError('NetworkError');
       if(stage==='end-rejected'&&url==='/update/master/end')return {ok:false,text:async()=> 'Update.end failed'};
       return {ok:true,text:async()=> 'OK'};},
     setTimeout,clearTimeout,encodeURIComponent,console});
@@ -76,12 +80,49 @@ async function exerciseMasterFailure(stage) {
   if(stage==='end-lost'){
     assert.equal(checks,1,'Lost END acknowledgement must trigger version verification');
     assert.equal(requests.includes('/update/master/abort'),false,'Committed update must not be aborted');
-    assert.equal(statuses.some(s=>s.includes('Master-Update fehlgeschlagen')),false);
+    assert.equal(statuses.some(s=>s.includes('MCU-Update fehlgeschlagen')),false);
   } else {
     assert.equal(checks,0,'Pre-commit failure must not be called successful');
     assert.equal(requests.includes('/update/master/abort'),true);
-    assert.match(stat.textContent,/Master-Update fehlgeschlagen/);
+    assert.match(stat.textContent,/MCU-Update fehlgeschlagen/);
   }
+}
+
+async function exerciseMasterSuccess(de, developer) {
+  const requests=[], statuses=[], chunks=[];
+  let checks=0, clock=0;
+  const size=70000, chunk=32768;
+  const file={name:'OpenFumeExtractorMCU_P4.ino.bin',size,slice:(start,end)=>({size:end-start})};
+  const form={querySelector:selector=>selector==='input[type=file]'?{files:[file]}:{checked:developer}};
+  class FormDataMock { append(name,value){this.value=value;} }
+  class Xhr {
+    open(method,url){this.method=method;this.url=url;}
+    send(body){
+      requests.push(this.url);
+      this.status=this.method==='POST'&&routeExists(this.url)?200:404;
+      this.responseText=this.status===200?'OK':'Not found';
+      chunks.push(body.value.size);
+      this.onload();
+    }
+  }
+  const context=vm.createContext({UI_DE:de,DEV_MODE:developer,MASTER_FW_CHUNK:chunk,
+    performance:{now:()=>clock+=100},document:{getElementById:()=>({style:{}})},
+    fetch:async(url,options)=>{requests.push(url);return {ok:options?.method==='POST'&&routeExists(url),
+      text:async()=>routeExists(url)?'OK':'Not found'};},
+    XMLHttpRequest:Xhr,FormData:FormDataMock,setTimeout,clearTimeout,encodeURIComponent,console});
+  vm.runInContext(scripts.join('\n'),context);
+  context.findFwAuth=async()=>({size,target:'MASTER',version:'2.1.7RC',text:'signed'});
+  context.findFwSig=async()=> 'OFE_FW_SIG:v1;target=MASTER;version=2.1.7RC;';
+  context.getState=async()=>({master_fw:'2.1.6RC-P4-Preview',uptime_ms:60000});
+  context.waitMasterBack=async()=>{++checks;return true;};
+  const stat={set textContent(value){statuses.push(value);}};
+  await context.sendMaster(form,{style:{}},stat);
+  assert.equal(checks,1,'Successful END must reach restart verification');
+  assert.equal(context.masterUpdateRun.finished,true);
+  assert.deepEqual(chunks,[32768,32768,4464]);
+  assert.deepEqual(requests.map(url=>new URL(url,'http://ofe.test').pathname),[
+    '/update/master/begin','/update/master/chunk','/update/master/chunk','/update/master/chunk','/update/master/end']);
+  assert(!statuses.some(value=>/fehlgeschlagen|failed/i.test(value)));
 }
 
 async function exerciseMasterRestartVerification(state,oldVersion,oldUptime,expected) {
@@ -129,6 +170,7 @@ async function exerciseMasterRestartVerification(state,oldVersion,oldUptime,expe
   await cancel;
   assert.deepEqual(abortRequests,['/abort']);
   for (const de of [false,true]) for (const developer of [false,true]) {
+    await exerciseMasterSuccess(de,developer);
     await exercise(de,developer,'wifi','rs485');
     await exercise(de,developer,'rs485','wifi');
   }
@@ -139,5 +181,5 @@ async function exerciseMasterRestartVerification(state,oldVersion,oldUptime,expe
   assert.equal((await exerciseMasterRestartVerification({master_fw:'2.0.18RC',uptime_ms:4000},'2.0.18RC',60000,'2.0.18RC')).confirmed,true);
   assert.equal((await exerciseMasterRestartVerification({master_fw:'2.0.18RC',uptime_ms:180000},'2.0.18RC',60000,'2.0.18RC')).confirmed,false);
   assert.equal((await exerciseMasterRestartVerification({master_fw:'2.0.18RC',uptime_ms:119744},'2.0.18RC',0xFFFFFF00,'2.0.18RC')).confirmed,false);
-  console.log('PASS: embedded update JS syntax, live transport labels DE/EN, developer-only chunk size and missing-signature rejection.');
+  console.log('PASS: embedded OTA JS against registered routes: full MCU upload/END, failures/abort/restart verification, DE/EN, developer mode and module transports.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

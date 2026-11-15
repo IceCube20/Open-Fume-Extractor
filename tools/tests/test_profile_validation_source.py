@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ProfileValidationSourceTest(unittest.TestCase):
     def test_invalid_access_is_rejected_before_persistence_or_upload(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/WebControls.inc.h').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebControls.inc.h').read_text(encoding='utf-8')
         handler = source.split('static void web_handle_universal_profile()', 1)[1].split('static int universal_hex_nibble', 1)[0]
         self.assertIn('if (profile_text_arg)', handler)
         self.assertIn('is_modbus ? ofe_profile::validateModbusProfile(text)', handler)

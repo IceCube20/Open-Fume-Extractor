@@ -165,7 +165,7 @@ class DisplayUiTests(unittest.TestCase):
             self.assertIn('ofe_jbc_activity_ui::fae_stand(module_online && m.station_addr', detail)
 
     def test_home_metrics_wire_and_cache_are_shared_and_negotiated(self):
-        master = (ROOT / 'OpenFumeExtractorMaster/src').resolve()
+        master = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src').resolve()
         wire = (master / 'DisplayHomeMetrics.h').read_bytes()
         scheduler = (master / 'MasterScheduler.cpp').read_text(encoding='utf-8')
         self.assertIn('const uint8_t slots_per_module = 2U;', scheduler)
@@ -217,7 +217,7 @@ class DisplayUiTests(unittest.TestCase):
 
     def test_home_module_palette_matches_master(self):
         import re
-        web = (ROOT / 'OpenFumeExtractorMaster/src/WebStatus.inc.h').read_text(encoding='utf-8')
+        web = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h').read_text(encoding='utf-8')
         activity = (ROOT / 'Module/DisplayModule_800x480/src/OfeDisplayHomeActivityUi.h').read_text()
         for selector in ('fan-card', 'weller-card', 'universal-card', 'universal-card.modbus-card'):
             color = re.search(r'\.module-card\.' + re.escape(selector) + r'\{--accent:#([0-9a-fA-F]{6})', web).group(1)

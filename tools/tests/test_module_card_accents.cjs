@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const {chromium} = require('playwright');
-const root = path.join(__dirname, '../../OpenFumeExtractorMaster/src');
+const root = path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8');
 const typography = read('WebTypography.h').match(/<style>([\s\S]*?)<\/style>/)[1];
 const statusCss = read('WebStatus.inc.h').match(/<style>([\s\S]*?)<\/style>/)[1] + typography;

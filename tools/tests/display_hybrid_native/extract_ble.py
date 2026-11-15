@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[3]
-ble = (root / 'OpenFumeExtractorMaster/src/OfeDisplayBle.h').read_text(encoding='utf-8')
+ble = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeDisplayBle.h').read_text(encoding='utf-8')
 wifi = (root / 'Module/DisplayModule_320x480/src/OfeDisplayWifi.h').read_text(encoding='utf-8')
 tunnel = (root / 'Module/DisplayModule_320x480/src/OfeDisplayTunnel.h').read_text(encoding='utf-8')
 

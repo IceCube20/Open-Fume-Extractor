@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 root = Path(__file__).resolve().parents[3]
-source = (root / "OpenFumeExtractorMaster/src/WebServer.inc.h").read_text(encoding="utf-8-sig")
+source = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebServer.inc.h").read_text(encoding="utf-8-sig")
 
 
 def function(name):

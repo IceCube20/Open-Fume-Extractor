@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 root = Path(__file__).resolve().parents[3]
-source = (root / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+source = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
 start = source.index('static ofe_home_metrics::State display_home_metrics(')
 end = source.index('\n}\n', start) + 3
 Path(sys.argv[1]).write_text(source[start:end], encoding='utf-8')
@@ -54,7 +54,7 @@ for name in ('DisplayModule_320x480', 'DisplayModule_800x480', 'DisplayModule_ST
     parts.append('static void advertise_' + name + '(Frame& resp) {\n' + sketch[start:end] + '\n}\n')
 Path(sys.argv[1]).with_name('negotiation.inc.h').write_text('\n'.join(parts), encoding='utf-8')
 
-mqtt = (root / 'OpenFumeExtractorMaster/src/MasterMqtt.inc.h').read_text(encoding='utf-8')
+mqtt = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h').read_text(encoding='utf-8')
 start = mqtt.index('  if (!mqtt_state_module_cycle_pending) {', mqtt.index('static void mqtt_publish_state('))
 begin = 'static void begin_cycle() {\n' + block(mqtt, start) + '\n}\n'
 tick = block(mqtt, mqtt.index('static void mqtt_publish_module_cycle_tick()'))

@@ -1,4 +1,4 @@
-"""Read-only master, telemetry and profile values."""
+"""Read-only MCU, telemetry and profile values."""
 from homeassistant.components.sensor import SensorEntity
 from .entity import OfeEntity, setup_entities
 

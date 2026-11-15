@@ -15,8 +15,8 @@ def master_function(source, name):
 
 class DisplayValueStreamSource(unittest.TestCase):
     def test_shared_wire_and_opt_in_in_both_master_paths(self):
-        wire = (ROOT / 'OpenFumeExtractorMaster/src/DisplayValueStream.h').read_bytes()
-        master = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        wire = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/DisplayValueStream.h').read_bytes()
+        master = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         self.assertEqual(master.count('ofe_display_values::decodeRequest(resp.payload + rp'), 2)
         self.assertIn('display && display->display_values_supported ? 6 : 5', master)
         for name in NAMES:
@@ -33,7 +33,7 @@ class DisplayValueStreamSource(unittest.TestCase):
             self.assertLess(pages.index('ofe_display_values::PAGE_VERSION'), pages.index('ofe_jbc_detail::VERSION'))
 
     def test_compact_values_reuse_full_page_presentation(self):
-        master = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        master = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         page = master_function(master, 'sendDisplayUniversalEntityPage')
         self.assertIn('display->display_value_request.crc == rec.universal_descriptor_crc', page)
         self.assertIn('display->display_value_request.count == total_entities', page)
@@ -45,7 +45,7 @@ class DisplayValueStreamSource(unittest.TestCase):
         self.assertIn('ofe_display_values::encodePage(', page)
 
     def test_fanio_fast_readback_updates_the_common_entity_cache(self):
-        master = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        master = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         readback = master_function(master, 'readIoStatus')
         self.assertIn('sync_fanio_gpio_entities(*rec, physical_input_mask)', readback)
         self.assertLess(readback.index('resp.payload[0] != STATUS_OK'), readback.index('sync_fanio_gpio_entities('))
@@ -72,7 +72,7 @@ class DisplayValueStreamSource(unittest.TestCase):
             self.assertIn('ui_defer_flags', receive)
 
     def test_scheduling_stays_bounded_and_does_not_change_safety_polls(self):
-        master = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        master = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         background = master_function(master, 'pollOneBackgroundJob')
         self.assertIn('ofe_display_values::statusSlot(displays, DISPLAY_STATUS_SLOT_MS)', background)
         push = master_function(master, 'pushDisplayStatus')

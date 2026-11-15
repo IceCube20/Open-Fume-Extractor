@@ -137,7 +137,7 @@ class P4Preparation(unittest.TestCase):
             self.assertFalse(list((ROOT / "Module" / name / "src").glob("OfeP4BleEcc*")))
 
     def test_master_prioritizes_p4_before_resolution(self):
-        web = (ROOT / "OpenFumeExtractorMaster/src/WebUpdate.inc.h").read_text(encoding="utf-8-sig")
+        web = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebUpdate.inc.h").read_text(encoding="utf-8-sig")
         for function in ("module_firmware_signature_hint_for", "module_firmware_auth_target_for",
                          "module_firmware_signature_allowed"):
             definition = re.search(r"static [^\n]+ " + function + r"\([^;\n]+\) \{", web)

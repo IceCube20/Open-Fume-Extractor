@@ -3,7 +3,7 @@ import re
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
-from .const import DOMAIN, MASTER_DEVICE_NAME, MASTER_DEVICE_MODEL, module_device_name
+from .const import DOMAIN, master_device_name, master_device_model, module_device_name
 
 
 def _module_uid(master_uid, identity):
@@ -51,7 +51,7 @@ def reconcile_removed_devices(hass, entry_id, master_uid, removed_uids):
 @callback
 def reconcile_devices(hass, master_uid, state, modules):
     registry = dr.async_get(hass)
-    metadata = {master_uid: {"name": MASTER_DEVICE_NAME, "model": MASTER_DEVICE_MODEL,
+    metadata = {master_uid: {"name": master_device_name(state), "model": master_device_model(state),
                             "sw_version": state.get("master_fw")}}
     for uid, module in modules.items():
         if module.get("type_name"):

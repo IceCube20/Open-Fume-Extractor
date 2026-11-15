@@ -14,6 +14,22 @@ loader.loader.exec_module(audit)
 
 
 class FullCatalogTests(unittest.TestCase):
+    def test_mcu_network_mqtt_discovery_and_native_states_match(self):
+        cases = [case for case in audit.cases() if case["id"].startswith("Master/")]
+        captures = audit.capture(cases)
+        env = Environment(undefined=StrictUndefined)
+        for case in cases:
+            meta = next(message["payload"] for message in captures[case["id"]]
+                        if message["payload"]["uniq_id"] == "test-master_network_transport")
+            for transport in ("ethernet", "wifi", "ap", "offline"):
+                case["state"]["network_transport"] = transport
+                spec = audit.model.build_specs(audit.MASTER, case["state"], {})[audit.MASTER + ":network_transport"]
+                with self.subTest(case=case["id"], transport=transport):
+                    self.assertEqual(meta["name"], spec.name)
+                    self.assertEqual(meta["icon"], spec.icon)
+                    self.assertEqual(meta["ent_cat"], "diagnostic")
+                    self.assertEqual(env.from_string(meta["val_tpl"]).render(value_json={"network_transport": transport}), spec.value)
+
     def test_all_eight_fanio_channel_icons_and_explicit_overrides(self):
         cases = [case for case in audit.cases() if "eight channels" in case["id"] or "custom channel icons" in case["id"]]
         self.assertEqual(len(cases), 8)

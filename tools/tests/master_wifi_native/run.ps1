@@ -12,3 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Master WiFi source extraction failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Master WiFi native build failed' }
 & "$build\test_wifi.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master WiFi native tests failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /DCONFIG_IDF_TARGET_ESP32P4=1 "/I$build" "/I$PSScriptRoot\../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "$PSScriptRoot\test_wifi_p4.cpp" "/Fo$build\" "/Fe$build\test_wifi_p4.exe"
+if ($LASTEXITCODE -ne 0) { throw 'P4 WiFi native build failed' }
+& "$build\test_wifi_p4.exe"
+if ($LASTEXITCODE -ne 0) { throw 'P4 WiFi native tests failed' }

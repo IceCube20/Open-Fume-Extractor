@@ -1,6 +1,6 @@
 #include <cassert>
 #include <iostream>
-#include "../../../OpenFumeExtractorMaster/src/MqttPerformance.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MqttPerformance.h"
 
 int main() {
   MqttPerfWindow window;

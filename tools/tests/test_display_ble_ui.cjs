@@ -3,14 +3,14 @@ const path=require('node:path');
 const assert=require('node:assert/strict');
 const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'../..');
-const source=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/src/WebDisplayBle.inc.h'),'utf8').split('static void append_ble_pairing_ui')[1];
-const header=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/src/WebTransportIcons.h'),'utf8');
+const source=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebDisplayBle.inc.h'),'utf8').split('static void append_ble_pairing_ui')[1];
+const header=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebTransportIcons.h'),'utf8');
 const icons=header.match(/R"ICON\(([\s\S]*?)\)ICON"/)[1];
 const iconScript=header.match(/R"ICONS\(([\s\S]*?)\)ICONS"/)[1];
-const shell=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/src/WebShell.inc.h'),'utf8');
+const shell=fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebShell.inc.h'),'utf8');
 const css=shell.match(/<style>([\s\S]*?)<\/style>/)[1];
 const decode=s=>JSON.parse('"'+s+'"');
-const typography=decode(fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/src/WebTypography.h'),'utf8').match(/#define OFE_WEB_TYPOGRAPHY_STYLE "((?:\\.|[^"\\])*)"/)[1]);
+const typography=decode(fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebTypography.h'),'utf8').match(/#define OFE_WEB_TYPOGRAPHY_STYLE "((?:\\.|[^"\\])*)"/)[1]);
 function pairing(de){
   const re=/html\+=F\("((?:\\.|[^"\\])*)"\);|html\+=web_text\("((?:\\.|[^"\\])*)","((?:\\.|[^"\\])*)"\);|html\+=web_is_german\(\)[^\n]*;|html\+=R"JS\(([\s\S]*?)\)JS";/g;
   return [...source.matchAll(re)].map(m=>m[1]!==undefined?decode(m[1]):m[2]!==undefined?decode(de?m[2]:m[3]):m[4]!==undefined?m[4]:'const BLE_DE='+de+';').join('');

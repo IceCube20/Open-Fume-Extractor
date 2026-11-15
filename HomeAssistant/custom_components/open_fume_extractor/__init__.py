@@ -5,7 +5,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
 from .api import OfeApi
-from .const import DOMAIN, PLATFORMS, MASTER_DEVICE_NAME, MASTER_DEVICE_MODEL
+from .const import DOMAIN, PLATFORMS, master_device_name, master_device_model
 from .coordinator import OfeCoordinator
 from .frontend import async_register_card_resource
 
@@ -27,7 +27,7 @@ async def async_setup_entry(hass, entry):
     master = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, f"{coordinator.master_uid}:{coordinator.master_uid}")},
-        name=MASTER_DEVICE_NAME, manufacturer="IceCube20", model=MASTER_DEVICE_MODEL,
+        name=master_device_name(coordinator.data), manufacturer="IceCube20", model=master_device_model(coordinator.data),
         sw_version=coordinator.data.get("master_fw"), serial_number=coordinator.master_uid,
         configuration_url=api.host,
     )

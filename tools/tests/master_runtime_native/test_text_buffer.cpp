@@ -1,4 +1,4 @@
-#include "../../../OpenFumeExtractorMaster/src/OfePsramTextBuffer.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfePsramTextBuffer.h"
 #include <cassert>
 #include <climits>
 #include <limits>

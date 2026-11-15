@@ -7,11 +7,11 @@ const scaffold = fs.readFileSync(path.join(__dirname, 'capture_mqtt_fae.cjs'), '
 const bootstrap = scaffold.slice(0, scaffold.indexOf("const begin = source.indexOf('static void mqtt_publish_module_discovery(')"));
 const {source, context, translate, captured} = vm.runInNewContext(
   bootstrap + '\n({source, context, translate, captured})', {require, __dirname});
-const bus = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h'), 'utf8');
+const bus = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.h'), 'utf8');
 for (const match of bus.matchAll(/\b(MODULE_\w+)\s*=\s*(0x[\dA-Fa-f]+)/g)) context[match[1]] = Number(match[2]);
 for (const match of bus.matchAll(/\b(CAP_\w+)\s*=\s*1UL\s*<<\s*(\d+)/g)) context[match[1]] = 2 ** Number(match[2]);
 for (const family of ['SOLD', 'HA', 'CL', 'PH', 'FE', 'SF']) context['JBC_USB_CORE_' + family] = family;
-const counters = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/JbcUsbHaCounters.h'), 'utf8');
+const counters = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/JbcUsbHaCounters.h'), 'utf8');
 context.HA_JBC_COUNTERS = [...counters.matchAll(/HA_JBC_COUNTER\((\w+), (\w+), (0x[\da-fA-F]+)U, (\w+), "([^"]+)", "([^"]+)", ("min"|nullptr)\)/g)]
   .map((m) => ({key: m[1], flags: m[2], mask: Number(m[3]), family: m[4], de: m[5], en: m[6], unit: m[7] === '"min"' ? 'min' : null}));
 context.HA_JBC_COUNTER_COUNT = context.HA_JBC_COUNTERS.length;

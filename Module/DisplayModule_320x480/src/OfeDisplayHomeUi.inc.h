@@ -8,7 +8,7 @@ static bool lv_home_group_match(const DisplayModuleSummary& module, uint8_t grou
 }
 static uint8_t lv_home_module_count(uint8_t group, bool online) {
   uint8_t count = 0;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i)
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i)
     if (lv_home_group_match(module_summaries[i], group) && (!online || (module_summaries[i].flags & 1))) ++count;
   return count;
 }
@@ -18,7 +18,7 @@ static ofe_home_activity::Counts lv_home_jbc_counts(bool master_ok) {
   if (!master_ok) { counts.known = false; return counts; }
   unsigned modules = 0, fresh = 0;
   bool single_fae = false;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const auto& module = module_summaries[i];
     if (!module_summary_matches_group(module, MODULE_JBC_BUS) || !(module.flags & 0x01)) continue;
     ++modules;
@@ -43,7 +43,7 @@ static ofe_home_activity::Counts lv_home_jbc_counts(bool master_ok) {
 
 static ofe_home_activity::OutputState lv_home_fan_state(bool master_ok) {
   ofe_home_activity::OutputState state;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const auto& module = module_summaries[i];
     if (!lv_home_group_match(module, MODULE_FAN_IO) ||
         !(module.caps & (CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT))) continue;

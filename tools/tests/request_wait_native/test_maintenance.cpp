@@ -3,8 +3,8 @@
 #include <cstring>
 #include <cstdio>
 #include <initializer_list>
-#include "../../../OpenFumeExtractorMaster/src/RequestWaitProbe.h"
-#include "../../../OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/RequestWaitProbe.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.h"
 using namespace jbc_rs485;
 static uint32_t clock_ms = 0;
 uint32_t millis() { return clock_ms; }

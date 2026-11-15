@@ -1,9 +1,10 @@
 param(
-  [string]$Database = "$PSScriptRoot/build-checks/master-ha-rc8/compile_commands.json"
+  [string]$Database = "$PSScriptRoot/build-checks/master-ha-rc8/compile_commands.json",
+  [string[]]$Defines = @()
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/../..").Path
-$master = Join-Path $root 'OpenFumeExtractorMaster'
+$master = Join-Path $root 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3'
 $build = Join-Path $PSScriptRoot 'build-checks/master-current-syntax'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $commands = Get-Content -LiteralPath $Database -Raw | ConvertFrom-Json
@@ -11,7 +12,7 @@ foreach ($name in @('OpenFumeExtractorMaster.ino.cpp', 'MasterScheduler.cpp', 'M
   $entry = $commands | Where-Object { [IO.Path]::GetFileName($_.file) -eq $name } | Select-Object -First 1
   if (-not $entry) { throw "No ESP32 compiler command for $name" }
   if ($name -eq 'OpenFumeExtractorMaster.ino.cpp') {
-    $source = Join-Path $master 'OpenFumeExtractorMaster.ino'
+    $source = Join-Path $master 'OpenFumeExtractorMCU_S3.ino'
   } else {
     $source = Join-Path $master "src/$name"
   }
@@ -22,6 +23,7 @@ foreach ($name in @('OpenFumeExtractorMaster.ino.cpp', 'MasterScheduler.cpp', 'M
   $args.Add('-include')
   $args.Add("$master/OfeBleBuildConfig.h")
   $args.Add('-fsyntax-only')
+  foreach ($define in $Defines) { $args.Add("-D$define") }
   $args.Add('-x')
   $args.Add('c++')
   for ($i = 1; $i -lt $entry.arguments.Count; ++$i) {

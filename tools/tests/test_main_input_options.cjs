@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/WebStatus.inc.h'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h'), 'utf8');
 const lines = source.split(/\r?\n/);
 const context = vm.createContext({
   uiLang: 'de', fixText: String, t: key => key,
@@ -16,7 +16,7 @@ const context = vm.createContext({
   universalOutputDefs: () => [], fanIoMainConfigured: () => false,
   ruleLabel: () => 'Previously selected input',
 });
-const shared = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/WebAutomationSignals.h'), 'utf8');
+const shared = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebAutomationSignals.h'), 'utf8');
 vm.runInContext(shared.match(/<script>([\s\S]*?)<\/script>/)[1], context);
 for (const name of ['universalLines', 'universalNormalizeDescriptorText', 'universalParseDescriptorRaw',
   'universalInputDefs', 'universalIsMainInput', 'universalMainInputDefs', 'fanIoDef',

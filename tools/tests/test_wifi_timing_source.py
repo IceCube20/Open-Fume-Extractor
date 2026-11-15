@@ -5,7 +5,7 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-MASTER = ROOT / 'OpenFumeExtractorMaster/src'
+MASTER = ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 NAMES = ('DisplayModule_320x480', 'DisplayModule_800x480', 'DisplayModule_ST7796_320x480')
 
 
@@ -70,7 +70,7 @@ const peak={rtt_us:90000,display_us:1000,transport_us:89000,master_poll_us:2000,
 const m={transport:'wifi',wifi_timing:{version:2,supported:true,rtt:metric,display:metric,transport:metric,master_queue:metric,master_poll:metric,display_poll:metric,peak,sent:3,age_ms:20,invalid:1}};
 assert.equal(diagWifiTimingHtml(m,true,false),'');assert.equal(diagWifiTimingHtml(m,false,false),'');assert.equal(diagWifiTimingHtml(m,true),'');
 let html=diagWifiTimingHtml(m,true,true);assert.match(html,/WLAN-Zeitmessung/);assert.match(html,/1.23 ms/);assert.match(html,/max 20.00 ms/);assert.match(html,/Display-Bearbeitung/);assert.match(html,/2 \/ 3/);
-UI_DE=false;html=diagWifiTimingHtml(m,false,true);assert.match(html,/WiFi timing/);assert.match(html,/stopped/);assert.match(html,/Master until processing/);
+UI_DE=false;html=diagWifiTimingHtml(m,false,true);assert.match(html,/WiFi timing/);assert.match(html,/stopped/);assert.match(html,/MCU until processing/);
 assert.match(html,/90.00 ms/);assert.match(html,/89.00 ms/);assert.match(html,/2.00 ms/);assert.match(html,/3.00 ms/);assert.match(html,/SEQ 0x0F/);
 delete m.wifi_timing.version;assert.match(diagWifiTimingHtml(m,true,true),/firmware/i);m.wifi_timing.version=2;
 assert.equal(diagWifiTimingHtml({...m,transport:'rs485'},true,true),'');

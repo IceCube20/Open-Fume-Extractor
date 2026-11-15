@@ -14,8 +14,8 @@ if ($LASTEXITCODE -ne 0) { throw 'RGB/OTA extraction failed' }
 if ($LASTEXITCODE -ne 0) { throw 'RGB scheduling extraction failed' }
 foreach ($test in @('test_rgb_tiles','test_rgb_performance','test_display_ota')) {
   $extra = @()
-  if ($test -eq 'test_display_ota') { $extra += "$root/OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.cpp" }
-  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot/stubs" "/I$root/OpenFumeExtractorMaster/src/bus" "$PSScriptRoot/$test.cpp" @extra "/Fo$build/" "/Fe$build/$test.exe"
+  if ($test -eq 'test_display_ota') { $extra += "$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.cpp" }
+  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot/stubs" "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus" "$PSScriptRoot/$test.cpp" @extra "/Fo$build/" "/Fe$build/$test.exe"
   if ($LASTEXITCODE -ne 0) { throw "Native RGB build failed: $test" }
   & "$build/$test.exe"
   if ($LASTEXITCODE -ne 0) { throw "Native RGB regression: $test" }

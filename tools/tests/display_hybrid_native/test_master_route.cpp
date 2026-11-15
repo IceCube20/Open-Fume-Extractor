@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include "Rs485PeripheralBus.h"
-#include "../../../OpenFumeExtractorMaster/src/WifiOtaDiagnostics.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WifiOtaDiagnostics.h"
 using namespace jbc_rs485;
 static constexpr uint8_t DATA=4;
 static uint32_t esp_random() { return 0x12345678u; }

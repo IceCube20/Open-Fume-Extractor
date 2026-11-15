@@ -12,7 +12,7 @@ function parseCsv(text) {
   return JSON.parse(result.stdout);
 }
 
-const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/WebDiagnostics.inc.h'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebDiagnostics.inc.h'), 'utf8');
 const script = source.split('html += R"JS(')[1].split(')JS";')[0].split('setInterval(loadDiag,500);')[0];
 const event = (seq, addr, dir, data, status = 255) => ({seq, addr, dir, data, status,
   ms: 1000 + seq * 10, latency: 0, frame_seq: 255, cmd: 'GET_IO', len: data.length / 2, text: 'raw firmware text'});

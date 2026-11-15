@@ -12,7 +12,7 @@ loader = importlib.util.spec_from_file_location("alarm_model", ROOT / "HomeAssis
 model = importlib.util.module_from_spec(loader)
 sys.modules[loader.name] = model
 loader.loader.exec_module(model)
-MQTT = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+MQTT = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
 MASTER = "0000000012345678"
 
 

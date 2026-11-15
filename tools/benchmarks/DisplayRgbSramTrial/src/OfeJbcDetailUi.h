@@ -190,7 +190,7 @@ static void lv_update_jbc_detail(bool visible) {
     lv_obj_remove_flag(ui_detail_values, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_detail_controls, LV_OBJ_FLAG_HIDDEN);
     lv_set_text(ui_detail_values, jbc_usb_core_detail_text(selected_module) + "\n" +
-      tr("Extended details require a current Master connection.", "Erweiterte Details ben\303\266tigen eine aktuelle Master-Verbindung."));
+      tr("Extended details require a current MCU connection.", "Erweiterte Details ben\303\266tigen eine aktuelle MCU-Verbindung."));
     return;
   }
   if (!jbc_detail_root) {

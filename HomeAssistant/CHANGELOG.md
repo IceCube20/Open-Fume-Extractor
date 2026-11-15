@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.31RC (0.1.31rc4) - 2026-11-15
+
+- Measure overview card width with ResizeObserver for explicit one-to-four-column
+  limits, including generated dashboards, sidebar changes and initially hidden
+  views. Do not depend on CSS container queries for the overview grid.
+- Apply column-only configuration changes without rebuilding native controls.
+- Preserve phone layouts and narrow Sections/Masonry containers without overflow;
+  overview cards cannot expand their containing HA section automatically.
+
+## 0.1.31rc3 (Development Candidate)
+
+- Add the MCU Network diagnostic sensor with matching MQTT captions and icons:
+  Ethernet, WiFi/WLAN, Access Point or Disconnected/Getrennt.
+- Use the active MCU network interface in entity attributes and dashboard badges
+  instead of always showing WiFi, including Ethernet-to-WiFi failover.
+- The native sensor uses the existing API; MQTT requires MCU firmware 2.1.8.
+
+## 0.1.31rc2 (Development Candidate)
+
+- Use MCU in visible integration and dashboard labels. MCU-S3/MCU-P4 identities
+  supplied by the firmware take precedence over the generic MCU fallback.
+- Keep entity IDs, device identifiers, API keys and dashboard configuration types
+  unchanged, preserving existing automations and cards.
+
+## 0.1.31RC (0.1.31rc1)
+
+- Schedule configured subsecond polling using precise start-to-start deadlines
+  instead of the coordinator's whole-second alignment. The selected 0.5-second
+  interval no longer produces uneven catch-up bursts or drifts by response time.
+- Keep HA's serialized refresh/error/unload handling. Skip missed slots for slow
+  requests instead of overlapping HTTP reads or sending a backlog to the master.
+- Preserve existing intervals, entity identities, cleanup, state projections and
+  card appearance. No master firmware update or extra endpoint is required.
+- Add virtual-clock tests for output transitions, 0.5/0.75-second timing, slow
+  responses, in-flight requests, polling disablement, shutdown and auth failures.
+
+## 0.1.30RC (0.1.30rc1)
+
+- Default the automatic dashboard to a maximum of four columns, reducing to
+  three, two or one according to the available card width, including HA's sidebar.
+- Add a one-to-four-column limit to the dashboard and overview card editors.
+  Existing overview cards without a column preference keep their automatic grid.
+- Adapt compact headers and summaries to each individual card's width so names, icons and
+  OFE/EVT indicators stay aligned in narrow desktop columns. Controls and live
+  updates are unchanged; resizing does not recreate cards or interrupt focus.
+
 ## 0.1.29RC (0.1.29rc1)
 
 - Add an optional Open Fume Extractor community dashboard strategy. Create the

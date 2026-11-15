@@ -3,7 +3,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
-const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/WebStatus.inc.h'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h'), 'utf8');
 const selector = { value: '0' };
 const status = { title: '', closest: () => null };
 const displayed = {};

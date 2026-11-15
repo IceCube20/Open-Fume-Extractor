@@ -4,7 +4,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-MQTT = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+MQTT = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
 
 
 def function(name):
@@ -43,7 +43,7 @@ class MqttPresentationTests(unittest.TestCase):
     def test_serial_sensor_is_published_for_master_and_all_module_types(self):
         self.assertIn('"sensor", "serial_number"', function("mqtt_publish_discovery"))
         self.assertIn('"sensor", "serial_number"', function("mqtt_publish_module_discovery"))
-        self.assertIn('uid_hex(ESP.getEfuseMac())', function("mqtt_device_json"))
+        self.assertIn('uid_hex(master_factory_uid())', function("mqtt_device_json"))
         self.assertIn('uid_hex(m.uid)', function("mqtt_module_device_json"))
         self.assertIn('uid_hex(m.uid)', function("mqtt_publish_module_state"))
         master_state = function("mqtt_publish_state")

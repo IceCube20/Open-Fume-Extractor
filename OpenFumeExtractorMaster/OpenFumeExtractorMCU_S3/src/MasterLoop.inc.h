@@ -1,0 +1,118 @@
+#pragma once
+
+// Main runtime tick. Keeps Arduino loop() tiny while preserving the original
+// execution order for CLI, LEDs, module OTA, scheduler, logic and telemetry.
+static void master_loop_tick() {
+  const uint32_t local_start_us = micros();
+  master_runtime_begin(millis());
+#if WEB_ENABLE
+  const uint32_t master_restart_due_ms = master_update_restart_due_ms.load();
+  if (master_restart_due_ms && (int32_t)(millis() - master_restart_due_ms) >= 0) {
+    prepare_controlled_restart();
+    ESP.restart();
+  }
+#endif
+#if WEB_ENABLE
+  // The normal HTTP service runs on its own task. If task creation failed at
+  // startup, keep WiFi, captive DNS and HTTP alive from the Arduino loop.
+  if (!web_service_task_handle) {
+    wifi_service_tick();
+    if (captive_active) dns.processNextRequest();
+    web.handleClient();
+  }
+#endif
+
+#if WEB_ENABLE
+  serial_cli_tick();
+  if (master_display_ble.active() && (master_update_active || scheduler.firmwareUpdateActive()))
+    master_display_ble.cancel();
+#endif
+  update_status_leds();
+  ofe_status_leds.tick();
+  const uint32_t loop_start_us = micros();
+  master_runtime_window.record(ofe_runtime::Local, uint32_t(loop_start_us - local_start_us));
+
+  // External controls are serialized through the loop before OTA/background
+  // traffic. Critical OFF commands are drained first inside this function.
+  uint32_t phase_start_us = micros();
+  master_command_queue_process();
+  uint32_t phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  master_runtime_window.record(ofe_runtime::Command, phase_busy_us);
+  if (phase_busy_us > loop_phase_command_max_us) loop_phase_command_max_us = phase_busy_us;
+
+  // Module OTA waits synchronously for the target ACK. Keep it after CLI and
+  // LED servicing so a slow/lost ACK cannot starve the local control paths.
+  // The pump owns the OTA I/O mutex while it talks to the target and the
+  // scheduler skips normal polling while firmwareUpdateActive() is true.
+  phase_start_us = micros();
+  module_update_pump();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  master_runtime_window.record(ofe_runtime::Ota, phase_busy_us);
+  if (phase_busy_us > loop_phase_ota_max_us) loop_phase_ota_max_us = phase_busy_us;
+
+  phase_start_us = micros();
+  scheduler.tick();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  master_runtime_window.record(ofe_runtime::Scheduler, phase_busy_us);
+  if (phase_busy_us > loop_phase_scheduler_max_us) loop_phase_scheduler_max_us = phase_busy_us;
+#if WEB_ENABLE
+  phase_start_us = micros();
+  logic_runtime_tick();
+  phase_busy_us = (uint32_t)(micros() - phase_start_us);
+  master_runtime_window.record(ofe_runtime::Logic, phase_busy_us);
+  if (phase_busy_us > loop_phase_logic_max_us) loop_phase_logic_max_us = phase_busy_us;
+#endif
+  phase_start_us = micros();
+#if WEB_ENABLE
+  const bool scan_finished = scheduler.consumeScanJobFinished();
+  if (scan_finished) {
+    registry.sortByAddress();
+    apply_module_labels();
+    save_module_snapshot();
+    load_routing_config();
+
+    // HA discovery is reconciled from the persisted publish manifest. Do not
+    // brute-force every possible module/entity topic after each scan.
+    mqtt_discovery_published = false;
+    mqtt_next_discovery_check_ms = 0;
+    mqtt_last_publish_ms = 0;
+  }
+#endif
+  master_runtime_window.record(ofe_runtime::Maintenance, uint32_t(micros() - phase_start_us));
+  const uint32_t busy_us = (uint32_t)(micros() - loop_start_us);
+  if (busy_us > loop_max_us) loop_max_us = busy_us;
+
+  const uint32_t now = millis();
+  if ((uint32_t)(now - loop_window_ms) >= 1000UL) {
+    uint32_t max_ms = (loop_max_us + 999UL) / 1000UL;
+    if (max_ms > 65535UL) max_ms = 65535UL;
+    loop_max_ms = (uint16_t)max_ms;
+    auto phase_ms = [](uint32_t us) -> uint16_t {
+      uint32_t ms = (us + 999UL) / 1000UL;
+      return (uint16_t)(ms > 65535UL ? 65535UL : ms);
+    };
+    loop_phase_command_max_ms = phase_ms(loop_phase_command_max_us);
+    loop_phase_ota_max_ms = phase_ms(loop_phase_ota_max_us);
+    loop_phase_scheduler_max_ms = phase_ms(loop_phase_scheduler_max_us);
+    loop_phase_logic_max_ms = phase_ms(loop_phase_logic_max_us);
+    loop_scheduler_job_max_ms = scheduler.schedulerSlowJobMs();
+    strncpy(loop_scheduler_job_name, scheduler.schedulerSlowJobName(), sizeof(loop_scheduler_job_name) - 1);
+    loop_scheduler_job_name[sizeof(loop_scheduler_job_name) - 1] = 0;
+    scheduler.resetSchedulerSlowJob();
+    sample_cpu_load();
+    master_runtime_sample(now);
+    scheduler.setMasterTelemetry(cpu_load_pct, loop_max_ms);
+    loop_window_ms = now;
+    loop_max_us = 0;
+    loop_phase_command_max_us = 0;
+    loop_phase_ota_max_us = 0;
+    loop_phase_scheduler_max_us = 0;
+    loop_phase_logic_max_us = 0;
+  }
+  monitor_summary_tick(now);
+
+  // Prevent the Arduino loop task from busy-spinning at 100% on one core.
+  // The delay is intentionally placed after telemetry/runtime measurement,
+  // so loop_max_ms continues to report actual work rather than idle time.
+  delay(1);
+}

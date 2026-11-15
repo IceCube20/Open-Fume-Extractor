@@ -3,8 +3,8 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
-#include "../../../OpenFumeExtractorMaster/src/OfeAutomationState.h"
-#include "../../../OpenFumeExtractorMaster/src/AutomationInputSignals.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeAutomationState.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/AutomationInputSignals.h"
 
 static uint32_t now_ms = 1000;
 uint32_t millis() { return now_ms; }

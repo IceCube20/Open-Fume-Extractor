@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class RefactorIntegration(unittest.TestCase):
     def test_offline_modules_stop_accumulating_misses_in_both_request_paths(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         sync = source.split('bool MasterScheduler::request(', 1)[1].split('bool MasterScheduler::startAsyncDisplayRequest(', 1)[0]
         async_timeout = source.split('void MasterScheduler::recordRequestTimeout(', 1)[1].split('\n}', 1)[0]
         for path in (sync, async_timeout):
@@ -15,7 +15,7 @@ class RefactorIntegration(unittest.TestCase):
             self.assertLess(path.index('if (was_online) {'), path.index('rec->miss_count++'))
 
     def test_logic_slot_write_verifies_staging_before_replace(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/WebLogic.inc.h').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebLogic.inc.h').read_text(encoding='utf-8')
         save = source.split('static bool logic_save_fs(', 1)[1].split('static String logic_load_fs(', 1)[0]
         self.assertLess(save.index('LittleFS.open(staged_path, "w")'),
                         save.index('LittleFS.open(staged_path, "r")'))
@@ -25,7 +25,7 @@ class RefactorIntegration(unittest.TestCase):
         self.assertIn('logic_fs_ready ? logic_save_fs(slot, stored) : logic_save_legacy_nvs(slot, stored)', slot_save)
 
     def test_backup_checks_logic_before_writing_settings(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/WebConfig.inc.h').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebConfig.inc.h').read_text(encoding='utf-8')
         restore = source.split('static bool apply_config_backup_json_impl(', 1)[1].split('\n}', 1)[0]
         self.assertLess(restore.index('logic_compile_json(slot_json, i, compiled)'),
                         restore.index('netcfg_save('))
@@ -35,8 +35,8 @@ class RefactorIntegration(unittest.TestCase):
         self.assertIn('failed to remove logic slot', restore)
 
     def test_web_routing_surfaces_failed_persistence(self):
-        controls = (ROOT / 'OpenFumeExtractorMaster/src/WebControls.inc.h').read_text(encoding='utf-8')
-        status = (ROOT / 'OpenFumeExtractorMaster/src/WebStatus.inc.h').read_text(encoding='utf-8')
+        controls = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebControls.inc.h').read_text(encoding='utf-8')
+        status = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h').read_text(encoding='utf-8')
         for message in ('failed to persist main input', 'failed to persist main output',
                         'failed to persist JBC route', 'failed to persist input route',
                         'failed to persist input rule'):
@@ -84,8 +84,8 @@ class RefactorIntegration(unittest.TestCase):
             self.assertIn('prefs.putUShort("power", manual_output_power) == sizeof(manual_output_power)', source)
 
     def test_bus_deadlines_match_observed_outliers_without_blocking_display(self):
-        header = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.h').read_text(encoding='utf-8')
-        scheduler = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        header = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.h').read_text(encoding='utf-8')
+        scheduler = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         self.assertIn('#define MODULE_STATUS_TIMEOUT_MS 80', header)
         self.assertIn('#define JBC_BUS_STATE_TIMEOUT_MS 120', header)
         self.assertIn('#define DISPLAY_WIFI_ASYNC_TIMEOUT_MS 1000UL', header)
@@ -97,7 +97,7 @@ class RefactorIntegration(unittest.TestCase):
         self.assertIn('else if (timeout_ms > 1200UL) timeout_ms = 1200UL;', scheduler)
 
     def test_master_ota_commit_defers_reboot_and_rejects_abort(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/WebUpdate.inc.h').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebUpdate.inc.h').read_text(encoding='utf-8')
         handler = source.split('static void web_handle_master_chunk_end() {', 1)[1].split(
             'static void web_handle_master_chunk_abort()', 1)[0]
         self.assertIn('Update.end(true)', handler)
@@ -106,7 +106,7 @@ class RefactorIntegration(unittest.TestCase):
         abort = source.split('static void web_handle_master_chunk_abort() {', 1)[1].split('\n}', 1)[0]
         self.assertLess(abort.index('master_update_restart_due_ms.load()'),
                         abort.index('master_update_abort_active()'))
-        loop = (ROOT / 'OpenFumeExtractorMaster/src/MasterLoop.inc.h').read_text(encoding='utf-8')
+        loop = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterLoop.inc.h').read_text(encoding='utf-8')
         self.assertIn('master_update_restart_due_ms.load()', loop)
         self.assertIn('prepare_controlled_restart();', loop)
 

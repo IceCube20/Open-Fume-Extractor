@@ -1,7 +1,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include "../../../OpenFumeExtractorMaster/src/OfeAutomationState.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeAutomationState.h"
 #include "../../../Module/DisplayModule_800x480/src/OfeDisplayBacklight.h"
 
 int main() {

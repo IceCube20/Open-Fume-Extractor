@@ -9,7 +9,7 @@ $env:INCLUDE = "$vc/include;$sdk/Include/$version/ucrt;$sdk/Include/$version/sha
 $env:LIB = "$vc/lib/x64;$sdk/Lib/$version/ucrt/x64;$sdk/Lib/$version/um/x64"
 & "$env:USERPROFILE/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe" "$PSScriptRoot/extract_jbc_detail.py" "$build/generated_jbc_detail.inc.h"
 if ($LASTEXITCODE) { throw 'JBC detail extraction failed' }
-& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot/stubs" "/I$root/OpenFumeExtractorMaster/src" "/I$root/Module/DisplayModule_800x480/src" "$PSScriptRoot/test_jbc_detail.cpp" "$root/OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.cpp" "/Fo$build/" "/Fe$build/test_jbc_detail.exe"
+& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot/stubs" "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "/I$root/Module/DisplayModule_800x480/src" "$PSScriptRoot/test_jbc_detail.cpp" "$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.cpp" "/Fo$build/" "/Fe$build/test_jbc_detail.exe"
 if ($LASTEXITCODE) { throw 'JBC detail native build failed' }
 & "$build/test_jbc_detail.exe"
 if ($LASTEXITCODE) { throw 'JBC detail regression failed' }

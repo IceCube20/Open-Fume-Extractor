@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Request-wait native build failed' }
 & "$build\test_request_wait.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Request-wait regressions failed' }
 $root = (Resolve-Path "$PSScriptRoot\..\..\..").Path
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$PSScriptRoot\..\display_hybrid_native\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "$PSScriptRoot\test_parser_length.cpp" "$root\OpenFumeExtractorMaster\src\bus\Rs485PeripheralBus.cpp" "/Fo$build\" "/Fe$build\test_parser_length.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$PSScriptRoot\..\display_hybrid_native\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "$PSScriptRoot\test_parser_length.cpp" "$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus\Rs485PeripheralBus.cpp" "/Fo$build\" "/Fe$build\test_parser_length.exe"
 if ($LASTEXITCODE -ne 0) { throw 'RS485 parser native build failed' }
 & "$build\test_parser_length.exe"
 if ($LASTEXITCODE -ne 0) { throw 'RS485 parser regressions failed' }
@@ -28,7 +28,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Discovery guard extraction failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Discovery guard native build failed' }
 & "$build\test_discovery_guard.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Discovery guard regressions failed' }
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "/I$PSScriptRoot\..\display_hybrid_native\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "$PSScriptRoot\test_display_reply.cpp" "/Fo$build\" "/Fe$build\test_display_reply.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "/I$PSScriptRoot\..\display_hybrid_native\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "$PSScriptRoot\test_display_reply.cpp" "/Fo$build\" "/Fe$build\test_display_reply.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Display reply dispatcher build failed' }
 & "$build\test_display_reply.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Display reply dispatcher regressions failed' }

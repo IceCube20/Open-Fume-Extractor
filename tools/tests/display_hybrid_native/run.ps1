@@ -7,14 +7,14 @@ $build = Join-Path $PSScriptRoot 'build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "$PSScriptRoot\test_tunnel.cpp" "$root\OpenFumeExtractorMaster\src\bus\Rs485PeripheralBus.cpp" "/Fo$build\" "/Fe$build\test_tunnel.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "$PSScriptRoot\test_tunnel.cpp" "$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus\Rs485PeripheralBus.cpp" "/Fo$build\" "/Fe$build\test_tunnel.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Native test build failed' }
 & "$build\test_tunnel.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
 $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
 & $python "$PSScriptRoot\extract_wifi_timing.py" "$build\generated_wifi_timing.inc.h"
 if ($LASTEXITCODE -ne 0) { throw 'WiFi timing source extraction failed' }
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_wifi_timing.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_wifi_timing.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "/I$build" "$PSScriptRoot\test_wifi_timing.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_wifi_timing.exe"
 if ($LASTEXITCODE -ne 0) { throw 'WiFi timing native build failed' }
 & "$build\test_wifi_timing.exe"
 if ($LASTEXITCODE -ne 0) { throw 'WiFi timing regressions failed' }
@@ -47,20 +47,20 @@ if ($LASTEXITCODE -ne 0) { throw 'Refactor regressions failed' }
 foreach ($resolution in @('320x480', '800x480', 'ST7796_320x480')) {
   & $python "$PSScriptRoot\extract_ota.py" $resolution "$build\generated_display_ota.inc.h"
   if ($LASTEXITCODE -ne 0) { throw 'OTA handler extraction failed' }
-  & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_display_ota.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_display_ota.exe"
+  & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "/I$build" "$PSScriptRoot\test_display_ota.cpp" "$build\Rs485PeripheralBus.obj" "/Fo$build\" "/Fe$build\test_display_ota.exe"
   if ($LASTEXITCODE -ne 0) { throw "OTA test build failed ($resolution)" }
   & "$build\test_display_ota.exe"
   if ($LASTEXITCODE -ne 0) { throw "OTA tests failed ($resolution)" }
-  & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_display_status.cpp" "/Fo$build\" "/Fe$build\test_display_status.exe"
+  & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "/I$build" "$PSScriptRoot\test_display_status.cpp" "/Fo$build\" "/Fe$build\test_display_status.exe"
   if ($LASTEXITCODE -ne 0) { throw "Display status test build failed ($resolution)" }
   & "$build\test_display_status.exe"
   if ($LASTEXITCODE -ne 0) { throw "Display status tests failed ($resolution)" }
 }
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_master_route.cpp" "/Fo$build\" "/Fe$build\test_master_route.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "/I$build" "$PSScriptRoot\test_master_route.cpp" "/Fo$build\" "/Fe$build\test_master_route.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master routing test build failed' }
 & "$build\test_master_route.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master routing tests failed' }
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\src\bus" "/I$build" "$PSScriptRoot\test_master_bulk.cpp" "/Fo$build\" "/Fe$build\test_master_bulk.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 "/I$PSScriptRoot\stubs" "/I$root\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\bus" "/I$build" "$PSScriptRoot\test_master_bulk.cpp" "/Fo$build\" "/Fe$build\test_master_bulk.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master bulk ACK test build failed' }
 & "$build\test_master_bulk.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master bulk ACK tests failed' }

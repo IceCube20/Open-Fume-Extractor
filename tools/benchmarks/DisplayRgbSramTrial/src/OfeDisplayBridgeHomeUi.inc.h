@@ -6,7 +6,7 @@ struct Card {
   uint8_t addr = 0, type = 0;
   int16_t height = 0;
 };
-static Card cards[17];
+static Card cards[DISPLAY_MODULE_CAPACITY];
 static uint8_t count = 0;
 static bool supported(uint8_t type) {
   return type == MODULE_FAN_IO || type == MODULE_FAN_IO_PRO || type == MODULE_WELLER_ZERO_SMOG ||
@@ -26,7 +26,7 @@ static int measure(lv_obj_t* label) {
 static void open(lv_event_t* event) {
   const auto* card = static_cast<Card*>(lv_event_get_user_data(event));
   if (!card) return;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i)
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i)
     if (module_summaries[i].valid && module_summaries[i].addr == card->addr &&
         module_summaries[i].type == card->type) { lv_open_module_summary(i); return; }
 }
@@ -190,8 +190,8 @@ static void lv_create_bridge_home_cards() {
   for (unsigned i = 5; i < 22; ++i) ofe_home_activity::fans[i] = {};
 }
 static void lv_update_bridge_home_cards(bool master_ok) {
-  const DisplayModuleSummary* sorted[17]; unsigned count = 0;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  const DisplayModuleSummary* sorted[DISPLAY_MODULE_CAPACITY]; unsigned count = 0;
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const auto& module = module_summaries[i];
     if (!module.valid || !ofe_module_home::supported(module.type)) continue;
     unsigned at = count;
@@ -204,7 +204,7 @@ static void lv_update_bridge_home_cards(bool master_ok) {
     sorted[at] = &module; ++count;
   }
   ofe_module_home::count = uint8_t(count);
-  for (unsigned i = 0; i < 17; ++i) {
+  for (unsigned i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
     auto& card = ofe_module_home::cards[i];
     if (i < count) {
       ofe_module_home::update(card, i, *sorted[i], master_ok);

@@ -2,7 +2,7 @@ import pathlib
 import unittest
 
 
-SRC = pathlib.Path(__file__).resolve().parents[2] / "OpenFumeExtractorMaster" / "src"
+SRC = pathlib.Path(__file__).resolve().parents[2] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3" / "src"
 
 
 class RequestWaitIntegrationTests(unittest.TestCase):

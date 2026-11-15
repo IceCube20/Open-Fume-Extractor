@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2] / 'OpenFumeExtractorMaster/src'
+ROOT = Path(__file__).resolve().parents[2] / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 
 
 class MasterProfileSource(unittest.TestCase):
@@ -45,6 +45,8 @@ class MasterProfileSource(unittest.TestCase):
 const s={active:true,window_ms:1000,age_ms:5,tasks:[{id:'loop',core:1,cpu_pct:40},{id:'http',core:1,cpu_pct:0},{id:'mqtt',core:1,cpu_pct:null},{id:'heap',core:-1,cpu_pct:2}],phases:{scheduler:{calls:100,avg_us:2000,max_us:5000,total_us:200000}}};
 let html=runtimeProfileHtml(s,true);assert.match(html,/Steuerloop \(Core 1\): <strong>40%/);
 assert.match(html,/HTTP \/ WLAN \(Core 1\): <strong>0%/);assert.match(html,/MQTT \(Core 1\): <strong>-/);
+s.tasks.push({id:'mqtt_send',core:0,cpu_pct:12});assert.match(runtimeProfileHtml(s,true),/MQTT-Versand \(Core 0\): <strong>12%/);
+assert.match(runtimeProfileHtml(s,false),/MQTT publish \(Core 0\): <strong>12%/);
 assert.match(html,/keine CPU-Prozente/);assert.match(html,/200.0 ms\/s/);assert.match(html,/2.00 ms/);assert.match(html,/5.00 ms/);
 html=runtimeProfileHtml(s,false);assert.match(html,/Control loop/);assert.match(html,/not CPU percentages/);assert.match(html,/floating \/ unknown/);
 assert.equal(runtimeProfileHtml(null,true),'');

@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 #include "Rs485PeripheralBus.h"
-#include "../../../OpenFumeExtractorMaster/src/WifiOtaDiagnostics.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WifiOtaDiagnostics.h"
 using namespace jbc_rs485;
 static constexpr uint16_t BULK_DATA_MAX=1024;
 static constexpr size_t BULK_HEADER=40, TAG=16;

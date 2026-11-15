@@ -1,5 +1,6 @@
 """Coordinator contract tests using small HA stubs, not a HA runtime."""
 import importlib.util
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 import sys
@@ -32,9 +33,43 @@ class CoordinatorStub:
 
     def __init__(self, *args, **kwargs):
         self.hass = args[0]
+        self.config_entry = kwargs.get("config_entry")
         self.update_interval = kwargs.get("update_interval")
         self.last_update_success = True
         self.async_request_refresh = AsyncMock()
+        self._retry_after = None
+        self._shutdown_requested = False
+        self._listeners = {"test": None}
+        self._unsub_refresh = None
+        self.normal_schedules = 0
+        self._refresh_lock = asyncio.Lock()
+
+    def _async_unsub_refresh(self):
+        if self._unsub_refresh:
+            self._unsub_refresh()
+            self._unsub_refresh = None
+
+    def _schedule_refresh(self):
+        self._async_unsub_refresh()
+        self.normal_schedules += 1
+
+    async def _handle_refresh_interval(self):
+        async with self._refresh_lock:
+            self._unsub_refresh = None
+            try:
+                self.data = await self._async_update_data()
+                self.last_update_success = True
+            except ConfigEntryAuthFailed:
+                self.last_update_success = False
+                return
+            except UpdateFailed:
+                self.last_update_success = False
+            if self._listeners and not self._shutdown_requested and not self.hass.is_stopping:
+                self._schedule_refresh()
+
+    async def async_shutdown(self):
+        self._shutdown_requested = True
+        self._async_unsub_refresh()
 
 
 # Only imports used by the coordinator are stubbed; production code is loaded unchanged.
@@ -81,6 +116,176 @@ def state(crc=1, definitions=None, addr=32):
     if definitions is not None:
         module["universal_entity_defs"] = definitions
     return {"master_uid": MASTER, "master_fw": "2.0.31RC", "modules": [module], "modules_count": 1, "uptime_ms": 60000}
+
+
+class FakeTimer:
+    def __init__(self, loop, when, action):
+        self.loop, self.when, self.action = loop, when, action
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        assert not self.cancelled
+        self.cancelled = True
+        self.loop.now = self.when
+        self.action()
+
+
+class FakeLoop:
+    def __init__(self):
+        self.now = 10.37
+        self.timers = []
+
+    def time(self):
+        return self.now
+
+    def call_at(self, when, action):
+        timer = FakeTimer(self, when, action)
+        self.timers.append(timer)
+        return timer
+
+    def pending(self):
+        return [timer for timer in self.timers if not timer.cancelled]
+
+
+class SubsecondPollingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.loop = FakeLoop()
+        self.hass = types.SimpleNamespace(loop=self.loop, is_stopping=False)
+        self.tasks = []
+
+        def spawn(hass, coroutine, **kwargs):
+            self.assertIs(hass, self.hass)
+            self.assertTrue(kwargs["eager_start"])
+            task = asyncio.create_task(coroutine)
+            self.tasks.append(task)
+            return task
+
+        self.entry = types.SimpleNamespace(unique_id=MASTER, entry_id="test-entry",
+                                          options={"scan_interval": 0.5}, pref_disable_polling=False,
+                                          async_create_background_task=spawn)
+        self.api = types.SimpleNamespace(identity={"master_uid": MASTER}, connect=AsyncMock(),
+                                         state=AsyncMock(), command=AsyncMock())
+        self.coordinator = coordinator.OfeCoordinator(self.hass, self.entry, self.api)
+        self.coordinator.definitions[MODULE] = [DEF]
+        self.coordinator.crcs[MODULE] = 1
+
+    async def test_fixed_half_second_deadlines_and_output_transitions(self):
+        values = []
+
+        def snapshot():
+            self.loop.now += 0.12  # JSON/transport latency must not stretch the period.
+            result = state()
+            result["modules"][0]["universal_entities"][0]["value_bool"] = bool(len(values) % 2)
+            return result
+
+        self.api.state.side_effect = snapshot
+        self.coordinator._schedule_refresh()
+        for index in range(8):
+            self.assertEqual(len(self.loop.pending()), 1)
+            timer = self.loop.pending()[0]
+            self.assertAlmostEqual(timer.when, 10.87 + index * 0.5)
+            timer.fire()
+            await self.tasks[-1]
+            values.append(self.coordinator.specs[MODULE + ":entity_20_out3"].value)
+        self.assertEqual(values, [False, True] * 4)
+        self.assertEqual(self.api.state.await_count, 8)
+        self.assertEqual(self.coordinator.normal_schedules, 0)
+
+    async def test_slow_response_skips_missed_slots_without_catchup(self):
+        def snapshot():
+            self.loop.now += 1.2
+            return state()
+
+        self.api.state.side_effect = snapshot
+        self.coordinator._schedule_refresh()
+        self.loop.pending()[0].fire()
+        await self.tasks[-1]
+        self.assertEqual(self.api.state.await_count, 1)
+        self.assertEqual(len(self.loop.pending()), 1)
+        self.assertAlmostEqual(self.loop.pending()[0].when, self.loop.now + 0.5)
+
+    async def test_inflight_poll_has_no_timer_or_second_request(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def snapshot():
+            entered.set()
+            await release.wait()
+            return state()
+
+        self.api.state.side_effect = snapshot
+        self.coordinator._schedule_refresh()
+        self.loop.pending()[0].fire()
+        await entered.wait()
+        self.assertEqual(self.loop.pending(), [])
+        self.loop.now += 5
+        self.assertEqual(self.api.state.await_count, 1)
+        release.set()
+        await self.tasks[-1]
+        self.assertAlmostEqual(self.loop.pending()[0].when, self.loop.now + 0.5)
+
+    def test_fractional_interval_and_rearming_keep_exact_deadline(self):
+        self.coordinator.update_interval = timedelta(seconds=0.75)
+        self.coordinator._schedule_refresh()
+        due = self.loop.pending()[0].when
+        self.loop.now += 0.1
+        self.coordinator._schedule_refresh()
+        self.assertEqual(len(self.loop.pending()), 1)
+        self.assertAlmostEqual(due, 11.12)
+        self.assertEqual(self.loop.pending()[0].when, due)
+
+    def test_standard_intervals_and_retry_after_use_base_scheduler(self):
+        for seconds in (None, 1, 5, 60):
+            self.coordinator.update_interval = None if seconds is None else timedelta(seconds=seconds)
+            before = self.coordinator.normal_schedules
+            self.coordinator._schedule_refresh()
+            self.assertEqual(self.coordinator.normal_schedules, before + 1)
+            self.assertIsNone(self.coordinator._subsecond_deadline)
+        self.coordinator.update_interval = timedelta(seconds=0.5)
+        self.coordinator._retry_after = 2
+        self.coordinator._schedule_refresh()
+        self.assertEqual(self.coordinator.normal_schedules, 5)
+
+    async def test_shutdown_and_stop_do_not_start_or_keep_timers(self):
+        self.coordinator._schedule_refresh()
+        timer = self.loop.pending()[0]
+        await self.coordinator.async_shutdown()
+        self.assertTrue(timer.cancelled)
+        timer.action()  # A callback already queued before shutdown is harmless.
+        self.assertEqual(self.tasks, [])
+        self.assertEqual(self.loop.pending(), [])
+        self.coordinator._shutdown_requested = False
+        self.hass.is_stopping = True
+        self.coordinator._schedule_refresh()
+        self.assertEqual(self.loop.pending(), [])
+
+    def test_disabled_polling_and_absent_listeners_do_not_fetch(self):
+        self.coordinator._schedule_refresh()
+        self.entry.pref_disable_polling = True
+        self.coordinator._schedule_refresh()
+        self.assertEqual(self.loop.pending(), [])
+        self.entry.pref_disable_polling = False
+        self.coordinator._schedule_refresh()
+        timer = self.loop.pending()[0]
+        self.coordinator._listeners.clear()
+        timer.fire()
+        self.assertEqual(self.tasks, [])
+        self.assertEqual(self.loop.pending(), [])
+
+    async def test_auth_failure_stops_polling_and_transport_failure_retries(self):
+        self.api.state.side_effect = api.ApiError("Disconnected")
+        self.coordinator._schedule_refresh()
+        self.loop.pending()[0].fire()
+        await self.tasks[-1]
+        self.assertFalse(self.coordinator.last_update_success)
+        self.assertEqual(len(self.loop.pending()), 1)
+        self.api.state.side_effect = api.InvalidAuth("Login rejected")
+        self.loop.pending()[0].fire()
+        await self.tasks[-1]
+        self.assertFalse(self.coordinator.last_update_success)
+        self.assertEqual(self.loop.pending(), [])
 
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):

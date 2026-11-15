@@ -36,6 +36,10 @@ def fingerprints():
                     '  ofe_home_activity::move_saver(ui_screensaver_power);\n', '').replace(
                     '  ofe_home_activity::update_saver(master_link_online() && status.output_enabled, !display_backlight.isOff(), status.output_power / 10U);\n', '')
             if symbol == 'lv_update_app_values':
+                # Visible naming changed; preserve the existing behavior/layout fingerprint.
+                blocks[symbol] = blocks[symbol].replace(
+                    'tr("MCU missing", "MCU fehlt")', 'tr("Master missing", "Master fehlt")').replace(
+                    'tr("MCU lost", "MCU fehlt")', 'tr("Master lost", "Master fehlt")')
                 # Only the ownership predicate was renamed for the GUI task.
                 # Retain the original widget/update fingerprint otherwise.
                 blocks[symbol] = blocks[symbol].replace(

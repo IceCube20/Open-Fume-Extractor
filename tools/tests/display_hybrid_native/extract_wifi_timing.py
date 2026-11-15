@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 root = Path(__file__).resolve().parents[3]
-master = (root / 'OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp').read_text(encoding='utf-8')
+master = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterDisplayWifi.cpp').read_text(encoding='utf-8')
 display = (root / 'Module/DisplayModule_800x480/src/OfeDisplayWifi.h').read_text(encoding='utf-8')
 
 

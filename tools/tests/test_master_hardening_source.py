@@ -10,32 +10,32 @@ class MasterHardeningSourceTest(unittest.TestCase):
         return (ROOT / relative).read_text(encoding="utf-8")
 
     def test_preferences_begin_failure_releases_mutex(self):
-        source = self.read("OpenFumeExtractorMaster/src/MasterGlobals.inc.h")
+        source = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterGlobals.inc.h")
         begin = source[source.index("class SerializedPreferences"):source.index("static SerializedPreferences")]
         self.assertIn("const bool ok = Preferences::begin", begin)
         self.assertIn("if (!ok)", begin)
         self.assertIn("xSemaphoreGiveRecursive(mutex_)", begin)
 
     def test_mqtt_client_is_owned_by_mqtt_task(self):
-        config = self.read("OpenFumeExtractorMaster/src/WebConfig.inc.h")
-        network = self.read("OpenFumeExtractorMaster/src/MasterNetwork.inc.h")
-        mqtt = self.read("OpenFumeExtractorMaster/src/MasterMqtt.inc.h")
+        config = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebConfig.inc.h")
+        network = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterNetwork.inc.h")
+        mqtt = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h")
         self.assertNotIn("mqtt_client.disconnect()", config)
         self.assertNotIn("mqtt_configure_client()", config)
         self.assertIn("mqtt_reconfigure_requested = true", network)
         self.assertIn("if (mqtt_reconfigure_requested)", mqtt)
 
     def test_scan_is_csrf_protected_post(self):
-        server = self.read("OpenFumeExtractorMaster/src/WebServer.inc.h")
-        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
+        server = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebServer.inc.h")
+        status = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h")
         self.assertIn('web.on("/scan", HTTP_POST', server)
         self.assertNotIn('web.on("/scan", HTTP_GET', server)
         self.assertIn("fetch('/scan',{method:'POST'", status)
 
     def test_public_developer_mode_is_disabled(self):
-        config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")
-        shell = self.read("OpenFumeExtractorMaster/src/WebShell.inc.h")
-        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
+        config = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterBuildConfig.h")
+        shell = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebShell.inc.h")
+        status = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h")
         self.assertIn("#define OFE_DEVELOPER_MODE_ENABLE 0", config)
         self.assertIn("#if !OFE_DEVELOPER_MODE_ENABLE", shell)
         self.assertIn("html.remove(dev_button_start", shell)
@@ -44,16 +44,16 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertNotIn(legacy_password, config)
 
     def test_default_password_is_setup_only(self):
-        config = self.read("OpenFumeExtractorMaster/src/MasterBuildConfig.h")
-        network = self.read("OpenFumeExtractorMaster/src/MasterNetwork.inc.h")
-        security = self.read("OpenFumeExtractorMaster/src/WebSecurity.inc.h")
+        config = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterBuildConfig.h")
+        network = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterNetwork.inc.h")
+        security = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebSecurity.inc.h")
         self.assertIn('#define MASTER_DEFAULT_PASSWORD "extractor123"', config)
         self.assertIn("web_password_change_required = web_pass == MASTER_DEFAULT_PASSWORD", network)
         self.assertIn('path == "/config" || path == "/config/save"', security)
         self.assertIn("web_password_change_blocked()", security)
 
     def test_telemetry_uses_monotonic_uptime(self):
-        bus = self.read("OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h")
+        bus = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.h")
         self.assertIn("esp_timer_get_time", bus)
         for path in ROOT.glob("Module/*/*.ino"):
             text = path.read_text(encoding="utf-8")
@@ -66,9 +66,9 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertIn("(int32_t)(now - next_sold_peripheral_config_poll_ms) >= 0", usb)
 
     def test_web_status_requests_do_not_overlap(self):
-        shell = self.read("OpenFumeExtractorMaster/src/WebShell.inc.h")
-        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
-        led = self.read("OpenFumeExtractorMaster/src/MasterMqtt.inc.h")
+        shell = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebShell.inc.h")
+        status = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h")
+        led = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h")
         self.assertIn("fetch('/led_state'", shell)
         self.assertNotIn("fetch('/state/led'", shell)
         self.assertIn("window.addEventListener('pageshow',refreshShellDevMode)", shell)
@@ -79,8 +79,8 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertIn('json += ",\\\"developer_mode\\\":"', led)
 
     def test_wifi_displays_remain_visible_in_bus_diagnostics(self):
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
-        diagnostics = self.read("OpenFumeExtractorMaster/src/WebDiagnostics.inc.h")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
+        diagnostics = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebDiagnostics.inc.h")
         tx = scheduler.split("void MasterScheduler::busDiagRecordTx", 1)[1].split("void MasterScheduler::busDiagRecordRx", 1)[0]
         rx = scheduler.split("void MasterScheduler::busDiagRecordRx", 1)[1].split("bool MasterScheduler::busModuleDiag", 1)[0]
         self.assertNotIn("lastTxWasNetwork()) return", tx)
@@ -89,7 +89,7 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertIn("m.transport==='wifi'?'WLAN':'RS485'", diagnostics)
 
     def test_auto_addressing_yields_and_unlocks_before_rescan(self):
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
         auto = scheduler.split("uint8_t MasterScheduler::autoAddressModules", 1)[1].split(
             "void MasterScheduler::pushOutputIfNeeded", 1
         )[0]
@@ -109,9 +109,9 @@ class MasterHardeningSourceTest(unittest.TestCase):
         )
 
     def test_offline_events_are_session_only(self):
-        status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
-        loop = self.read("OpenFumeExtractorMaster/src/MasterLoop.inc.h")
+        status = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
+        loop = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterLoop.inc.h")
         self.assertIn("rec->timeout_count = 0;", status)
         self.assertNotIn("getUShort(module_snapshot_key(i, 'o').c_str()", status)
         self.assertNotIn("putUShort(module_snapshot_key(saved, 'o').c_str()", status)
@@ -122,7 +122,7 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertNotIn("consumeModuleHistoryPersistDue", loop)
 
     def test_jbc_usb_cannot_be_decoded_as_fae_settings(self):
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
         read_state = scheduler.split("bool MasterScheduler::readJbcState", 1)[1].split(
             "bool MasterScheduler::readJbcUsbState", 1
         )[0]
@@ -133,7 +133,7 @@ class MasterHardeningSourceTest(unittest.TestCase):
         )
 
     def test_shared_address_families_have_deterministic_order(self):
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
         ordering = scheduler.split("static uint8_t compact_address_type_priority", 1)[1].split(
             "static bool discovered_before_for_compact_address", 1
         )[0]
@@ -146,8 +146,8 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertIn("DISC temporary uid=", scheduler)
 
     def test_wireless_displays_participate_in_address_assignment(self):
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
-        wifi = self.read("OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
+        wifi = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterDisplayWifi.cpp")
         self.assertIn("master_display_wifi.active(rec.addr)", scheduler)
         self.assertIn("request(found[index].addr, CMD_SET_ADDRESS", scheduler)
         self.assertIn("master_display_wifi.rebindAddress", scheduler)
@@ -183,10 +183,10 @@ class MasterHardeningSourceTest(unittest.TestCase):
                 self.assertIn(declaration, self.read(path))
 
     def test_module_power_save_is_consistent_and_discovery_safe(self):
-        bus = self.read("OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h")
-        scheduler = self.read("OpenFumeExtractorMaster/src/MasterScheduler.cpp")
-        leds = self.read("OpenFumeExtractorMaster/src/OfeStatusLed.h")
-        config = self.read("OpenFumeExtractorMaster/src/WebConfig.inc.h")
+        bus = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.h")
+        scheduler = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp")
+        leds = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeStatusLed.h")
+        config = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebConfig.inc.h")
         self.assertIn("CMD_POWER_SAVE = 0x14", bus)
         self.assertIn("CAP_POWER_SAVE = 1UL << 26", bus)
         self.assertIn("void sendWakePreamble", bus)
@@ -216,8 +216,8 @@ class MasterHardeningSourceTest(unittest.TestCase):
         )[0]
         self.assertIn("rec.output_status_valid && rec.output_enabled", idle_check)
         self.assertIn("rec.io_output_mask", idle_check)
-        led_api = self.read("OpenFumeExtractorMaster/src/MasterMqtt.inc.h")
-        web_status = self.read("OpenFumeExtractorMaster/src/WebStatus.inc.h")
+        led_api = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h")
+        web_status = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h")
         self.assertIn('json += ",\\\"master_eco\\\":"', led_api)
         self.assertIn('json += ",\\\"eco\\\":"', led_api)
         self.assertIn("kind:'purplewhite'", web_status)
@@ -231,7 +231,7 @@ class MasterHardeningSourceTest(unittest.TestCase):
         self.assertNotIn("let me=el('master_eco_icon')", web_status)
         self.assertIn("led.insertAdjacentHTML('afterend',html)", web_status)
         self.assertIn("ofeLedGlow(e,c,1);return}if(st.kind==='blink'", web_status)
-        diagnostics = self.read("OpenFumeExtractorMaster/src/WebDiagnostics.inc.h")
+        diagnostics = self.read("OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebDiagnostics.inc.h")
         self.assertIn('json += F(",\\\"power_save_active\\\":")', diagnostics)
         self.assertIn('json += F(",\\\"eco_mode\\\":")', diagnostics)
         self.assertIn("diag_master_eco_icon", diagnostics)

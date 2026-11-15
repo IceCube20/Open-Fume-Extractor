@@ -3,7 +3,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include "../../../OpenFumeExtractorMaster/src/MqttAvailabilityCache.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MqttAvailabilityCache.h"
 
 using String = std::string;
 static MqttAvailabilityCache mqtt_availability_cache;

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$masterSrc = Join-Path (Join-Path $root "OpenFumeExtractorMaster") "src"
+$masterSrc = Join-Path (Join-Path $root "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3") "src"
 $moduleRoot = Join-Path $root "Module"
 
 $checks = @(
@@ -17,7 +17,8 @@ $checks = @(
   },
   @{
     Name = "OfeStatusLed.h"
-    Canonical = Join-Path $masterSrc "OfeStatusLed.h"
+    # MCU LEDs support a driver override; module LEDs keep the direct driver.
+    Canonical = Join-Path $moduleRoot "FanIoModule/src/OfeStatusLed.h"
     Relative = Join-Path "src" "OfeStatusLed.h"
   }
 )
@@ -48,6 +49,13 @@ foreach ($check in $checks) {
       Write-Host ("  OK      {0}" -f $_.Name)
     }
   }
+}
+
+$mcuLed = Join-Path $masterSrc 'OfeStatusLed.h'
+$p4Led = Join-Path $root 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/src/OfeStatusLed.h'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $mcuLed).Hash -ne
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $p4Led).Hash) {
+  throw 'MCU-S3/P4 LED driver drift detected.'
 }
 
 if ($failed) {

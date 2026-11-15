@@ -4,13 +4,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MQTT = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(
+MQTT = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(
     encoding="utf-8"
 )
-WEB = (ROOT / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(
+WEB = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h").read_text(
     encoding="utf-8"
 )
-TYPOGRAPHY = (ROOT / "OpenFumeExtractorMaster/src/WebTypography.h").read_text(
+TYPOGRAPHY = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebTypography.h").read_text(
     encoding="utf-8"
 )
 
@@ -20,7 +20,7 @@ class WellerMqttFilterTests(unittest.TestCase):
         module = (ROOT / "Module/WellerZeroSmogModule/WellerZeroSmogModule.ino").read_text(encoding="utf-8")
         command = module.split("static void weller_set_filter_runtime(uint16_t minutes) {", 1)[1].split("static void weller_send_light", 1)[0]
         self.assertRegex(command, r"(?s)if \(minutes == 0\).*?weller_send_checked4\('f', 0\);.*?weller_send_checked4\('g', 0\);")
-        scheduler = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+        scheduler = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
         setter = scheduler.split("bool MasterScheduler::setWellerFilterRuntime(", 1)[1].split("bool MasterScheduler::calibrateFanIoProFilter", 1)[0]
         self.assertIn("minutes != 0 && minutes < 60U", setter)
         event = scheduler.split("if (type == DISPLAY_EVENT_WELLER_FILTER_TIME_SET)", 1)[1].split("if (type == DISPLAY_EVENT_IO_OUT_TOGGLE)", 1)[0]
@@ -44,7 +44,7 @@ class WellerMqttFilterTests(unittest.TestCase):
         self.assertIn("master_cmd_set_weller_filter_runtime(addr, 0)", MQTT)
         self.assertIn("if(total===null)return", WEB)
         self.assertNotIn("if(total<=0)return", WEB.split("async function wellerFilter(addr)", 1)[1].split("let stateLoadBusy", 1)[0])
-        controls = (ROOT / "OpenFumeExtractorMaster/src/WebControls.inc.h").read_text(encoding="utf-8")
+        controls = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebControls.inc.h").read_text(encoding="utf-8")
         setter = controls.split("if (web.hasArg(\"filter_minutes\"))", 1)[1].split("static void web_handle_display_set", 1)[0]
         self.assertIn("minutes != 0 && minutes < 60UL", setter)
         self.assertIn("invalid filter minutes", setter)
@@ -54,7 +54,7 @@ class WellerMqttFilterTests(unittest.TestCase):
         faults = module.split("static void update_weller_faults()", 1)[1].split("static void handle_status", 1)[0]
         self.assertNotIn("filter_status_code = 0", faults)
         self.assertIn("fault_mask &= (uint16_t)~0x0006U", faults)
-        scheduler = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+        scheduler = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
         alarms = scheduler.split("uint16_t MasterScheduler::systemJbcError()", 1)[1].split("uint16_t MasterScheduler::minSelectFlow", 1)[0]
         self.assertNotIn("out->weller_filter_status", alarms)
         self.assertIn("module_filter_fault_current(*out)", alarms)

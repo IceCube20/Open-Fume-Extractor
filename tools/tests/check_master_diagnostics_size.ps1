@@ -6,7 +6,7 @@ $commands = Get-Content -LiteralPath "$PSScriptRoot/build-checks/master-ha-rc8/c
 $entry = $commands | Where-Object { [IO.Path]::GetFileName($_.file) -eq 'MasterScheduler.cpp' } | Select-Object -First 1
 if (-not $entry) { throw 'Missing ESP32 compiler command' }
 $args = [System.Collections.Generic.List[string]]::new()
-$args.Add("-I$root/OpenFumeExtractorMaster/src")
+$args.Add("-I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src")
 for ($i=1; $i -lt $entry.arguments.Count; ++$i) {
   $arg=$entry.arguments[$i]
   if ($arg -eq '-o') { ++$i; continue }

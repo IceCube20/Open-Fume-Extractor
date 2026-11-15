@@ -1,7 +1,7 @@
 # Open Fume Extractor
 
 Open Fume Extractor is a modular fume-extraction controller built around an
-ESP32-S3 master, a 250 kbaud OFE RS485 bus, interchangeable interface modules,
+MCU-S3 or MCU-P4, a 250 kbaud OFE RS485 bus, interchangeable interface modules,
 four display variants, a web interface and Home Assistant integration through
 MQTT or a direct local connection without a broker.
 
@@ -19,10 +19,10 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.0.91 RC release notes](docs/RELEASE-2.0.91RC.md)
+- [2.1.9 RC release notes](docs/RELEASE-2.1.9RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
-- [Master setup and configuration](docs/MASTER.md)
+- [MCU setup and configuration](docs/MASTER.md)
 - [System signals, routing and Boolean logic](docs/System-Automation.md)
 - [Module setup and configuration](docs/MODULES.md)
 - [Operation and diagnostics](docs/OPERATION.md)

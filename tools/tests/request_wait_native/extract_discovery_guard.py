@@ -4,8 +4,8 @@ import re
 import sys
 
 root = Path(__file__).resolve().parents[3]
-source = (root / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
-header = (root / "OpenFumeExtractorMaster/src/MasterScheduler.h").read_text(encoding="utf-8")
+source = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+header = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.h").read_text(encoding="utf-8")
 
 
 def function(name, result="void"):

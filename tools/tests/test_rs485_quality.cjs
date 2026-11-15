@@ -1,0 +1,26 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(path.join(__dirname,'../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebRs485Quality.h'),'utf8');
+const context={window:{},document:{getElementById:()=>null}};vm.createContext(context);vm.runInContext(source.match(/<script>([\s\S]*?)<\/script>/)[1],context);
+const Session=context.window.OfeRs485QualitySession;
+const sample=()=>({sample_ms:1000,ofe_baud:250000,modules:[{addr:32,type:3,name:'Fan/IO',transport:'rs485',requests:100,responses:100,timeouts:0},{addr:64,type:6,name:'WiFi',transport:'wifi',requests:100,responses:0,timeouts:100}]});
+function advance(s,d,{rx=1,timeout=0}={}){d.sample_ms=(d.sample_ms+1000)>>>0;d.modules[0].requests++;d.modules[0].responses+=rx;d.modules[0].timeouts+=timeout;d.modules[0].latency_last_ms=3;s.feed(d,d.sample_ms);}
+let d=sample(),s=new Session(d,30,1000);for(let i=0;i<30;i++)advance(s,d);
+assert.equal(s.report().result,'ok');assert.equal(s.report().modules.length,1);assert.equal(s.report().modules[0].requests,30);assert.equal(s.report().modules[0].sampled_latency_max_ms,3);
+d=sample();s=new Session(d,30,1000);d.ofe_crc_errors=1;for(let i=0;i<30;i++)advance(s,d);assert.equal(s.report().result,'errors');assert.equal(s.report().parser_errors.ofe_crc_errors,1);
+d=sample();s=new Session(d,30,1000);for(let i=0;i<30;i++)advance(s,d,{rx:0,timeout:1});assert.equal(s.report().result,'no_response');
+d=sample();s=new Session(d,30,1000);d.modules[0].update_requests=1;for(let i=0;i<30;i++)advance(s,d);assert.equal(s.report().result,'inconclusive');
+d=sample();s=new Session(d,30,1000);d.modules[0].recovery_requests=1;for(let i=0;i<30;i++)advance(s,d);assert.equal(s.report().result,'inconclusive');
+d=sample();s=new Session(d,30,1000);d.modules[0].requests=0;d.sample_ms+=500;s.feed(d,1500);assert.equal(s.report().reason,'reset');assert.equal(s.report().result,'inconclusive');
+d=sample();s=new Session(d,30,1000);d.sample_ms=0;s.feed(d,1500);assert.equal(s.report().reason,'reset');
+d=sample();s=new Session(d,30,1000);d.modules[0].transport='wifi';d.sample_ms+=500;s.feed(d,1500);assert.equal(s.report().reason,'changed');
+d=sample();s=new Session(d,30,1000);s.stale(5001);assert.equal(s.report().reason,'connection');
+d=sample();s=new Session(d,30,1000);s.stop();assert.equal(s.report().result,'inconclusive');
+d=sample();s=new Session(d,30,1000);for(let i=0;i<30;i++){d.sample_ms+=1000;s.feed(d,d.sample_ms);}assert.equal(s.report().result,'insufficient');
+d=sample();s=new Session(d,30,1000);d.sample_ms+=3000;s.feed(d,4000);for(let i=0;i<27;i++)advance(s,d);assert.equal(s.report().result,'inconclusive');assert.equal(s.report().sample_gaps,1);
+d=sample();d.sample_ms=0xffffff00;d.modules[0].requests=0xffffffff;d.modules[0].responses=0xffffffff;s=new Session(d,30,1000);d.sample_ms=(d.sample_ms+1000)>>>0;d.modules[0].requests=0;d.modules[0].responses=0;s.feed(d,2000);assert.equal(s.report().modules[0].requests,1);assert.equal(s.report().reason,'running');
+assert.throws(()=>new Session({ofe_baud:250000,modules:[]},30,1000),/sample/);
+d=sample();d.modules=[];assert.throws(()=>new Session(d,30,1000),/modules/);
+assert.throws(()=>new Session(sample(),1,1000),/sample/);
+d=sample();s=new Session(d,30,1000);advance(s,d,{rx:0,timeout:1});advance(s,d);assert.equal(s.report().no_response_windows,1);assert.equal(s.report().response_resumptions,1);
+assert(!source.includes('fetch('));assert(!source.includes('CMD_'));assert(!source.includes('updateBaudRate'));
+console.log('PASS: actual passive RS485 session: healthy/error/no-response, WiFi exclusion, OTA/recovery/gap/reset/topology changes, cancellation, silence, rollover; no bus writes');

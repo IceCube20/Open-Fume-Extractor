@@ -3,7 +3,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from .const import DOMAIN, MASTER_DEVICE_NAME, MASTER_DEVICE_MODEL, module_device_name
+from .const import DOMAIN, master_device_name, master_device_model, module_device_name
 from .model import divided
 
 
@@ -43,11 +43,11 @@ class OfeEntity(CoordinatorEntity):
             "ofe_master_uid": self.coordinator.master_uid,
             "ofe_uid": self.uid, "ofe_key": self.spec.key,
             "ofe_group": self.spec.group, "ofe_name": self.name,
-            "ofe_device_name": MASTER_DEVICE_NAME if self.uid == self.coordinator.master_uid else module_device_name(module),
-            "ofe_device_model": MASTER_DEVICE_MODEL if self.uid == self.coordinator.master_uid else module.get("type_name"),
+            "ofe_device_name": master_device_name(self.coordinator.data) if self.uid == self.coordinator.master_uid else module_device_name(module),
+            "ofe_device_model": master_device_model(self.coordinator.data) if self.uid == self.coordinator.master_uid else module.get("type_name"),
             "ofe_device_type": 0 if self.uid == self.coordinator.master_uid else module.get("type"),
             "ofe_address": address,
-            "ofe_transport": "wifi" if self.uid == self.coordinator.master_uid else module.get("transport"),
+            "ofe_transport": self.coordinator.data.get("network_transport", "wifi") if self.uid == self.coordinator.master_uid else module.get("transport"),
             "ofe_active": active,
         }
         attributes.update(self.spec.attributes)
@@ -85,8 +85,8 @@ class OfeEntity(CoordinatorEntity):
         module = self.coordinator.modules.get(self.uid, {})
         info = DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.master_uid}:{self.uid}")},
-            name=MASTER_DEVICE_NAME if master else module_device_name(module),
-            manufacturer="IceCube20", model=MASTER_DEVICE_MODEL if master else module.get("type_name"),
+            name=master_device_name(self.coordinator.data) if master else module_device_name(module),
+            manufacturer="IceCube20", model=master_device_model(self.coordinator.data) if master else module.get("type_name"),
             sw_version=self.coordinator.data.get("master_fw") if master else module.get("fw"),
             serial_number=self.uid, configuration_url=self.coordinator.api.host,
         )

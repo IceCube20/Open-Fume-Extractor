@@ -3,7 +3,7 @@ import pathlib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-MASTER = ROOT / "OpenFumeExtractorMaster"
+MASTER = ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3"
 DISPLAYS = [ROOT / "Module" / ("DisplayModule_" + resolution)
             for resolution in ("320x480", "800x480")]
 

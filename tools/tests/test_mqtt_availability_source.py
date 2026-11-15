@@ -4,8 +4,8 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
-CONFIG = (ROOT / "OpenFumeExtractorMaster/src/MasterBuildConfig.h").read_text(encoding="utf-8")
+SOURCE = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+CONFIG = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterBuildConfig.h").read_text(encoding="utf-8")
 
 
 def function(name):

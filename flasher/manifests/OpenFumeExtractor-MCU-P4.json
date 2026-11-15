@@ -1,0 +1,18 @@
+{
+    "name":  "Open Fume Extractor - Open Fume Extractor MCU-P4 (Waveshare PRE-V3)",
+    "version":  "2.1.9RC",
+    "new_install_prompt_erase":  true,
+    "new_install_improv_wait_time":  0,
+    "builds":  [
+                   {
+                       "chipFamily":  "ESP32-P4",
+                       "improv":  false,
+                       "parts":  [
+                                     {
+                                         "path":  "../../firmware/OpenFumeExtractor-MCU-P4/OpenFumeExtractor-MCU-P4-2.1.9RC-merged.bin",
+                                         "offset":  0
+                                     }
+                                 ]
+                   }
+               ]
+}

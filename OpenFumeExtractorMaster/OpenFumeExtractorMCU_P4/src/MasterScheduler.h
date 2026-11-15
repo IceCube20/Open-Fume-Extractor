@@ -1,0 +1,729 @@
+#pragma once
+
+#include <Arduino.h>
+#include <freertos/semphr.h>
+#include "bus/Rs485PeripheralBus.h"
+#include "ModuleRegistry.h"
+#include "ExtractorLogic.h"
+#include "RequestWaitProbe.h"
+#include "OfeAutomationState.h"
+
+#ifndef JBC_MODULE_ADDR
+#define JBC_MODULE_ADDR 0x10
+#endif
+
+#ifndef OUTPUT_MODULE_ADDR
+#define OUTPUT_MODULE_ADDR 0x20
+#endif
+
+#ifndef FAST_POLL_MIN_INTERVAL_MS
+#define FAST_POLL_MIN_INTERVAL_MS 5
+#endif
+
+#ifndef JBC_FAST_POLL_PER_MODULE_MS
+#define JBC_FAST_POLL_PER_MODULE_MS 75
+#endif
+
+#ifndef FAST_POLL_TIMEOUT_MS
+#define FAST_POLL_TIMEOUT_MS 20
+#endif
+
+#ifndef JBC_BUS_FAST_POLL_TIMEOUT_MS
+#define JBC_BUS_FAST_POLL_TIMEOUT_MS 60
+#endif
+
+#ifndef JBC_USB_FAST_POLL_TIMEOUT_MS
+#define JBC_USB_FAST_POLL_TIMEOUT_MS 75
+#endif
+
+#ifndef JBC_BUS_STATE_TIMEOUT_MS
+#define JBC_BUS_STATE_TIMEOUT_MS 120
+#endif
+
+#ifndef JBC_USB_STATE_TIMEOUT_MS
+#define JBC_USB_STATE_TIMEOUT_MS 70
+#endif
+
+#ifndef MODULE_STATUS_TIMEOUT_MS
+#define MODULE_STATUS_TIMEOUT_MS 80
+#endif
+
+#ifndef MODULE_IO_TIMEOUT_MS
+#define MODULE_IO_TIMEOUT_MS 70
+#endif
+
+#ifndef MODULE_TELEMETRY_TIMEOUT_MS
+#define MODULE_TELEMETRY_TIMEOUT_MS 70
+#endif
+
+#ifndef DISPLAY_WIFI_ASYNC_TIMEOUT_MS
+#define DISPLAY_WIFI_ASYNC_TIMEOUT_MS 1000UL
+#endif
+
+#ifndef JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS
+#define JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS 500UL
+#endif
+
+#ifndef HOTPLUG_DISCOVERY_INTERVAL_MS
+#define HOTPLUG_DISCOVERY_INTERVAL_MS 120000UL
+#endif
+
+#ifndef HOTPLUG_DISCOVERY_WINDOW_MS
+#define HOTPLUG_DISCOVERY_WINDOW_MS 450UL
+#endif
+
+#ifndef OFFLINE_REPROBE_INTERVAL_MS
+#define OFFLINE_REPROBE_INTERVAL_MS 750UL
+#endif
+
+#ifndef JBC_DEFAULT_PROBE_INTERVAL_MS
+#define JBC_DEFAULT_PROBE_INTERVAL_MS 500UL
+#endif
+
+#ifndef JBC_DEFAULT_STATE_PROBE_INTERVAL_MS
+#define JBC_DEFAULT_STATE_PROBE_INTERVAL_MS 1500UL
+#endif
+
+class MasterScheduler {
+public:
+  static const uint8_t MAX_INPUT_RULES = 16;
+  static const uint16_t TRACE_EVENT_CAPACITY = 4096;
+  static const uint8_t TRACE_DATA_PREVIEW = 48;
+
+  enum TraceDirection : uint8_t {
+    TRACE_TX = 0,
+    TRACE_RX = 1,
+    TRACE_TIMEOUT = 2,
+    TRACE_INFO = 3,
+    TRACE_LOCAL_TX = 4,
+    TRACE_LOCAL_RX = 5,
+  };
+
+  struct TraceEvent {
+    uint32_t ms = 0;
+    uint32_t seq = 0;       // monotonically increasing trace-event number
+    uint8_t frame_seq = 0xFF; // OFE protocol SEQ for request/response pairing
+    uint8_t addr = 0;
+    uint8_t direction = TRACE_INFO;
+    uint8_t cmd = 0;
+    uint8_t status = 0xFF;
+    uint8_t len = 0;
+    uint8_t data_len = 0;
+    uint8_t data[TRACE_DATA_PREVIEW] = {0};
+    uint16_t latency_ms = 0;
+    char text[96] = {0};
+  };
+
+  struct BusModuleDiag {
+    uint32_t requests = 0;
+    uint32_t responses = 0;
+    uint32_t timeouts = 0;
+    uint32_t update_requests = 0;
+    uint32_t update_timeouts = 0;
+    uint32_t recovery_requests = 0;
+    uint32_t recovery_timeouts = 0;
+    uint32_t late_responses = 0;
+    uint32_t bad_seq = 0;
+    uint32_t bad_cmd = 0;
+    // Timeout classes make sporadic bus misses actionable instead of one
+    // opaque total. Firmware transfer/recovery timeouts have separate counters.
+    uint32_t timeout_fast = 0;
+    uint32_t timeout_state = 0;
+    uint32_t timeout_telemetry = 0;
+    uint32_t timeout_io = 0;
+    uint32_t timeout_get_io = 0;
+    uint32_t timeout_set_io = 0;
+    uint32_t timeout_universal = 0;
+    uint32_t timeout_display_status = 0;
+    uint32_t timeout_display_cache = 0;
+    uint32_t timeout_other = 0;
+    // Successful-response max latency per request class. This lets diagnostics
+    // show whether a timeout window is genuinely too short before we change it.
+    uint16_t latency_fast_max_ms = 0;
+    uint16_t latency_state_max_ms = 0;
+    uint16_t latency_telemetry_max_ms = 0;
+    uint16_t latency_io_max_ms = 0;
+    uint16_t latency_universal_max_ms = 0;
+    uint16_t latency_display_status_max_ms = 0;
+    uint16_t latency_display_cache_max_ms = 0;
+    uint16_t latency_other_max_ms = 0;
+    uint32_t tx_frames = 0;
+    uint32_t rx_frames = 0;
+    uint64_t tx_wire_bytes = 0;
+    uint64_t rx_wire_bytes = 0;
+    uint64_t latency_sum_ms = 0;
+    uint16_t latency_max_ms = 0;
+    uint16_t latency_last_ms = 0;
+    uint32_t last_activity_ms = 0;
+    // Last raw timeout identity is retained only to recognize a response that
+    // arrives during the immediately following request. Such a frame is late,
+    // not a protocol sequence error.
+    uint32_t last_timeout_ms = 0;
+    uint8_t last_timeout_seq = 0xFF;
+    uint8_t last_timeout_cmd = 0;
+    uint32_t last_maintenance_timeout_ms = 0;
+    uint8_t last_maintenance_timeout_seq = 0xFF;
+    uint8_t last_maintenance_timeout_cmd = 0;
+    bool last_timeout_probe_valid = false;
+    uint32_t last_timeout_budget_ms = 0;
+    RequestWaitObservation last_timeout_probe;
+    jbc_rs485::LengthErrorSnapshot last_timeout_length_error;
+    jbc_rs485::VersionErrorSnapshot last_timeout_version_error;
+    jbc_rs485::PhysicalFrameSnapshot last_timeout_physical_frame;
+    RequestUnmatchedFrame last_timeout_unmatched_frame;
+  };
+
+  struct TraceStats {
+    bool active = false;
+    uint8_t target_addr = 0;
+    uint32_t started_ms = 0;
+    uint32_t requests = 0;
+    uint32_t responses = 0;
+    uint32_t timeouts = 0;
+    uint32_t update_timeouts = 0;
+    uint32_t recovery_timeouts = 0;
+    uint32_t dropped_events = 0;
+    uint32_t bad_seq = 0;
+    uint32_t bad_cmd = 0;
+    uint32_t avg_latency_ms = 0;
+    uint16_t max_latency_ms = 0;
+    uint16_t stored_events = 0;
+  };
+
+  enum InputSourceType : uint8_t {
+    INPUT_SRC_NONE = 0,
+    INPUT_SRC_JBC_WORK = 1,
+    INPUT_SRC_IO_INPUT = 2,
+    INPUT_SRC_UNIVERSAL_ENTITY = 3,
+    INPUT_SRC_SYSTEM_STATE = 4,
+    INPUT_SRC_MARKER = 5,
+  };
+
+
+  enum InputSystemState : uint8_t {
+    INPUT_STATE_NONE = 0,
+    INPUT_STATE_EXTRACTOR_ACTIVE = 1,
+    INPUT_STATE_CONTINUOUS_ACTIVE = 2,
+    INPUT_STATE_AFTERRUN_ACTIVE = 3,
+    INPUT_STATE_LEVEL_HIGH = 4,
+    INPUT_STATE_LEVEL_MEDIUM = 5,
+    INPUT_STATE_LEVEL_LOW = 6,
+    INPUT_STATE_LEVEL_CUSTOM = 7,
+    INPUT_STATE_OUTPUT_SELECTED_AUTO = 8,
+    INPUT_STATE_OUTPUT_SELECTED = 9,
+    INPUT_STATE_OUTPUT_ACTIVE = 10,
+    INPUT_STATE_ECO_ACTIVE = 11,
+    INPUT_STATE_ALARM_ACTIVE = 12,
+    INPUT_STATE_WARNING_ACTIVE = 13,
+    INPUT_STATE_ERROR_ACTIVE = 14,
+    INPUT_STATE_FILTER_WARNING = 15,
+    INPUT_STATE_FILTER_CHANGE = 16,
+    INPUT_STATE_FILTER_VALID = 17,
+    INPUT_STATE_MODULE_ONLINE = 18,
+    INPUT_STATE_DEVICE_CONNECTED = 19,
+    INPUT_STATE_JBC_STAND = 20,
+    INPUT_STATE_LAST = INPUT_STATE_JBC_STAND,
+  };
+
+  enum InputTargetType : uint8_t {
+    INPUT_TGT_NONE = 0,
+    INPUT_TGT_EXTRACTOR = 1,
+    INPUT_TGT_IO_OUTPUT = 2,
+    INPUT_TGT_UNIVERSAL_ENTITY = 3,
+    INPUT_TGT_EXTRACTOR_ACTION = 4,
+    INPUT_TGT_CONTINUOUS = 5,
+    INPUT_TGT_SELECT_OUTPUT = 6,
+    INPUT_TGT_SYSTEM = 7,
+    INPUT_TGT_MARKER = 8,
+  };
+
+  enum SystemOutput : uint8_t {
+    SYSTEM_OUT_ECO_INHIBIT = 1,
+    SYSTEM_OUT_DISPLAY_WAKE = 2,
+    SYSTEM_OUT_DISPLAY_HOLD = 3,
+  };
+
+  enum ExtractorAction : uint8_t {
+    EXTRACTOR_ACTION_NONE = 0,
+    EXTRACTOR_ACTION_LEVEL_NEXT = 1,
+    EXTRACTOR_ACTION_LEVEL_PREVIOUS = 2,
+    EXTRACTOR_ACTION_LEVEL_HIGH = 3,
+    EXTRACTOR_ACTION_LEVEL_MEDIUM = 4,
+    EXTRACTOR_ACTION_LEVEL_LOW = 5,
+    EXTRACTOR_ACTION_LEVEL_CUSTOM = 6,
+    EXTRACTOR_ACTION_POWER_PLUS_1 = 7,
+    EXTRACTOR_ACTION_POWER_MINUS_1 = 8,
+    EXTRACTOR_ACTION_POWER_PLUS_10 = 9,
+    EXTRACTOR_ACTION_POWER_MINUS_10 = 10,
+    EXTRACTOR_ACTION_LAST = EXTRACTOR_ACTION_POWER_MINUS_10,
+  };
+
+  struct InputActionRule {
+    bool enabled = false;
+    uint8_t source_type = INPUT_SRC_NONE;
+    uint8_t source_addr = 0;
+    uint8_t source_bit = 0;
+    uint8_t target_type = INPUT_TGT_NONE;
+    uint8_t target_addr = 0;
+    uint8_t target_bit = 0;
+    bool last_active = false;
+    bool edge_armed = false;
+    // Runtime-only: true only after a stateful external target has accepted
+    // the current HIGH/LOW on its present module connection. It is cleared
+    // while the target is offline so reconnects re-apply the desired state.
+    bool target_sync_valid = false;
+  };
+
+  MasterScheduler(jbc_rs485::Link& link, ModuleRegistry& registry, ExtractorLogic& extractor)
+    : link_(link), registry_(registry), extractor_(extractor) {}
+
+  void begin();
+  void setLedConfig(bool enabled, uint8_t brightness_pct);
+  void setPowerSaveConfig(bool enabled, uint16_t idle_minutes);
+  bool powerSaveEnabled() const { return power_save_enabled_; }
+  bool powerSaveActive() const { return power_save_active_; }
+  uint16_t powerSaveIdleMinutes() const { return power_save_idle_minutes_; }
+  uint32_t requestBadCmdCount() const { return request_bad_cmd_total_; }
+  uint32_t requestBadSeqCount() const { return request_bad_seq_total_; }
+  uint32_t requestLateResponseCount() const { return request_late_response_total_; }
+  uint32_t requestCount() const { return request_total_; }
+  uint64_t requestTxPayloadBytes() const { return request_tx_payload_bytes_; }
+  uint64_t responseRxPayloadBytes() const { return response_rx_payload_bytes_; }
+  uint32_t compactIoPollCount() const { return compact_io_poll_total_; }
+  uint32_t fullIoPollCount() const { return full_io_poll_total_; }
+  uint8_t schedulerSlowJobId() const { return scheduler_job_max_id_; }
+  uint16_t schedulerSlowJobMs() const {
+    uint32_t ms = (scheduler_job_max_us_ + 999UL) / 1000UL;
+    return (uint16_t)(ms > 65535UL ? 65535UL : ms);
+  }
+  const char* schedulerSlowJobName() const;
+  void resetSchedulerSlowJob() { scheduler_job_max_us_ = 0; scheduler_job_max_id_ = 0; }
+  uint64_t ofeTxWireBytes() const { return ofe_tx_wire_bytes_; }
+  uint64_t ofeRxWireBytes() const { return ofe_rx_wire_bytes_; }
+  uint32_t ofeTxFrameCount() const { return ofe_tx_frames_; }
+  uint32_t ofeRxFrameCount() const { return ofe_rx_frames_; }
+  const jbc_rs485::BusStats& ofeParserStats() const { return link_.stats(); }
+  bool busModuleDiag(uint8_t addr, BusModuleDiag& out) const;
+  void tick();
+  void setServiceCallback(void (*callback)()) { service_callback_ = callback; }
+  void setSerialDebugLog(bool enabled) { serial_debug_log_ = enabled; }
+  bool serialDebugLog() const { return serial_debug_log_; }
+  void scanKnownModules();
+  void requestScanKnownModules(bool with_auto_address = false, bool prune_missing = false);
+  bool scanJobActive() const { return scan_job_active_; }
+  bool consumeScanJobFinished() { const bool done = scan_job_finished_; scan_job_finished_ = false; return done; }
+  void probeModule(uint8_t addr);
+  uint8_t jbcAddr() const { return active_jbc_addr_; }
+  uint8_t outputAddr() const { return active_output_addr_; }
+  uint8_t autoOutputCandidateAddr() const;
+  uint8_t preferredOutputAddr() const { return preferred_output_addr_; }
+  bool runtimeOutputOverrideActive() const { return runtime_output_override_addr_ != 0xFF; }
+  uint8_t runtimeOutputOverrideAddr() const { return runtime_output_override_addr_ == 0xFF ? 0 : runtime_output_override_addr_; }
+  bool jbcInputEnabled() const { return main_input_source_type_ == INPUT_SRC_JBC_WORK; }
+  uint8_t mainInputSourceType() const { return main_input_source_type_; }
+  uint8_t mainInputSourceAddr() const { return main_input_source_addr_; }
+  uint8_t mainInputSourceBit() const { return main_input_source_bit_; }
+  bool mainInputSourceAvailable() const;
+  bool systemInputActive(uint8_t state, uint8_t addr = 0) const;
+  uint32_t systemInputMask(uint8_t addr = 0) const;
+  uint8_t automationMarkers() const { return logic_system_requests_.markers | rule_system_requests_.markers; }
+  bool automationMarker(uint8_t number) const { return number >= 1 && number <= 8 && (automationMarkers() & (1U << (number - 1))); }
+  bool automationEcoInhibited() const { return logic_system_requests_.eco_inhibit || rule_system_requests_.eco_inhibit; }
+  bool automationDisplayHeld(uint8_t addr) const { return logic_system_requests_.holdsDisplay(addr) || rule_system_requests_.holdsDisplay(addr); }
+  void setLogicSystemOutput(uint8_t action, uint8_t addr, bool active);
+  void setLogicMarker(uint8_t number, bool active) { logic_system_requests_.setMarker(number, active); }
+  void requestDisplayWake(uint8_t addr);
+  void setLogicExternalInput(bool active);
+  bool logicExternalInput() const { return logic_external_input_; }
+  void setLogicContinuous(bool active);
+  void setLogicContinuousPresent(bool present);
+  bool logicContinuous() const { return logic_continuous_; }
+  bool extractorOutputEnabled() const { return extractor_.outputEnabled(); }
+  bool extractorContinuousActive() const { return extractor_.continuous(); }
+  bool extractorAfterrunActive() const { return extractor_.afterrunLeftMs() != 0; }
+  const InputActionRule& inputRule(uint8_t index) const { return input_rules_[index]; }
+  void setPreferredOutputAddr(uint8_t addr, bool persist = true);
+  void setRuntimeOutputOverrideAddr(uint8_t addr);
+  void setJbcInputEnabled(bool enabled);
+  bool setMainInputSource(uint8_t source_type, uint8_t source_addr, uint8_t source_bit, bool persist = true);
+  bool setInputRule(uint8_t index, const InputActionRule& rule);
+  bool setIoInputRoute(uint8_t addr, uint8_t bit, bool enabled);
+  bool moduleFwBegin(uint8_t addr, uint32_t size);
+  bool moduleFwChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint8_t len);
+  bool moduleFwEnd(uint8_t addr);
+  bool moduleFwAbort(uint8_t addr);
+  bool moduleReboot(uint8_t addr);
+  const char* lastModuleFwError() const { return last_fw_error_; }
+  uint8_t lastModuleFwChunkAttempts() const { return last_fw_chunk_attempts_; }
+  uint32_t moduleFwChunkRetryCount() const { return fw_chunk_retry_count_; }
+  bool firmwareUpdateActive() const { return module_fw_active_ || display_update_active_; }
+  bool moduleFirmwareUpdateActive() const { return module_fw_active_; }
+  uint8_t moduleFirmwareUpdateTarget() const { return module_fw_target_; }
+  void notifyDisplayUpdate(bool active, uint8_t target_addr, uint8_t progress, uint32_t speed_bps = 0);
+  void setMasterTelemetry(uint8_t cpu_load_pct, uint16_t loop_max_ms) {
+    master_cpu_load_pct_ = cpu_load_pct;
+    master_loop_max_ms_ = loop_max_ms;
+  }
+  void setMasterInfo(uint8_t major, uint8_t minor, uint8_t patch, const char* name, const char* suffix = "") {
+    master_fw_major_ = major;
+    master_fw_minor_ = minor;
+    master_fw_patch_ = patch;
+    if (!name) name = "MCU";
+    if (!suffix) suffix = "";
+    strncpy(master_name_, name, sizeof(master_name_) - 1);
+    master_name_[sizeof(master_name_) - 1] = 0;
+    strncpy(master_fw_suffix_, suffix, sizeof(master_fw_suffix_) - 1);
+    master_fw_suffix_[sizeof(master_fw_suffix_) - 1] = 0;
+  }
+  void setAfterrunPowerProfile(bool enabled, uint16_t power, bool persist = true);
+  bool afterrunPowerProfileEnabled() const { return extractor_.afterrunPowerProfileEnabled(); }
+  uint16_t afterrunPower() const { return extractor_.afterrunPower(); }
+  void setControlSettings(uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous, bool persist = true);
+  void queueExtractorAction(uint8_t action);
+  void persistControlSettingsNow();
+  const JbcModuleState& controlSettings() const { return desired_jbc_settings_; }
+  uint16_t systemJbcError() const;
+  uint16_t systemJbcFilterLife() const;
+  uint16_t systemJbcFilterSaturation() const;
+  uint16_t activeOutputMinSelectFlow() const { return minSelectFlowForActiveOutput(); }
+  uint16_t activeOutputMaxSelectFlow() const { uint16_t min_flow = 100, max_flow = 1000, step_flow = 10; selectFlowBoundsForActiveOutput(min_flow, max_flow, step_flow); return max_flow; }
+  bool setJbcSettings(uint8_t addr, uint8_t suction, uint16_t select_flow, uint16_t delay_work, uint16_t delay_stand, bool stand_intakes, bool continuous);
+  bool setIoOutput(uint8_t addr, uint16_t mask, uint16_t value);
+  bool setIoAlias(uint8_t addr, uint8_t channel, const char* alias);
+  bool setIoConfig(uint8_t addr, const uint8_t* data, uint8_t len, bool finalize = true);
+  bool setModulePower(uint8_t addr, uint16_t power);
+  bool setModuleOutput(uint8_t addr, bool enabled, uint16_t power);
+  bool setWellerSpeed(uint8_t addr, uint8_t percent);
+  bool resetWellerFilter(uint8_t addr);
+  bool setWellerFilterRuntime(uint8_t addr, uint16_t minutes);
+  bool calibrateFanIoProFilter(uint8_t addr, uint8_t action, uint16_t warn_raw = 0, uint16_t full_raw = 0);
+  bool setDisplaySettings(uint8_t addr, uint8_t brightness, uint8_t language, uint8_t theme, uint8_t screensaver_min = 0xFF, uint8_t backlight_mode = 0xFF, uint8_t backlight_timeout_min = 0xFF);
+  bool setUniversalProfile(uint8_t addr, const char* profile, const char* station, uint32_t baud, const char* frame, const char* protocol, const char* checksum = "NONE", const char* line_end = "CR", const char* profile_text = nullptr);
+  bool uploadUniversalProfileText(uint8_t addr, const char* profile_text);
+  bool readUniversalProfileText(uint8_t addr, char* out, size_t out_len, uint32_t* out_crc = nullptr, bool* out_truncated = nullptr);
+  bool setUniversalEntity(uint8_t addr, uint8_t entity_id, const uint8_t* data, uint8_t len);
+  bool setJbcUsbStationName(uint8_t addr, const char* name);
+  bool setJbcUsbConfig(uint8_t addr, const uint8_t* data, uint8_t len);
+  bool refreshUniversalDescriptor(uint8_t addr, bool force = false);
+  bool readUniversalEntities(uint8_t addr);
+  bool setModuleLabel(uint8_t addr, const char* label);
+  bool setModuleAddress(uint8_t old_addr, uint8_t new_addr);
+  uint8_t autoAddressModules(bool preserve_remembered = true);
+  void traceStart(uint8_t target_addr, bool local_trace = false);
+  void traceStop();
+  void traceTouch();
+  void traceClear();
+  bool traceUsesPsram() const { return trace_events_psram_; }
+  TraceStats traceStats() const;
+  uint16_t traceEventCount() const;
+  uint32_t traceOldestSeq() const;
+  uint32_t traceNewestSeq() const;
+  bool traceEventAt(uint16_t index, TraceEvent& out) const;
+
+private:
+  enum class RequestDiagnosticsKind : uint8_t { Normal, Update, Recovery };
+  RequestDiagnosticsKind requestDiagnosticsKind(uint8_t dst, uint8_t cmd);
+  bool recordMaintenanceTimeout(uint8_t dst, uint8_t cmd, uint8_t seq,
+                                uint32_t timeout_ms, RequestDiagnosticsKind kind);
+  bool request(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, jbc_rs485::Frame& resp, uint32_t timeout_ms, bool physical = false);
+  bool startAsyncDisplayRequest(uint8_t dst, uint8_t cmd, const uint8_t* payload, uint8_t len, uint32_t timeout_ms);
+  bool handleAsyncDisplayFrame(const jbc_rs485::Frame& frame, bool via_network,
+                               const jbc_rs485::Frame* synchronous_request = nullptr);
+  void serviceAsyncDisplayRequests();
+  void recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq, uint32_t timeout_ms, bool disposable_wifi_sample);
+  void processDisplayStatusResponse(ModuleRecord& display, const jbc_rs485::Frame& resp);
+  void completeDisplayCacheResponse(ModuleRecord& display, uint8_t cmd);
+  void serviceWhileWaiting();
+  void waitForDiscoveryWindow();
+  void reserveDiscoveryWindow();
+  void serviceDelay(uint32_t delay_ms);
+  void traceLog(uint8_t addr, TraceDirection direction, uint8_t cmd, uint8_t status, const uint8_t* data, uint8_t len, uint16_t latency_ms, const char* text = nullptr, uint8_t frame_seq = 0xFF);
+  bool traceMatches(uint8_t addr) const;
+  bool initBusDiagnostics();
+  int16_t busDiagIndex(uint8_t addr) const;
+  static uint16_t ofeWireBytesApprox(const jbc_rs485::Frame& frame);
+  void busDiagRecordTx(const jbc_rs485::Frame& frame);
+  void busDiagRecordRx(const jbc_rs485::Frame& frame);
+  bool traceStorageReady();
+  void tracePollLocal();
+  void traceSetLocalTarget(bool enabled, bool clear);
+  bool traceLocalControl(uint8_t addr, bool enabled, bool clear);
+  bool traceLocalRead(uint8_t addr);
+  void noticeDiscoveryResponse(const jbc_rs485::Frame& resp);
+  void drainUnsolicitedFrames();
+  void broadcastLedSync(uint32_t now);
+  bool setModulePowerSave(ModuleRecord& rec, bool enabled);
+  bool wakeModule(ModuleRecord& rec);
+  void wakeAllModules();
+  void refreshPowerSaveActive();
+  void updatePowerSave(uint32_t now);
+  bool powerSaveIdle() const;
+  bool readInfo(uint8_t addr);
+  bool readCaps(uint8_t addr);
+  bool fastPollJbc(uint8_t addr);
+  bool readJbcState(uint8_t addr);
+  bool readJbcUsbState(uint8_t addr);
+  bool readOutputStatus(uint8_t addr);
+  bool readIoStatus(uint8_t addr, bool include_aliases = false);
+  bool processTelemetryResponse(uint8_t addr, const jbc_rs485::Frame& resp);
+  bool readTelemetry(uint8_t addr);
+  bool pollNextJbc();
+  uint8_t onlineJbcModuleCount() const;
+  bool readNextJbcState();
+  bool pollNextWeller();
+  bool pollNextUniversal();
+  bool stepUniversalDescriptorRefresh();
+  bool queueUniversalDescriptorRefresh(uint8_t addr, bool force);
+  void cancelUniversalDescriptorRefresh();
+  void finishUniversalDescriptorRefresh(ModuleRecord& rec);
+  bool repairUniversalEntityOne();
+  bool pollNextTelemetry();
+  bool pollNextIoStatus();
+  bool pollNextOutputStatus();
+  void handleDisplayEvent(uint8_t type, int16_t value, uint8_t display_view_arg = 0);
+  bool applyJbcSettingsToOnlineModules(const JbcModuleState& state);
+
+  enum : uint8_t { DISPLAY_ALARM_MAX_ITEMS = 6 };
+  struct DisplayAlarmItem {
+    uint8_t addr = 0;
+    uint8_t type = 0;
+    uint8_t code = 0;
+    uint16_t value = 0;
+  };
+  struct DisplayAlarmSnapshot {
+    uint8_t alarm_count = 0;
+    uint8_t warning_count = 0;
+    uint8_t error_count = 0;
+    uint8_t item_count = 0;
+    uint8_t critical_mask = 0;
+    uint16_t jbc_error = 0;
+    DisplayAlarmItem items[DISPLAY_ALARM_MAX_ITEMS];
+  };
+  void buildDisplayAlarmSnapshot(bool jbc_present, DisplayAlarmSnapshot& snapshot) const;
+
+  void pushDisplayStatus();
+  bool pushDisplayCache();
+  bool sendDisplayStatus(uint8_t addr);
+  bool sendDisplayAlarms(uint8_t display_addr, const DisplayAlarmSnapshot& snapshot);
+  bool sendDisplayModuleList(uint8_t display_addr, uint8_t start_index);
+  bool sendDisplayModuleDetail(uint8_t display_addr, uint8_t target_addr);
+  bool sendDisplayUniversalEntityPage(uint8_t display_addr, const ModuleRecord& rec, uint8_t start_entity);
+  bool sendDisplayJbcPage(ModuleRecord& display, const ModuleRecord& target);
+  bool consumeDisplayJbcExtension(ModuleRecord& display, const jbc_rs485::Frame& response, uint8_t& cursor, uint8_t marker);
+  bool sendDisplayUpdate(uint8_t addr, bool active, uint8_t target_addr, uint8_t progress,
+                         bool wait_for_ack = true);
+  void pollHotplugDiscovery();
+  void pollOfflineModules();
+  void pollScanJob();
+  void updateJbcAggregate();
+  uint16_t minSelectFlowForActiveOutput() const;
+  void outputPowerBoundsForModule(const ModuleRecord& out, uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
+  void selectFlowBoundsForActiveOutput(uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
+  bool moduleProvidesExtractorOutput(const ModuleRecord& rec) const;
+  bool ioConfigBatchActive(uint8_t addr) const;
+  bool universalFindMainOutputEntities(const ModuleRecord& rec, uint8_t& enable_id, uint8_t& power_id) const;
+  bool universalSetMainOutput(ModuleRecord& rec, bool enabled, uint16_t power);
+  bool universalEntityBoolActive(const ModuleRecord& rec, uint8_t entity_id) const;
+  void updateUniversalOutputStateFromEntities(ModuleRecord& rec);
+  void syncSystemJbcError(bool force = false);
+  void updateInputRouting();
+  bool inputRuleSourceActive(const InputActionRule& rule) const;
+  bool inputRuleTargetsActiveMainOutput(const InputActionRule& rule) const;
+  bool activeMainOutputDirectRuleOn() const;
+  bool mainInputSourceActive() const;
+  void applyInputRuleTarget(InputActionRule& rule, bool active);
+  void processPendingExtractorActions();
+  void adoptJbcSettings(const JbcModuleState& state);
+  bool jbcSettingsDiffer(const JbcModuleState& a, const JbcModuleState& b) const;
+  bool recordSettingsDiffer(const ModuleRecord& rec, const JbcModuleState& state) const;
+  void rememberJbcSettings(ModuleRecord& rec, const JbcModuleState& state);
+  void copyDesiredJbcSettings(JbcModuleState& state) const;
+  void syncOtherJbcSettings(uint8_t source_addr);
+  void pushOutputIfNeeded();
+  void pollOneBackgroundJob(uint32_t now);
+  void noteSchedulerJob(uint8_t job_id, uint32_t started_us);
+  bool sendOutputEnable(uint8_t addr, bool enabled);
+  bool sendOutputPower(uint8_t addr, uint16_t power);
+  bool firmwareTargetIsDisplay(uint8_t addr) const;
+  void invalidateModuleAfterFirmwareUpdate(uint8_t addr);
+  void scanAddress(uint8_t addr);
+  void selectRoles();
+  void scheduleControlSettingsPersist();
+  void flushControlSettingsPersist(bool force = false);
+
+  jbc_rs485::Link& link_;
+  ModuleRegistry& registry_;
+  ExtractorLogic& extractor_;
+  SemaphoreHandle_t bus_mutex_ = nullptr;
+
+  uint8_t seq_ = 1;
+  uint32_t last_led_sync_ms_ = 0;
+  bool led_enabled_ = true;
+  uint8_t led_brightness_pct_ = 20;
+  bool power_save_enabled_ = false;
+  OfeAutomationRequests logic_system_requests_;
+  OfeAutomationRequests rule_system_requests_;
+  uint32_t last_system_rule_update_ms_ = 0;
+  mutable uint32_t system_alarm_sample_ms_ = 0;
+  mutable uint32_t system_alarm_mask_ = 0;
+  mutable bool system_alarm_sample_valid_ = false;
+  bool power_save_active_ = false;
+  bool background_poll_active_ = false;
+  uint16_t power_save_idle_minutes_ = 30;
+  uint32_t power_save_idle_since_ms_ = 0;
+  uint32_t last_power_save_apply_ms_ = 0;
+  uint8_t next_power_save_sync_index_ = 0;
+  bool serial_debug_log_ = false;
+  uint32_t last_fast_poll_ms_ = 0;
+  uint32_t last_output_status_ms_ = 0;
+  uint32_t last_io_status_ms_ = 0;
+  uint32_t last_community_output_reassert_ms_ = 0;
+  uint32_t last_weller_poll_ms_ = 0;
+  uint32_t last_universal_poll_ms_ = 0;
+  uint32_t last_module_telemetry_ms_ = 0;
+  uint32_t last_jbc_state_ms_ = 0;
+  uint32_t last_display_status_ms_ = 0;
+  uint32_t last_hotplug_discovery_ms_ = 0;
+  uint32_t hotplug_discovery_window_until_ms_ = 0;
+  uint32_t last_offline_reprobe_ms_ = 0;
+  uint32_t pending_hotplug_scan_ms_ = 0;
+  uint32_t last_default_jbc_probe_ms_ = 0;
+  uint32_t last_default_jbc_state_probe_ms_ = 0;
+  uint16_t last_jbc_state_event_seq_ = 0;
+  uint16_t last_system_jbc_error_ = 0xFFFF;
+  uint16_t last_system_jbc_filter_life_ = 0xFFFF;
+  uint16_t last_system_jbc_filter_sat_ = 0xFFFF;
+  uint8_t last_system_jbc_output_enabled_ = 0xFF;
+  uint32_t last_system_jbc_push_ms_ = 0;
+  uint8_t system_jbc_sync_index_ = 0;
+  uint8_t system_jbc_sync_remaining_ = 0;
+  bool system_jbc_sync_all_ok_ = true;
+  bool system_jbc_sync_force_pending_ = false;
+  uint16_t system_jbc_sync_error_ = 0;
+  uint16_t system_jbc_sync_filter_life_ = 0;
+  uint16_t system_jbc_sync_filter_sat_ = 0;
+  uint8_t system_jbc_sync_output_enabled_ = 0;
+  uint32_t control_persist_due_ms_ = 0;
+  uint32_t control_persist_first_dirty_ms_ = 0;
+  bool control_persist_dirty_ = false;
+  uint16_t pending_extractor_actions_ = 0;
+  uint8_t next_jbc_poll_index_ = 0;
+  uint8_t next_disconnected_jbc_poll_index_ = 0;
+  uint8_t next_jbc_state_index_ = 0;
+  uint8_t pending_jbc_state_addr_ = 0;
+  uint8_t pending_jbc_usb_state_addr_ = 0;
+  uint8_t next_weller_poll_index_ = 0;
+  uint8_t next_universal_poll_index_ = 0;
+  uint8_t universal_descriptor_refresh_addr_ = 0;
+  uint8_t universal_descriptor_refresh_next_chunk_ = 0;
+  uint8_t universal_descriptor_refresh_chunk_count_ = 0;
+  uint8_t universal_descriptor_refresh_failures_ = 0;
+  uint32_t universal_descriptor_refresh_crc_ = 0;
+  size_t universal_descriptor_refresh_total_ = 0;
+  bool universal_descriptor_refresh_force_ = false;
+  bool universal_descriptor_refresh_was_valid_ = false;
+  bool universal_descriptor_refresh_truncated_ = false;
+  uint32_t universal_descriptor_refresh_old_crc_ = 0;
+  uint8_t universal_descriptor_refresh_old_chunks_ = 0;
+  uint8_t universal_entity_repair_cursor_ = 20;
+  uint8_t universal_repair_addr_ = 0;
+  uint8_t universal_repair_seen_[32] = {0};
+  uint8_t universal_repair_remaining_ = 0;
+  uint8_t universal_repair_expected_ = 0;
+  uint8_t next_telemetry_index_ = 0;
+  uint8_t next_io_poll_index_ = 0;
+  uint8_t next_output_status_index_ = 0;
+  uint8_t io_config_batch_addr_ = 0;
+  uint32_t io_config_batch_until_ms_ = 0;
+  uint8_t next_display_index_ = 0;
+  uint8_t next_display_cache_index_ = 0;
+  // Responses may arrive while request() owns the bus mutex for an unrelated
+  // RS485 transaction. Capture them cheaply and process UI/events after the
+  // mutex is released on the next scheduler service pass.
+  jbc_rs485::Frame display_async_response_[16];
+  bool display_async_response_ready_[16] = {false};
+  uint8_t next_background_poll_slot_ = 0;
+  uint8_t next_offline_probe_index_ = 0;
+  uint8_t active_jbc_addr_ = JBC_MODULE_ADDR;
+  uint8_t active_output_addr_ = OUTPUT_MODULE_ADDR;
+  uint8_t preferred_output_addr_ = 0;
+  // Runtime-only output selection from boolean logic/additional rules. 0xFF
+  // means no override; 0 means force automatic output selection.
+  uint8_t runtime_output_override_addr_ = 0xFF;
+  uint8_t main_input_source_type_ = INPUT_SRC_NONE;
+  uint8_t main_input_source_addr_ = 0;
+  uint8_t main_input_source_bit_ = 0;
+  bool applying_input_rules_ = false;
+  bool logic_external_input_ = false;
+  bool logic_continuous_ = false;
+  bool logic_continuous_present_ = false;
+  bool automation_continuous_source_present_ = false;
+  bool automation_continuous_signal_ = false;
+  bool automation_continuous_signal_valid_ = false;
+  bool pending_hotplug_scan_ = false;
+  bool pending_hotplug_full_scan_ = false;
+  uint8_t pending_hotplug_addr_ = jbc_rs485::ADDR_INVALID;
+  bool scan_job_active_ = false;
+  bool scan_job_auto_address_ = false;
+  bool scan_job_auto_done_ = true;
+  bool scan_job_prune_missing_ = false;
+  bool scan_job_finished_ = false;
+  uint8_t scan_job_next_addr_ = 0x10;
+  uint32_t last_scan_job_step_ms_ = 0;
+  bool display_update_active_ = false;
+  uint8_t display_update_target_ = 0;
+  uint8_t display_update_progress_ = 0;
+  uint32_t display_update_speed_bps_ = 0;
+  uint8_t master_cpu_load_pct_ = 0;
+  uint16_t master_loop_max_ms_ = 0;
+  uint8_t master_fw_major_ = 0;
+  uint8_t master_fw_minor_ = 0;
+  uint8_t master_fw_patch_ = 0;
+  char master_fw_suffix_[8] = {0};
+  char master_name_[24] = "MCU";
+  bool module_fw_active_ = false;
+  uint8_t module_fw_target_ = jbc_rs485::ADDR_INVALID;
+  char last_fw_error_[40] = {0};
+  uint8_t last_fw_chunk_attempts_ = 0;
+  uint32_t fw_chunk_retry_count_ = 0;
+  bool have_jbc_settings_ = false;
+  JbcModuleState desired_jbc_settings_;
+  InputActionRule input_rules_[MAX_INPUT_RULES];
+  uint32_t input_rule_system_state_signature_ = 0xFFFFFFFFUL;
+  TraceStats trace_stats_;
+  TraceEvent* trace_events_ = nullptr;
+  bool trace_events_psram_ = false;
+  uint16_t trace_head_ = 0;
+  uint16_t trace_count_ = 0;
+  uint32_t trace_seq_ = 0;
+  uint32_t last_trace_client_ms_ = 0;
+  uint32_t last_trace_local_poll_ms_ = 0;
+  uint32_t last_service_callback_ms_ = 0;
+  uint32_t request_bad_cmd_total_ = 0;
+  uint32_t request_bad_seq_total_ = 0;
+  uint32_t request_late_response_total_ = 0;
+  uint32_t request_total_ = 0;
+  uint64_t request_tx_payload_bytes_ = 0;
+  uint64_t response_rx_payload_bytes_ = 0;
+  uint32_t compact_io_poll_total_ = 0;
+  uint32_t full_io_poll_total_ = 0;
+  uint32_t scheduler_job_max_us_ = 0;
+  uint8_t scheduler_job_max_id_ = 0;
+
+  // Passive OFE-bus diagnostics. 0x10..0x6F map to 96 compact counters.
+  // These counters never influence scheduling or timeout behavior.
+  static const uint8_t BUS_DIAG_ADDR_COUNT = 0x60;
+  // Application-lifetime storage, allocated once after PSRAM initialization.
+  BusModuleDiag* bus_module_diag_ = nullptr;
+  uint64_t ofe_tx_wire_bytes_ = 0;
+  uint64_t ofe_rx_wire_bytes_ = 0;
+  uint32_t ofe_tx_frames_ = 0;
+  uint32_t ofe_rx_frames_ = 0;
+
+  void (*service_callback_)() = nullptr;
+  uint8_t trace_local_addr_ = 0;
+  bool trace_local_mode_ = false;
+  bool trace_local_enabled_ = false;
+  bool trace_local_desired_ = false;
+  bool trace_local_clear_pending_ = false;
+};

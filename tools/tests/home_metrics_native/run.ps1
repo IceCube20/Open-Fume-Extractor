@@ -6,7 +6,7 @@ $build = Join-Path $env:TEMP 'ofe-home-metrics-native'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
-$src = (Resolve-Path (Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/src')).Path
+$src = (Resolve-Path (Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src')).Path
 $python = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
 & $python "$PSScriptRoot/extract_builder.py" "$build/builder.inc.h"
 if ($LASTEXITCODE) { throw 'Metrics source extraction failed' }

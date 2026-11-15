@@ -139,9 +139,23 @@ async function testDashboard(page) {
     assert(window.customStrategies.filter(s=>s.type==='ofe-dashboard'&&s.strategyType==='dashboard').length===1,'Dashboard picker registration');
     assert(Strategy.getCreateSuggestions().icon==='mdi:fan','Dashboard icon');
     const editor=Strategy.getConfigElement();editor.setConfig(config);editor.hass=window.hass;
-    assert(editor.shadowRoot.querySelector('[data-field="master_uid"] select option').textContent==='Alle Master','Localized dashboard editor');
+    assert(editor.shadowRoot.querySelector('[data-field="master_uid"] select option').textContent==='Alle MCUs','Localized dashboard editor');
+    const columnsSelect=editor.shadowRoot.querySelector('[data-field="columns"] select');
+    assert(columnsSelect.value==='4'&&columnsSelect.options.length===4,'Dashboard defaults to four columns');
+    let edited;editor.addEventListener('config-changed',event=>{edited=event.detail.config;});
+    columnsSelect.value='2';columnsSelect.dispatchEvent(new Event('change',{bubbles:true,composed:true}));
+    assert(edited.columns===2,'Column editor stores a numeric setting');
     const empty=host({}), initial=await Strategy.generate(config,empty);
     assert(initial.views.length===1&&!initial.views[0].cards[0].master_uid,'Empty setup must still have a usable dashboard');
+    assert(initial.views[0].type==='panel'&&initial.views[0].cards[0].columns===4,'Use full panel width and four columns');
+    for(const count of [1,2,3,4]){
+      const limited=await Strategy.generate({...config,columns:count},window.hass);
+      assert(limited.views[0].cards[0].columns===count,'Column preference retained');
+    }
+    for(const count of [0,-1,5,1.5,true,'bad']){
+      const limited=await Strategy.generate({...config,columns:count},window.hass);
+      assert(limited.views[0].cards[0].columns===4,'Invalid column preference uses safe default');
+    }
     assert(Strategy.shouldRegenerate(config,empty,window.hass),'Discover first master');
     const valueChange=snapshot();valueChange['sensor.master_output_power'].state='22';
     assert(!Strategy.shouldRegenerate(config,window.hass,host(valueChange)),'Live values must not rebuild controls');
@@ -193,7 +207,7 @@ async function testDashboard(page) {
   const browser=await chromium.launch({headless:true,executablePath:process.env.OFE_BROWSER_EXECUTABLE});
   const output=path.join(root,'tests/artifacts/cards');fs.mkdirSync(output,{recursive:true});
   try{
-    for(const lang of ['de','en'])for(const dark of [true,false])for(const width of [320,390,760,1440]){
+    for(const lang of ['de','en'])for(const dark of [true,false])for(const width of [320,390,760,1024,1366,1440]){
       const page=await browser.newPage({viewport:{width,height:1000},reducedMotion:'reduce'});
       const errors=[];page.on('pageerror',error=>errors.push(error.message));
       await host(page,lang,dark,icons);
@@ -209,6 +223,8 @@ async function testDashboard(page) {
       });
       assert.deepEqual(geometry.issues,[],JSON.stringify({lang,dark,width,geometry}));
       assert(geometry.width<=geometry.viewport+1);
+      const columns=await page.locator('ofe-overview-card').evaluate(el=>getComputedStyle(el.shadowRoot.querySelector('.cards')).gridTemplateColumns.split(' ').length);
+      assert.equal(columns,width>=1080?4:width>=860?3:width>=600?2:1,`Responsive columns at ${width}px`);
       await page.screenshot({path:path.join(output,`${lang}-${dark?'dark':'light'}-${width}.png`),fullPage:true});
       if(lang==='de'&&dark&&[390,1440].includes(width))await page.screenshot({path:path.join(output,`preview-${width}.png`)});
       if(lang==='de'&&dark&&[390,1440].includes(width)){
@@ -255,6 +271,27 @@ async function testDashboard(page) {
       }
       await page.close();
     }
+    const laptop=await browser.newPage({viewport:{width:1366,height:1000},reducedMotion:'reduce'});
+    await host(laptop,'de',true,icons);
+    await laptop.locator('#single').evaluate(el=>el.style.display='none');
+    await laptop.locator('body').evaluate(el=>{el.style.padding='16px';el.style.marginLeft='256px';});
+    assert.equal(await laptop.locator('ofe-overview-card').evaluate(el=>getComputedStyle(el.shadowRoot.querySelector('.cards')).gridTemplateColumns.split(' ').length),4,'Laptop with HA sidebar still shows four columns');
+    await laptop.locator('ofe-overview-card').evaluate(el=>{window.laptopPanel=el._panels[0].root;});
+    await laptop.setViewportSize({width:646,height:1000});
+    assert.equal(await laptop.locator('ofe-overview-card').evaluate(el=>getComputedStyle(el.shadowRoot.querySelector('.cards')).gridTemplateColumns.split(' ').length),1,'Resize uses actual card width');
+    assert(await laptop.locator('ofe-overview-card').evaluate(el=>el._panels[0].root===window.laptopPanel&&el._panels.length===8),'Resizing never rebuilds live cards');
+    await laptop.setViewportSize({width:1366,height:1000});
+    for(const count of [1,2,3,4]){
+      await laptop.locator('ofe-overview-card').evaluate((el,columns)=>el.setConfig({...el._config,columns}),count);
+      await settle(laptop);
+      assert.equal(await laptop.locator('ofe-overview-card').evaluate(el=>getComputedStyle(el.shadowRoot.querySelector('.cards')).gridTemplateColumns.split(' ').length),count,'Explicit maximum columns');
+    }
+    await laptop.locator('ofe-overview-card').evaluate(el=>{const config={...el._config};delete config.columns;el.setConfig(config);});
+    assert.equal(await laptop.locator('ofe-overview-card').evaluate(el=>getComputedStyle(el.shadowRoot.querySelector('.cards')).gridTemplateColumns.split(' ').length),3,'Existing overview cards keep their automatic grid');
+    await laptop.locator('ofe-overview-card').evaluate(el=>el.setConfig({...el._config,columns:4}));
+    await settle(laptop);
+    await laptop.screenshot({path:path.join(output,'dashboard-laptop-sidebar.png')});
+    await laptop.close();
     console.log('PASS: generated OFE dashboards in DE/EN, light/dark, 320-1440px, dynamic inventory, multiple masters, live values, stable native-control focus and alarm states.');
     console.log('Screenshots: '+output);
   }finally{await browser.close();}

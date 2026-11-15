@@ -5,19 +5,19 @@
 
 Local Home Assistant integration and dashboard cards for
 [Open Fume Extractor](https://github.com/IceCube20/Open-Fume-Extractor).
-Connect directly to your master over the local network; no MQTT broker or cloud
+Connect directly to your MCU over the local network; no MQTT broker or cloud
 account is required. MQTT can continue to run independently for other clients.
 
-This is the dedicated Home Assistant repository. Master and module firmware,
+This is the dedicated Home Assistant repository. MCU and module firmware,
 hardware documentation and the USB flasher remain in the
 [firmware project](https://github.com/IceCube20/Open-Fume-Extractor).
 
 ## Requirements
 
 - Home Assistant **2026.10 or newer** (tested on 2026.10.1).
-- Open Fume Extractor Master **2.0.53RC or newer** is recommended.
-- The master's IP/hostname and current web username/password.
-- Local network access from Home Assistant to the master.
+- Open Fume Extractor MCU **2.0.53RC or newer** is recommended.
+- The MCU's IP/hostname and current web username/password.
+- Local network access from Home Assistant to the MCU.
 - HACS **2.x** for HACS installation, or filesystem access for manual installation.
 
 The integration is a community release candidate, not an official Home Assistant
@@ -39,7 +39,7 @@ Manual HACS steps:
 4. Search HACS for **Open Fume Extractor** and download it.
 5. Enable pre-release/beta versions for this repository if needed. Under
    **Need a different version?**, choose a numbered RC release, such as
-   **v0.1.29rc1** (release title **0.1.29RC**). The `main` development branch is
+   **v0.1.31rc1** (release title **0.1.31RC**). The `main` development branch is
    hidden from the HACS download
    selector; it is not the recommended installation source.
 6. **Restart Home Assistant**, not just the integration.
@@ -76,7 +76,7 @@ can then appear as an update even though the integration code is unchanged.
 
 In HACS, open this repository and select **three-dot menu > Update information**,
 then **Redownload > Need a different version?**. Enable pre-release/beta versions
-if needed and choose **v0.1.29rc1** (or a newer numbered release). Download it,
+if needed and choose **v0.1.31rc1** (or a newer numbered release). Download it,
 restart Home Assistant and fully reload the browser/app. Do not remove the
 integration, devices or entities.
 
@@ -102,9 +102,13 @@ Do not create a second nested `custom_components/custom_components` directory.
 
 The integration options accept **0.5 to 60 seconds**, including fractional values.
 The default stays at **5 seconds**; existing settings are preserved.
-An interval of 0.5 seconds polls twice per second and increases master/network
-load. It does not change the module polling rate or guarantee delivery of every
-short input/output pulse.
+From 0.1.31RC, subsecond intervals use precise start-to-start deadlines rather
+than whole-second alignment. A 0.5-second interval targets two polls per second
+and increases master/network load. Slow responses skip missed slots; requests
+never overlap or accumulate into catch-up bursts. Intervals of 1 second or more
+keep Home Assistant's standard scheduling. This does not change the module
+polling rate or guarantee delivery of every short input/output pulse.
+See [precise polling](docs/precise-polling.md) for timing and test details.
 
 ## Dashboard cards
 
@@ -134,7 +138,7 @@ lovelace:
 Use the unversioned URL there and fully reload the browser after updates.
 If automatic registration fails, a manual storage-mode fallback is available
 under **Settings > Dashboards > Resources** (Advanced Mode): add/update
-`/open_fume_extractor/ofe-cards.js?v=0.1.29rc1` as a JavaScript module, not a second
+`/open_fume_extractor/ofe-cards.js?v=0.1.31rc4` as a JavaScript module, not a second
 duplicate entry. Check HA logs for the underlying resource-registration error.
 
 ## Automatic dashboard
@@ -156,6 +160,23 @@ stay visible with their connection state. Multiple masters get separate tabs.
 Only modules and entities provided by the native integration are included; MQTT
 devices are not duplicated. No additional master polling is started.
 
+From **0.1.30RC**, the automatic dashboard uses up to **four columns** on a
+laptop/desktop. It reduces to three, two or one as the available space narrows;
+the Home Assistant sidebar is taken into account. The **Maximum columns** setting
+in the dashboard editor limits the grid to one through four columns. Overview
+cards also offer this setting, while existing cards keep their automatic layout
+unless a limit is selected. Resizing does not recreate controls or add polling.
+
+From **0.1.31rc4**, a ResizeObserver measures the actual card width rather than
+relying on CSS container queries for the explicit column limit. Column changes
+also preserve the existing controls and their focus. At least 560/820/1040 px of
+card width is needed for two/three/four columns; a narrow HA container still
+uses one column on a desktop. The automatic dashboard supplies a full-width
+panel. For a card inside your own Sections dashboard, widen its containing
+section as well as setting the card's Layout to Full width. In a Masonry view,
+use a separate Panel view for a full-width overview. The card never changes
+other dashboard sections or draws outside its assigned area.
+
 For a YAML-managed dashboard, use this dashboard configuration:
 
 ```yaml
@@ -164,6 +185,7 @@ strategy:
   title: Open Fume Extractor
   show_summary: true
   show_diagnostics: false
+  columns: 4
 ```
 
 The optional `master_uid` setting restricts the dashboard to one master. It uses
@@ -207,8 +229,8 @@ npx playwright install chromium
 OFE_MDI_MODULE=node_modules/@mdi/js/mdi.js node tools/test_cards.cjs
 ```
 
-Tags must match the integration manifest version, for example `v0.1.29rc1`.
-The human-readable release title is **0.1.29RC**; machine-readable versions retain
+Tags must match the integration manifest version, for example `v0.1.31rc1`.
+The human-readable release title is **0.1.31RC**; machine-readable versions retain
 the RC number so Home Assistant and HACS can compare updates reliably.
 CI tests the component and HACS layout before publishing a manual-install ZIP.
 No firmware binaries, credentials or signing keys belong in this repository.

@@ -33,7 +33,7 @@ def normalize_host(value: str) -> str:
     if (url.scheme not in ("http", "https") or not url.host or url.user is not None
             or url.password is not None or url.path not in ("", "/")
             or url.query_string or url.fragment):
-        raise ValueError("Enter only the master host or HTTP(S) origin")
+        raise ValueError("Enter only the MCU host or HTTP(S) origin")
     return str(url.origin())
 
 
@@ -59,30 +59,30 @@ class OfeApi:
                 if response.status == 401:
                     raise InvalidAuth("Web login rejected")
                 if 300 <= response.status < 400 or response.status == 428:
-                    raise ApiError("Complete master Wi-Fi/password setup first")
+                    raise ApiError("Complete MCU Wi-Fi/password setup first")
                 body = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
                     body.extend(chunk)
                     if len(body) > MAX_RESPONSE:
-                        raise ApiError("Master response exceeds size limit")
+                        raise ApiError("MCU response exceeds size limit")
                 return response.status, body.decode("utf-8", errors="strict")
         except (aiohttp.ClientError, TimeoutError, UnicodeError) as err:
-            raise ApiError("Master connection failed") from err
+            raise ApiError("MCU connection failed") from err
 
     @staticmethod
     def _json(body: str) -> dict:
         try:
             data = json.loads(body)
         except (ValueError, TypeError) as err:
-            raise ApiError("Invalid master JSON") from err
+            raise ApiError("Invalid MCU JSON") from err
         if not isinstance(data, dict):
-            raise ApiError("Invalid master response")
+            raise ApiError("Invalid MCU response")
         return data
 
     async def _session(self) -> dict:
         status, body = await self._request("/api/ha/session")
         if status == 404:
-            raise UnsupportedFirmware("Master firmware 2.0.31 or later is required")
+            raise UnsupportedFirmware("MCU firmware 2.0.31 or later is required")
         if status != 200:
             raise ApiError("HA session unavailable")
         identity = self._json(body)
@@ -94,7 +94,7 @@ class OfeApi:
             raise UnsupportedFirmware("Unsupported HA API")
         identity["master_uid"] = identity["master_uid"].upper()
         if self.identity and self.identity["master_uid"] != identity["master_uid"]:
-            raise ApiError("A different master is now using this address")
+            raise ApiError("A different MCU is now using this address")
         self.identity = identity
         return identity
 
@@ -106,14 +106,14 @@ class OfeApi:
         async with self.lock:
             status, body = await self._request("/state?ha=1&desc=1" if descriptors else "/state?ha=1")
             if status != 200:
-                raise ApiError("Master status unavailable")
+                raise ApiError("MCU status unavailable")
             state = self._json(body)
             if (not isinstance(state.get("modules"), list) or "master_fw" not in state
                     or not isinstance(state.get("master_uid"), str)
                     or not all(isinstance(module, dict) for module in state["modules"])):
                 raise ApiError("Not an Open Fume Extractor state response")
             if self.identity and state.get("master_uid", "").upper() != self.identity["master_uid"]:
-                raise ApiError("A different master is now using this address")
+                raise ApiError("A different MCU is now using this address")
             return state
 
     async def command(self, data: dict) -> None:
@@ -127,4 +127,4 @@ class OfeApi:
                 await self._session()
                 status, body = await self._request("/api/ha/control", data)
             if not 200 <= status < 300:
-                raise CommandRejected(f"Master rejected command (HTTP {status})")
+                raise CommandRejected(f"MCU rejected command (HTTP {status})")

@@ -1,9 +1,10 @@
-"""One cache-only poll per master, shared by every entity."""
+"""One cache-only poll per MCU, shared by every entity."""
 from __future__ import annotations
 from datetime import timedelta
 import logging
 import re
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from .api import ApiError, InvalidAuth, OfeApi
 from .const import CONF_INTERVAL, DEFAULT_INTERVAL
@@ -28,6 +29,51 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
         self.entity_revisions: dict[tuple[str, str], int] = {}
         self._inventories: dict[str, tuple] = {}
         self._last_module_uids: set[str] | None = None
+        self._subsecond_deadline: float | None = None
+
+    @callback
+    def _schedule_refresh(self):
+        """Avoid HA's whole-second alignment for the configured subsecond rate."""
+        interval = self.update_interval
+        if interval is None or interval.total_seconds() >= 1 or self._retry_after is not None:
+            self._subsecond_deadline = None
+            super()._schedule_refresh()
+            return
+        self._async_unsub_refresh()
+        if (self._shutdown_requested or self.hass.is_stopping
+                or self.entry.pref_disable_polling):
+            self._subsecond_deadline = None
+            return
+        now = self.hass.loop.time()
+        # Re-arm on the previous start-to-start deadline. If a request missed
+        # its slot, skip it instead of queueing catch-up requests to the ESP32.
+        if self._subsecond_deadline is None or self._subsecond_deadline <= now:
+            self._subsecond_deadline = now + interval.total_seconds()
+        self._unsub_refresh = self.hass.loop.call_at(
+            self._subsecond_deadline, self._handle_subsecond_interval
+        ).cancel
+
+    @callback
+    def _handle_subsecond_interval(self):
+        self._unsub_refresh = None
+        if (self._shutdown_requested or self.hass.is_stopping or not self._listeners
+                or self.entry.pref_disable_polling):
+            self._subsecond_deadline = None
+            return
+        interval = self.update_interval
+        if interval is None or interval.total_seconds() >= 1:
+            self._schedule_refresh()
+            return
+        deadline = self._subsecond_deadline
+        self._subsecond_deadline = (
+            self.hass.loop.time() if deadline is None else deadline
+        ) + interval.total_seconds()
+        # Retain HA's refresh lock, errors, availability and unload handling.
+        # No new timer is armed until this serialized request has completed.
+        self.entry.async_create_background_task(
+            self.hass, self._handle_refresh_interval(),
+            name="Open Fume Extractor subsecond refresh", eager_start=True,
+        )
 
     def _confirmed_removed_modules(self, state):
         """An offline module remains listed; only confirmed absence means removal."""
@@ -95,7 +141,7 @@ class OfeCoordinator(DataUpdateCoordinator[dict]):
         except ApiError as err:
             raise UpdateFailed(str(err)) from err
         if self.api.identity["master_uid"] != self.master_uid:
-            raise UpdateFailed("This address belongs to a different master")
+            raise UpdateFailed("This address belongs to a different MCU")
 
     async def _async_update_data(self):
         try:

@@ -11,16 +11,20 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build", type=Path)
+    parser.add_argument("--master", action="store_true", help="Verify the generated Waveshare P4 master instead of the display")
     args = parser.parse_args()
     build = args.build.resolve()
-    name = "DisplayModule_P4_800x480.ino"
+    name = "OpenFumeExtractorMCU_P4.ino" if args.master else "DisplayModule_P4_800x480.ino"
     root = Path(__file__).resolve().parents[2]
-    folder = root / "Module/DisplayModule_P4_800x480"
-    manifest = json.loads((folder / "p4-preparation-manifest.json").read_text())
+    folder = root / ("OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4" if args.master else "Module/DisplayModule_P4_800x480")
+    manifest_name = "p4-master-manifest.json" if args.master else "p4-preparation-manifest.json"
+    manifest = json.loads((folder / manifest_name).read_text())
+    ecc_dir = "src/p4" if args.master else "src"
     version = manifest["firmware_version"]
     for relative, expected in manifest["generated_sha256"].items():
-        if (relative.startswith("src/OfeP4BleEcc") or relative in ("src/OfeP4DisplayBle.h", "OfeP4Board.h", "src/OfeP4SdkProfile.h") or
-                (relative.startswith("src/tinycrypt/") and relative.endswith(".h"))):
+        if (relative.startswith(ecc_dir + "/OfeP4BleEcc") or relative in
+                ("src/OfeP4DisplayBle.h", "OfeP4Board.h", "src/OfeP4SdkProfile.h", "src/OfeP4MasterBle.h", "src/MasterIdentity.h", "src/MasterNetworkInterface.h", "src/MasterBoardConfig.h") or
+                (relative.startswith(ecc_dir + "/tinycrypt/") and relative.endswith(".h"))):
             data = (build / "sketch" / relative).read_bytes()
             if data.startswith(b"#line 1 "):
                 data = data.split(b"\n", 1)[1]  # Arduino's source-location prefix.
@@ -28,7 +32,7 @@ def main():
                 raise RuntimeError("Build copy is stale; rebuild current P4 sketch: " + relative)
     elf = build / (name + ".elf")
     image = build / (name + ".bin")
-    for path in (build / "sketch/src").glob("OfeP4BleEcc*.c.o"):
+    for path in (build / "sketch" / ecc_dir).glob("OfeP4BleEcc*.c.o"):
         if path.stat().st_mtime_ns > elf.stat().st_mtime_ns:
             raise RuntimeError("ELF predates its ECC objects; wait for the complete build")
     if image.stat().st_mtime_ns < elf.stat().st_mtime_ns:
@@ -53,11 +57,11 @@ def main():
     symbols = subprocess.run([str(nm), "-g", "--defined-only", str(elf)], capture_output=True, text=True, check=True).stdout
     # Check the BLE ECC objects, not unrelated SDK crypto accelerator users.
     for component in ("Core", "Dh", "Dsa", "SelfTest"):
-        obj = build / f"sketch/src/OfeP4BleEcc{component}.c.o"
+        obj = build / "sketch" / ecc_dir / f"OfeP4BleEcc{component}.c.o"
         if obj.exists():
             undefined = subprocess.run([str(nm), "-u", str(obj)], capture_output=True, text=True, check=True).stdout
         else:
-            archive = build / "sketch/src/objs.a"
+            archive = build / "sketch" / ecc_dir / "objs.a"
             members = subprocess.run([str(nm.with_name("riscv32-esp-elf-ar.exe")), "t", str(archive)],
                                      capture_output=True, text=True, check=True).stdout.splitlines()
             if obj.name not in members:
@@ -74,14 +78,19 @@ def main():
         if len(re.findall(r"(?m)^\S+ T " + symbol + r"$", symbols)) != 1:
             raise RuntimeError("Expected exactly one strong definition of " + symbol)
     data = image.read_bytes()
+    target = "MASTER" if args.master else "DISPLAY_P4_800X480"
+    marker = b"[P4 MCU] Waveshare Module DEV KIT" if args.master else b"P4 BLE ECC: software-only + P4 hardware RNG + self-test v3"
     if (data[0]!=0xE9 or int.from_bytes(data[12:14], "little")!=0x12 or
-            ("target=DISPLAY_P4_800X480;version=" + version + ";").encode() not in data or
-            b"P4 BLE ECC: software-only + P4 hardware RNG + self-test v3" not in data):
+            ("target=" + target + ";version=" + version + ";").encode() not in data or marker not in data):
         raise RuntimeError("Wrong P4 firmware/version/backport marker")
     report = {"firmware": version, "sha256": hashlib.sha256(data).hexdigest(), "origins": origins,
               "old_sdk_ecc_objects_linked": False, "ble_ecc_uses_accelerator": False,
               "ble_rng": "P4 esp_fill_random", "rgb_profile": {"pclk_hz": 16000000, "bounce_lines": 20},
               "hardware_pairing_verified": False}
+    if args.master:
+        report.pop("rgb_profile")
+        report["board"] = "Waveshare ESP32-P4-Module-DEV-KIT PRE-V3"
+        report["hardware_network_verified"] = False
     (build / "ecc-link-verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print("PASS: complete P4 ELF/BIN, sketch ECC origins proven, old SDK ECC excluded, BLE ECC has no accelerator calls")
 

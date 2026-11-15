@@ -164,14 +164,17 @@ class RegistryTests(unittest.TestCase):
         dr.async_get.return_value = backend
         registry.reconcile_devices(None, "MASTER", {"master_fw": "2.0.37RC"}, {
             "MODULE": {"addr": 32, "display_name": "Fan", "type_name": "Fan/IO Pro", "fw": "1.1.70RC"}})
-        backend.async_update_device.assert_any_call("master-device", name="0x01 Open Fume Extractor Master", model="Open Fume Extractor Master")
+        backend.async_update_device.assert_any_call("master-device", name="0x01 Open Fume Extractor MCU", model="Open Fume Extractor MCU")
         backend.async_update_device.assert_any_call("module-device", name="0x20 Fan")
         self.assertEqual(master.name_by_user, "My workshop")
 
     def test_master_device_constants_match_actual_mqtt_firmware_metadata(self):
-        mqtt = (ROOT.parents[2] / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
-        self.assertIn(r'\"name\":\"' + const.MASTER_DEVICE_NAME + r'\"', mqtt)
-        self.assertIn(r'\"mdl\":\"' + const.MASTER_DEVICE_MODEL + r'\"', mqtt)
+        mqtt = (ROOT.parents[2] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+        self.assertIn('MASTER_DEVICE_NAME', mqtt)
+        self.assertIn('MASTER_MCU_MODEL', mqtt)
+        for model in ("MCU-S3", "MCU-P4"):
+            self.assertEqual(const.master_device_model({"master_model": model}), model)
+            self.assertEqual(const.master_device_name({"master_model": model}), "0x01 Open Fume Extractor " + model)
 
 
 if __name__ == "__main__":

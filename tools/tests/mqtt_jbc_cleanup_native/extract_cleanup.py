@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import sys
 
-source = (Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+source = (Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
 
 
 def function(name):

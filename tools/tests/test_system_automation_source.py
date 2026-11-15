@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-MASTER = ROOT / "OpenFumeExtractorMaster/src"
+MASTER = ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 NAMES = ("DisplayModule_320x480", "DisplayModule_800x480",
          "DisplayModule_ST7796_320x480", "DisplayModule_P4_800x480")
 

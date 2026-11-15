@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
 $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-& $python "$PSScriptRoot\extract_runtime.py" "$build\generated_runtime.inc.h" "$build\generated_cpu.inc.h" "$build\generated_profile.inc.h"
+& $python "$PSScriptRoot\extract_runtime.py" "$build\generated_runtime.inc.h" "$build\generated_cpu.inc.h" "$build\generated_profile.inc.h" "$build\generated_json_escape.inc.h" "$build\generated_io_profile.inc.h" "$build\generated_ha_metadata.inc.h"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime extraction failed' }
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "$PSScriptRoot\test_runtime.cpp" "/Fo$build\" "/Fe$build\test_runtime.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime native build failed' }
@@ -31,3 +31,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Task/phase profiling regressions failed' }
 if ($LASTEXITCODE -ne 0) { throw 'JSON text-buffer native build failed' }
 & "$build\test_text_buffer.exe"
 if ($LASTEXITCODE -ne 0) { throw 'JSON text-buffer regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot\buffer_stubs" "$PSScriptRoot\test_json_escape.cpp" "/Fo$build\" "/Fe$build\test_json_escape.exe"
+if ($LASTEXITCODE -ne 0) { throw 'JSON escape native build failed' }
+& "$build\test_json_escape.exe"
+if ($LASTEXITCODE -ne 0) { throw 'JSON escape regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot\buffer_stubs" "$PSScriptRoot\test_io_profile.cpp" "/Fo$build\" "/Fe$build\test_io_profile.exe"
+if ($LASTEXITCODE -ne 0) { throw 'I/O profiling native build failed' }
+& "$build\test_io_profile.exe"
+if ($LASTEXITCODE -ne 0) { throw 'I/O profiling regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "/I$PSScriptRoot\buffer_stubs" "/I$PSScriptRoot\../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "$PSScriptRoot\test_ha_metadata.cpp" "$PSScriptRoot\../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/EntityPresentation.cpp" "/Fo$build\" "/Fe$build\test_ha_metadata.exe"
+if ($LASTEXITCODE -ne 0) { throw 'HA metadata-cache native build failed' }
+& "$build\test_ha_metadata.exe"
+if ($LASTEXITCODE -ne 0) { throw 'HA metadata-cache regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$PSScriptRoot\worker_stubs" "$PSScriptRoot\test_mqtt_worker.cpp" "/Fo$build\" "/Fe$build\test_mqtt_worker.exe"
+if ($LASTEXITCODE -ne 0) { throw 'MQTT worker native build failed' }
+& "$build\test_mqtt_worker.exe"
+if ($LASTEXITCODE -ne 0) { throw 'MQTT worker regressions failed' }

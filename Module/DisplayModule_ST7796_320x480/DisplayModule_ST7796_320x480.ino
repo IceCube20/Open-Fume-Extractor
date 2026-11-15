@@ -8,6 +8,7 @@ struct DisplayUniversalModuleCache;
 struct DisplayUniversalControlPending;
 
 #include <Arduino.h>
+#include "src/OfeDisplayCapacity.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "src/OfeDisplayGuiTask.h"
@@ -264,7 +265,7 @@ static constexpr uint32_t DISPLAY_HW_CAP = (1UL << 27); // CAP_DISPLAY_ST7796
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 45
+#define OFE_MODULE_FW_PATCH 47
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -571,7 +572,7 @@ struct DisplayStatus {
   uint8_t output_addr = 0;
   uint8_t preferred_output_addr = 0;
   uint8_t auto_output_addr = 0;
-  uint8_t main_input_source_type = 1;
+  uint8_t main_input_source_type = 0;
   uint8_t main_input_source_addr = 0;
   uint8_t main_input_source_bit = 0;
   uint8_t jbc_inputs = 0;
@@ -671,7 +672,7 @@ enum DisplayViewMode : uint8_t {
 
 static const uint8_t DISPLAY_UNIVERSAL_ENTITY_CACHE_MAX = 32;
 static const uint8_t DISPLAY_UNIVERSAL_DETAIL_CONTROL_MAX = 32;
-static const uint8_t DISPLAY_UNIVERSAL_MODULE_CACHE_MAX = 16;
+static const uint8_t DISPLAY_UNIVERSAL_MODULE_CACHE_MAX = 32;
 static const uint32_t DISPLAY_UNIVERSAL_CACHE_REFRESH_MS = 1200UL;
 
 enum DisplayUniversalEntityType : uint8_t {
@@ -863,9 +864,9 @@ static String jbc_usb_core_detail_text(const DisplayModuleDetail& m);
 static uint8_t display_view_mode = DISPLAY_VIEW_HOME;
 static uint8_t display_view_arg = 0;
 static uint8_t module_total = 0;
-static DisplayModuleSummary module_summaries[17];
+static DisplayModuleSummary module_summaries[DISPLAY_MODULE_CAPACITY];
 static uint8_t expected_module_total = 0;
-static DisplayModuleSummary expected_modules[17];
+static DisplayModuleSummary expected_modules[DISPLAY_MODULE_CAPACITY];
 static bool master_session_reset_pending = false;
 static bool master_uptime_valid = false;
 static uint32_t last_master_uptime_s = 0;
@@ -1249,14 +1250,14 @@ static lv_obj_t* ui_home_afterrun_power_button = nullptr;
 static lv_obj_t* ui_home_afterrun_power_input = nullptr;
 static lv_obj_t* ui_home_input_dropdown = nullptr;
 static lv_obj_t* ui_home_output_dropdown = nullptr;
-static uint16_t home_input_values[64] = {0};
+static uint16_t home_input_values[DISPLAY_INPUT_OPTION_CAPACITY] = {0};
 static uint8_t home_input_count = 0;
 static String home_input_options_cache;
 static bool home_input_dropdown_refreshing = false;
 static char home_input_selected_text[72] = {0};
 static uint32_t home_input_pending_route_ms = 0;
 static uint16_t home_input_pending_value = 0;
-static uint8_t home_output_addrs[18] = {0};
+static uint8_t home_output_addrs[DISPLAY_OUTPUT_OPTION_CAPACITY] = {0};
 static uint8_t home_output_count = 0;
 static String home_output_options_cache;
 static uint8_t home_output_user_route_addr = 0;
@@ -1285,10 +1286,10 @@ static lv_obj_t* ui_home_light_button = nullptr;
 static lv_obj_t* ui_home_io1_button = nullptr;
 static lv_obj_t* ui_home_io2_button = nullptr;
 static lv_obj_t* ui_module_list = nullptr;
-static lv_obj_t* ui_module_rows[17] = {nullptr};
-static lv_obj_t* ui_module_row_status_stripes[17] = {nullptr};
-static lv_obj_t* ui_module_row_names[17] = {nullptr};
-static lv_obj_t* ui_module_row_meta[17] = {nullptr};
+static lv_obj_t* ui_module_rows[DISPLAY_MODULE_CAPACITY] = {nullptr};
+static lv_obj_t* ui_module_row_status_stripes[DISPLAY_MODULE_CAPACITY] = {nullptr};
+static lv_obj_t* ui_module_row_names[DISPLAY_MODULE_CAPACITY] = {nullptr};
+static lv_obj_t* ui_module_row_meta[DISPLAY_MODULE_CAPACITY] = {nullptr};
 static lv_obj_t* ui_module_update_notice = nullptr;
 static lv_obj_t* ui_detail_title = nullptr;
 static lv_obj_t* ui_detail_meta = nullptr;
@@ -2432,7 +2433,7 @@ static String bus_update_progress_text(uint8_t progress) {
 static String lv_addr_text(uint8_t addr);
 
 static String update_target_name(uint8_t target) {
-  if (target == ADDR_MASTER) return "Master";
+  if (target == ADDR_MASTER) return "MCU";
   if (target == module_addr || target == 0) return lv_addr_text(module_addr) + " Display";
   String name = String(tr("Module", "Modul"));
   if (target >= 0x10 && target <= 0x1F) name = "JBC Bus";
@@ -2535,7 +2536,7 @@ static uint8_t module_type_guess_from_addr(uint8_t addr) {
 }
 
 static int8_t module_summary_index_by_addr(uint8_t addr) {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (module_summaries[i].valid && module_summaries[i].addr == addr) return (int8_t)i;
   }
   return -1;
@@ -2555,19 +2556,19 @@ static void reset_expected_modules() {
 }
 
 static int8_t expected_module_index_by_addr(uint8_t addr) {
-  for (uint8_t i = 0; i < expected_module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < expected_module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (expected_modules[i].valid && expected_modules[i].addr == addr) return (int8_t)i;
   }
   return -1;
 }
 
 static void learn_expected_modules_from_current_list() {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const DisplayModuleSummary& current = module_summaries[i];
     if (!current.valid || !(current.flags & 0x01) || current.addr == ADDR_MASTER || current.addr == module_addr) continue;
     int8_t expected_index = expected_module_index_by_addr(current.addr);
     if (expected_index < 0) {
-      if (expected_module_total >= 17) continue;
+      if (expected_module_total >= DISPLAY_MODULE_CAPACITY) continue;
       expected_index = expected_module_total++;
     }
     expected_modules[(uint8_t)expected_index] = current;
@@ -2584,7 +2585,7 @@ static void bus_update_remove_synthetic_module_row() {
     // Only remove the temporary row that we created locally. If the master has
     // meanwhile supplied real module data/name, keep it in the list.
     if (looks_synthetic) {
-      for (uint8_t j = (uint8_t)idx; j + 1 < module_total && j + 1 < 17; ++j) {
+      for (uint8_t j = (uint8_t)idx; j + 1 < module_total && j + 1 < DISPLAY_MODULE_CAPACITY; ++j) {
         module_summaries[j] = module_summaries[j + 1];
       }
       if (module_total > 0) {
@@ -2602,14 +2603,14 @@ static void bus_update_ensure_module_row() {
   const uint8_t target = status.update_target;
   if (module_summary_index_by_addr(target) >= 0) return;
 
-  uint8_t slot = 17;
-  for (uint8_t i = 0; i < 17; ++i) {
+  uint8_t slot = DISPLAY_MODULE_CAPACITY;
+  for (uint8_t i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (!module_summaries[i].valid) {
       slot = i;
       break;
     }
   }
-  if (slot >= 17) return;
+  if (slot >= DISPLAY_MODULE_CAPACITY) return;
   if (slot >= module_total) module_total = slot + 1;
 
   DisplayModuleSummary& m = module_summaries[slot];
@@ -2627,7 +2628,7 @@ static void bus_update_ensure_module_row() {
 
 static void bus_update_copy_known_module_name(uint8_t target) {
   status.update_name[0] = 0;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (module_summaries[i].valid && module_summaries[i].addr == target && module_summaries[i].name[0]) {
       strncpy(status.update_name, module_summaries[i].name, sizeof(status.update_name) - 1);
       status.update_name[sizeof(status.update_name) - 1] = 0;
@@ -2641,7 +2642,7 @@ static void bus_update_scroll_to_target(bool force) {
   if (lv_screen_active() != ui_module_list_screen) return;
 
   const int8_t idx = module_summary_index_by_addr(status.update_target);
-  if (idx < 0 || idx >= 17 || !ui_module_rows[(uint8_t)idx]) return;
+  if (idx < 0 || idx >= DISPLAY_MODULE_CAPACITY || !ui_module_rows[(uint8_t)idx]) return;
 
   const uint32_t now = millis();
   if (!force && bus_update_last_scrolled_target == status.update_target &&
@@ -3272,7 +3273,7 @@ static void lv_show_alarms_event(lv_event_t* e);
 static void lv_update_alarm_header_ui() {
   char text[16];
   snprintf(text, sizeof(text), LV_SYMBOL_BELL " %u", active_alarm_count);
-  const bool has_critical_alarm = active_alarm_count && status.master_alarm_critical_mask;
+  const bool has_critical_alarm = !master_link_online() || (active_alarm_count && status.master_alarm_critical_mask);
   const lv_color_t alarm_color = has_critical_alarm ? lv_color_hex(0xFF4D5E) : lv_color_hex(0xFFB020);
   for (uint8_t i = 0; i < ui_header_link_count; ++i) {
     lv_obj_t* alarm = ui_header_alarm_labels[i];
@@ -3705,7 +3706,7 @@ static void lv_create_boot_screen() {
   ui_boot_fw = lv_label(card, "", 112, 104, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 146);
   ui_boot_addr = lv_label(card, "", 270, 104, lv_color_hex(0xDDE4EC), UI_FONT_DEFAULT, 140);
   lv_obj_t* wait_card = lv_card(ui_boot_screen, 18, 256, 444, 38, ui_theme_color(0x151B23, 0xF7FAFC));
-  lv_label(wait_card, tr("Connecting to master... Tap for setup", "Verbinde mit Master... Antippen zum Einrichten"), 16, 10, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 412);
+  lv_label(wait_card, tr("Connecting to MCU... Tap for setup", "Verbinde mit MCU... Antippen zum Einrichten"), 16, 10, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 412);
   lv_obj_add_flag(wait_card, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(wait_card, lv_open_boot_connection_setup, LV_EVENT_CLICKED, nullptr);
   ofe_display_ui::unframed(card);
@@ -4078,7 +4079,7 @@ static bool screensaver_alarm_is_critical() {
 }
 
 static String screensaver_alarm_title() {
-  if (!master_link_online()) return tr("Master connection lost", "Master-Verbindung verloren");
+  if (!master_link_online()) return tr("MCU connection lost", "MCU-Verbindung verloren");
   const int8_t idx = screensaver_first_alarm_index();
   if (idx < 0) return String();
   return master_alarm_title_text(status.master_alarm_addr[idx], status.master_alarm_type[idx], status.master_alarm_code[idx]);
@@ -4375,7 +4376,7 @@ static void lv_show_system_event(lv_event_t*) {
 }
 
 static void lv_open_module_summary(uint8_t index) {
-  if (index >= 17 || !module_summaries[index].valid) return;
+  if (index >= DISPLAY_MODULE_CAPACITY || !module_summaries[index].valid) return;
   memset(&selected_module, 0, sizeof(selected_module));
   selected_module.addr = module_summaries[index].addr;
   selected_module.type = module_summaries[index].type;
@@ -4422,7 +4423,7 @@ static bool module_summary_matches_group(const struct DisplayModuleSummary& m, u
 
 static uint8_t module_count_by_group(uint8_t group, bool online_only) {
   uint8_t count = 0;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (!module_summary_matches_group(module_summaries[i], group)) continue;
     if (online_only && !(module_summaries[i].flags & 0x01)) continue;
     count++;
@@ -4461,7 +4462,7 @@ static bool module_summary_is_fan_io_pro(const DisplayModuleSummary& m) {
 }
 
 static int8_t first_module_index_by_group(uint8_t group, bool online_only) {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (!module_summary_matches_group(module_summaries[i], group)) continue;
     if (online_only && !(module_summaries[i].flags & 0x01)) continue;
     return (int8_t)i;
@@ -4636,7 +4637,7 @@ static bool module_summary_is_universal_addr(uint8_t addr) {
 }
 
 static uint8_t first_universal_module_addr(bool online_only) {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid) continue;
     if (online_only && !(m.flags & 0x01)) continue;
@@ -4647,7 +4648,7 @@ static uint8_t first_universal_module_addr(bool online_only) {
 
 static uint8_t first_universal_module_addr_needing_cache() {
   static uint8_t next = 0;
-  const uint8_t count = module_total < 17 ? module_total : 17;
+  const uint8_t count = module_total < DISPLAY_MODULE_CAPACITY ? module_total : DISPLAY_MODULE_CAPACITY;
   if (!count) return 0;
   // Rotate even while a profile is incomplete or empty, so one module cannot
   // prevent the other modules' Home values from being loaded and refreshed.
@@ -5317,11 +5318,11 @@ static void lv_home_input_select_event(lv_event_t* e) {
 
 static void lv_refresh_input_dropdown() {
   if (!ui_home_input_dropdown || lv_dropdown_is_open(ui_home_input_dropdown)) return;
-  uint16_t values[64] = {0};
+  uint16_t values[DISPLAY_INPUT_OPTION_CAPACITY] = {0};
   uint8_t count = 0;
   values[count++] = main_input_encode(0, 0, 0);
   if (status.jbc_inputs && count < (sizeof(values) / sizeof(values[0]))) values[count++] = main_input_encode(1, 0, 0);
-  for (uint8_t i = 0; i < module_total && i < 17 && count < (sizeof(values) / sizeof(values[0])); ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY && count < (sizeof(values) / sizeof(values[0])); ++i) {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!m.valid || !(m.flags & 0x01)) continue;
     if ((m.caps & CAP_JBC_ACTIVITY) && count < (sizeof(values) / sizeof(values[0]))) values[count++] = main_input_encode(1, m.addr, 0);
@@ -5375,11 +5376,11 @@ static void lv_refresh_input_dropdown() {
 }
 static void lv_refresh_output_dropdown() {
   if (!ui_home_output_dropdown || lv_dropdown_is_open(ui_home_output_dropdown)) return;
-  uint8_t addrs[18] = {0};
+  uint8_t addrs[DISPLAY_OUTPUT_OPTION_CAPACITY] = {0};
   uint8_t count = 1;
   uint8_t first_output_addr = 0;
   addrs[0] = 0;  // 0 means master-side automatic main-output selection.
-  for (uint8_t i = 0; i < module_total && i < 17 && count < (sizeof(addrs) / sizeof(addrs[0])); ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY && count < (sizeof(addrs) / sizeof(addrs[0])); ++i) {
     const DisplayModuleSummary& m = module_summaries[i];
     if (!module_summary_provides_extractor_output(m)) continue;
     if (!first_output_addr) first_output_addr = m.addr;
@@ -5467,7 +5468,7 @@ static void lv_home_module_card_event(lv_event_t* e) {
   const uint8_t group = (uint8_t)(uintptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
   uint8_t match_count = 0;
   uint8_t match_index = 0;
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (module_summary_matches_group(module_summaries[i], group)) {
       match_index = i;
       match_count++;
@@ -5683,7 +5684,7 @@ static void display_benchmark_finish(uint32_t now) {
   lv_set_text(ui_benchmark_status, tr("Benchmark complete", "Benchmark abgeschlossen"));
   lv_set_text(ui_benchmark_result, result);
   debug_printf("DISPLAY BENCHMARK: %.1f LVGL fps, %.1f panel fps, %.1f tiles/frame, buffer %u lines, "
-               "handler %.1f/%.1f ms, SPI %.1f/%.1f ms, CPU %u%%, master gap %u ms\n",
+               "handler %.1f/%.1f ms, SPI %.1f/%.1f ms, CPU %u%%, MCU gap %u ms\n",
     lvgl_fps, panel_fps, tiles_per_frame, (unsigned)benchmark_buf_lines,
     handler_avg_ms, perf_handler_max_us / 1000.0f,
     panel_avg_ms, perf_panel_flush_max_us / 1000.0f, (unsigned)display_benchmark.cpu_peak,
@@ -5906,7 +5907,7 @@ static void lv_create_app_screens() {
   lv_obj_set_scrollbar_mode(ui_module_list, LV_SCROLLBAR_MODE_ACTIVE);
   lv_obj_clear_flag(ui_module_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
   lv_obj_set_style_anim_duration(ui_module_list, 0, 0);
-  for (uint8_t i = 0; i < 17; ++i) {
+  for (uint8_t i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
     lv_obj_t* row = lv_button_create(ui_module_list);
     ui_module_rows[i] = row;
     lv_obj_set_pos(row, 0, i * 54);
@@ -6196,7 +6197,7 @@ static void lv_update_module_list() {
   const bool master_lost_now = master_state == 2;
   const bool master_waiting = master_state == 0;
   bool update_target_found = false;
-  for (uint8_t i = 0; i < 17; ++i) {
+  for (uint8_t i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (!ui_module_rows[i]) continue;
     if (i >= module_total || !module_summaries[i].valid) {
       lv_set_visible(ui_module_rows[i], false);
@@ -6216,7 +6217,7 @@ static void lv_update_module_list() {
     if (master_lost_now) {
       // The list entries are cached from the last master response. Do not show
       // them as online while the master is missing.
-      meta = String(tr("cached - master lost  FW ", "Cache - Master fehlt  FW ")) + module_fw_text(m.fw_major, m.fw_minor, m.fw_patch, m.fw_suffix);
+      meta = String(tr("cached - MCU lost  FW ", "Cache - MCU fehlt  FW ")) + module_fw_text(m.fw_major, m.fw_minor, m.fw_patch, m.fw_suffix);
       title += String("  ") + tr("(stale)", "(Cache)");
       border = ui_theme_color(0xFF4D5E, 0xD92D20);
       accent = border;
@@ -6691,7 +6692,7 @@ static void lv_update_module_detail() {
   const bool shown_io1 = detail_toggle_pending_value(m.addr, DETAIL_PENDING_IO1,
     detail_fields_is_weller(m.type, m.caps) ? (m.weller_light != 0) : ((m.io_outputs & 0x0002U) != 0));
   const bool master_lost_now = master_link_lost();
-  const String detail_type = m.addr == ADDR_MASTER ? String("Master") : detail_type_name(m.type, m.caps);
+  const String detail_type = m.addr == ADDR_MASTER ? String("MCU") : detail_type_name(m.type, m.caps);
   lv_set_text(ui_detail_title, lv_addr_text(m.addr) + "  " + (m.name[0] ? String(m.name) : detail_type));
   String detail_meta = lv_addr_text(m.addr) + "  " + detail_type + "  FW " + module_fw_text(m.fw_major, m.fw_minor, m.fw_patch, m.fw_suffix);
   if (master_lost_now) detail_meta += String("  | ") + tr("cached", "Cache");
@@ -6699,7 +6700,7 @@ static void lv_update_module_detail() {
   lv_set_text(ui_detail_meta, detail_meta);
 
   const bool module_online = !master_lost_now && ((m.flags & 1) != 0);
-  lv_set_text_c(ui_detail_status, master_lost_now ? tr("Master lost - cached data", "Master fehlt - Cache") : (module_online ? tr("Online", "Online") : tr("Offline", "Offline")));
+  lv_set_text_c(ui_detail_status, master_lost_now ? tr("MCU lost - cached data", "MCU fehlt - Cache") : (module_online ? tr("Online", "Online") : tr("Offline", "Offline")));
   lv_obj_set_style_bg_color(ui_detail_status, master_lost_now
     ? ui_theme_color(0x332410, 0xFFF2D6)
     : (module_online ? ui_theme_color(0x123824, 0xE2F8EB) : ui_theme_color(0x3A2026, 0xFFE8EB)), 0);
@@ -6961,7 +6962,7 @@ static void lv_alarm_add(uint8_t& index, const String& title, const String& deta
 }
 
 static String master_alarm_source_text(uint8_t addr, uint8_t type) {
-  if (addr == ADDR_MASTER) return tr("Master", "Master");
+  if (addr == ADDR_MASTER) return tr("MCU", "MCU");
   const int8_t idx = module_summary_index_by_addr(addr);
   if (idx >= 0) {
     const DisplayModuleSummary& module = module_summaries[(uint8_t)idx];
@@ -6995,7 +6996,7 @@ static String master_alarm_detail_text(uint8_t code, uint16_t value, uint8_t typ
     case DISPLAY_ALARM_JBC_STATUS: return jbc_error_name(value);
     case DISPLAY_ALARM_NO_MAIN_INPUT: return tr("No main extractor input selected", "Kein Haupteingang Absaugung gewählt");
     case DISPLAY_ALARM_NO_MAIN_OUTPUT: return tr("No main extractor output selected", "Kein Hauptausgang Absaugung gewählt");
-    default: return tr("Alarm reported by master", "Alarm vom Master gemeldet");
+    default: return tr("Alarm reported by MCU", "Alarm von der MCU gemeldet");
   }
 }
 
@@ -7010,7 +7011,7 @@ static uint8_t lv_update_alarm_center() {
   uint8_t reported_count = 0;
   if (!master_link_online()) {
     reported_count = 1;
-    lv_alarm_add(count, tr("Master connection lost", "Master-Verbindung verloren"),
+    lv_alarm_add(count, tr("MCU connection lost", "MCU-Verbindung verloren"),
       tr("No current bus data", "Keine aktuellen Busdaten"), true);
   } else if (status.master_alarm_valid) {
     reported_count = status.master_alarm_count;
@@ -7026,7 +7027,7 @@ static uint8_t lv_update_alarm_center() {
         ? String(tr("Waiting for alarm details", "Alarmdetails werden aktualisiert"))
         : (String("+") + String(missing) + tr(" more alarms", " weitere Alarme"));
       lv_alarm_add(count,
-        tr("Alarms reported by master", "Alarme vom Master gemeldet"),
+        tr("Alarms reported by MCU", "Alarme von der MCU gemeldet"),
         detail,
         status.master_alarm_critical_mask != 0);
     }
@@ -7139,7 +7140,7 @@ static void lv_update_app_values() {
     lv_set_text_c(ui_home_output, master_lost_now ? tr("Offline", "Offline") : tr("Connecting", "Verbinden"));
     lv_set_text(ui_home_power, "--");
     lv_set_text_c(ui_home_rpm, master_lost_now ? "--" : tr("waiting", "warten"));
-    lv_set_text(ui_home_afterrun, master_lost_now ? tr("Master missing", "Master fehlt") : tr("Waiting", "Warten"));
+    lv_set_text(ui_home_afterrun, master_lost_now ? tr("MCU missing", "MCU fehlt") : tr("Waiting", "Warten"));
     if (ui_home_power_bar) lv_bar_set_value_if_changed(ui_home_power_bar, 0);
 
     lv_set_home_work_icon(status.jbc_present || jbc_module_count > 0, false);
@@ -7152,7 +7153,7 @@ static void lv_update_app_values() {
     if (ui_home_delay_input && ui_numeric_source != ui_home_delay_input) lv_textarea_set_text_if_changed(ui_home_delay_input, "-");
     lv_set_text_c(ui_home_weller, master_lost_now ? "Cache" : "waiting");
     lv_set_text(ui_home_filter, "-");
-    lv_set_text_c(ui_home_fault, master_lost_now ? tr("Master lost", "Master fehlt") : "connecting");
+    lv_set_text_c(ui_home_fault, master_lost_now ? tr("MCU lost", "MCU fehlt") : "connecting");
   } else {
     const bool module_offline_alarm = screensaver_has_alarm_code(DISPLAY_ALARM_MODULE_OFFLINE);
     const bool no_main_input = status.main_input_source_type == 0 || screensaver_has_alarm_code(DISPLAY_ALARM_NO_MAIN_INPUT);
@@ -8398,7 +8399,7 @@ static void parse_display_extension(const Frame& req) {
   if (mode == DISPLAY_VIEW_MODULE_LIST && p + 3 <= req.len) {
     const uint8_t old_total = module_total;
     const uint8_t raw_total = req.payload[p++];
-    uint8_t wire_total = raw_total > 17 ? 17 : raw_total;
+    uint8_t wire_total = raw_total > DISPLAY_MODULE_CAPACITY ? DISPLAY_MODULE_CAPACITY : raw_total;
     const bool other_module_update = status.update_active && !update_is_local_display_target(status.update_target);
     const uint8_t start = req.payload[p++];
     const uint8_t count = req.payload[p++];
@@ -8415,7 +8416,7 @@ static void parse_display_extension(const Frame& req) {
     module_total = wire_total;
     uint8_t parsed = 0;
     bool list_changed = old_total != module_total;
-    for (; parsed < count && (uint8_t)(start + parsed) < 17; ++parsed) {
+    for (; parsed < count && (uint8_t)(start + parsed) < DISPLAY_MODULE_CAPACITY; ++parsed) {
       if (p + 16 > req.len) break;
       DisplayModuleSummary next_summary;
       memset(&next_summary, 0, sizeof(next_summary));
@@ -8447,7 +8448,7 @@ static void parse_display_extension(const Frame& req) {
       // Address 0x01 is always the OFE master. Keep the UI correct even when an
       // older master firmware sends MODULE_UNKNOWN or an empty/generic name.
       if (m.addr == ADDR_MASTER) {
-        strncpy(m.name, "OFE Master", sizeof(m.name) - 1);
+        strncpy(m.name, "OFE MCU", sizeof(m.name) - 1);
         m.name[sizeof(m.name) - 1] = 0;
         if (master_uptime_valid && m.uptime_s + 2 < last_master_uptime_s) reset_expected_modules();
         last_master_uptime_s = m.uptime_s;
@@ -8474,7 +8475,7 @@ static void parse_display_extension(const Frame& req) {
     if (next < module_total) display_view_arg = next;
     else {
       display_view_arg = 0;
-      for (uint8_t i = module_total; i < 17; ++i) memset(&module_summaries[i], 0, sizeof(module_summaries[i]));
+      for (uint8_t i = module_total; i < DISPLAY_MODULE_CAPACITY; ++i) memset(&module_summaries[i], 0, sizeof(module_summaries[i]));
       learn_expected_modules_from_current_list();
     }
     if (list_changed) {
@@ -9066,7 +9067,7 @@ static bool parse_detail_io_aliases(const Frame& req, uint16_t& p, DisplayModule
 }
 
 static void mark_module_group_offline_from_status(uint8_t group) {
-  for (uint8_t i = 0; i < module_total && i < 17; ++i) {
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     if (!module_summaries[i].valid) continue;
     if (!module_summary_matches_group(module_summaries[i], group)) continue;
     module_summaries[i].flags &= (uint8_t)~0x01U;
@@ -9469,7 +9470,7 @@ static void handle_display_module_list(const Frame& req) {
   uint16_t p = 1;
   const uint8_t old_total = module_total;
   const uint8_t raw_total = req.payload[p++];
-  uint8_t wire_total = raw_total > 17 ? 17 : raw_total;
+  uint8_t wire_total = raw_total > DISPLAY_MODULE_CAPACITY ? DISPLAY_MODULE_CAPACITY : raw_total;
   const uint8_t start = req.payload[p++];
   const uint8_t count = req.payload[p++];
   if (wire_total != old_total && display_view_mode != DISPLAY_VIEW_MODULE_LIST) {
@@ -9487,7 +9488,7 @@ static void handle_display_module_list(const Frame& req) {
   module_total = wire_total;
   uint8_t parsed = 0;
   bool list_changed = old_total != module_total;
-  for (; parsed < count && (uint8_t)(start + parsed) < 17; ++parsed) {
+  for (; parsed < count && (uint8_t)(start + parsed) < DISPLAY_MODULE_CAPACITY; ++parsed) {
     if (p + 16 > req.len) break;
     DisplayModuleSummary next_summary;
     memset(&next_summary, 0, sizeof(next_summary));
@@ -9519,7 +9520,7 @@ static void handle_display_module_list(const Frame& req) {
     // Address 0x01 is always the OFE master. Keep the UI correct even when an
     // older master firmware sends MODULE_UNKNOWN or an empty/generic name.
     if (m.addr == ADDR_MASTER) {
-      strncpy(m.name, "OFE Master", sizeof(m.name) - 1);
+      strncpy(m.name, "OFE MCU", sizeof(m.name) - 1);
       m.name[sizeof(m.name) - 1] = 0;
       if (master_uptime_valid && m.uptime_s + 2 < last_master_uptime_s) reset_expected_modules();
       last_master_uptime_s = m.uptime_s;
@@ -9550,7 +9551,7 @@ static void handle_display_module_list(const Frame& req) {
     module_list_cache_request_start = next < module_total ? next : 0;
   }
   if (next >= module_total) {
-    for (uint8_t i = module_total; i < 17; ++i) memset(&module_summaries[i], 0, sizeof(module_summaries[i]));
+    for (uint8_t i = module_total; i < DISPLAY_MODULE_CAPACITY; ++i) memset(&module_summaries[i], 0, sizeof(module_summaries[i]));
     learn_expected_modules_from_current_list();
     home_module_list_refresh_pending = false;
   }
@@ -10424,7 +10425,7 @@ static void serial_cli_print_tasks() {
 
 static void serial_cli_print_status() {
   const uint32_t buf_lines = (gfx && gfx->width()) ? (lvgl_buf_pixels / (uint32_t)gfx->width()) : 0;
-  debug_printf("STATUS FW=%s addr=0x%02X uptime=%lus master=%s CPU=%u%% loopMax=%ums LVGL=B%u\n",
+  debug_printf("STATUS FW=%s addr=0x%02X uptime=%lus MCU=%s CPU=%u%% loopMax=%ums LVGL=B%u\n",
     OFE_MODULE_FW_VERSION,
     (unsigned)module_addr,
     (unsigned long)monotonic_uptime_seconds(),

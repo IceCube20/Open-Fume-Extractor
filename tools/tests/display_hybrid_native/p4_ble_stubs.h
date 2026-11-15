@@ -60,11 +60,13 @@ struct ble_gatt_chr_def {
 struct ble_gatt_svc_def { int type=0; const ble_uuid_t* uuid=nullptr; const ble_gatt_chr_def* characteristics=nullptr; };
 struct ble_gatt_access_ctxt { const ble_gatt_chr_def* chr; int op; os_mbuf* om; };
 struct ble_gap_conn_desc { struct { bool encrypted=false,authenticated=false; int key_size=0; } sec_state; uint16_t conn_handle=1; };
+struct ble_addr_t { uint8_t type=0,val[6]{}; };
 struct ble_gap_event {
   int type=0;
   struct { int status=0; uint16_t conn_handle=1; } connect,enc_change;
   struct { ble_gap_conn_desc conn; int reason=19; } disconnect;
   struct { uint16_t conn_handle=1; struct { int action=BLE_SM_IOACT_NUMCMP; uint32_t numcmp=123456; } params; } passkey;
+  struct { ble_addr_t addr; int8_t rssi=-40; const uint8_t* data=nullptr; uint8_t length_data=0; } disc;
 };
 struct ble_sm_io { int action=0; bool numcmp_accept=false; };
 struct ble_hs_adv_fields {

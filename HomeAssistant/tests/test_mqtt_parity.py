@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("parity_model", ROOT / "HomeAssist
 model = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = model
 spec.loader.exec_module(model)
-MQTT = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+MQTT = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
 MASTER, MODULE = "0000000012345678", "2000000012345678"
 
 
@@ -43,7 +43,7 @@ def fixture(typ=3, family="DDE"):
     return {"developer_mode": True, "modules": [module], "modules_count": 1, "alarm_text": "OK", "uptime_ms": 10000, "heap_free": 179932,
             "heap_min": 100000, "loop_max_ms": 25, "work_mask": 0,
             "output_module": {"valid": True, "rpm": 1200, "power": 600, "fault_text": "OK"}, "master_fw": "2.0.35RC",
-            "master_ip": "192.168.1.2", "datetime": "2026-10-09", "mqtt_state": 0, "mqtt_state_text": "connected",
+            "master_ip": "192.168.1.2", "network_transport": "wifi", "datetime": "2026-10-09", "mqtt_state": 0, "mqtt_state_text": "connected",
             "jbc": {"suction_level": 0, "stat_error": 0, "stat_error_text": "OK"},
             "status_led_enabled": True, "status_led_brightness": 80,
             "ha_routes": {"main_input": {"value": "No input", "options": ["No input"]},
@@ -99,7 +99,7 @@ class ParityTests(unittest.TestCase):
                 self.assertFalse(specs[MODULE + ":" + key].valid)
 
     def test_real_api_exports_profile_icons(self):
-        source = (ROOT / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(encoding="utf-8")
+        source = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h").read_text(encoding="utf-8")
         function = source.split("static void append_universal_entity_defs_json", 1)[1].split("\n}", 1)[0]
         self.assertIn('"icon"', function)
         definition = {"id": 20, "key": "valve", "type": "switch", "mode": "rw",

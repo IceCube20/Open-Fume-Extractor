@@ -12,7 +12,7 @@ $root = (Resolve-Path "$PSScriptRoot/../..").Path
 $commands = Get-Content -LiteralPath $Database -Raw | ConvertFrom-Json
 $entry = $commands | Where-Object { $_.file -match 'exp_nimble_mem\.c$' } | Select-Object -First 1
 if (-not $entry) { throw 'NimBLE allocator compiler recipe missing' }
-$sketches = @('OpenFumeExtractorMaster','Module/DisplayModule_320x480','Module/DisplayModule_800x480','Module/DisplayModule_ST7796_320x480')
+$sketches = @('OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3','Module/DisplayModule_320x480','Module/DisplayModule_800x480','Module/DisplayModule_ST7796_320x480')
 foreach ($relative in $sketches) {
   $sketch = Join-Path $root $relative
   $compileArgs = [System.Collections.Generic.List[string]]::new()

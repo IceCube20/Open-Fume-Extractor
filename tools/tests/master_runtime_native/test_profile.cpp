@@ -1,4 +1,4 @@
-#include "../../../OpenFumeExtractorMaster/src/MasterRuntimeProfile.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterRuntimeProfile.h"
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -8,12 +8,13 @@
 #define CONFIG_ARDUINO_RUNNING_CORE 1
 #define F(x) x
 using configRUN_TIME_COUNTER_TYPE = uint32_t;
-struct FakeTask { uint32_t runtime=0; } tasks[4];
+struct FakeTask { uint32_t runtime=0; } tasks[5];
 using TaskHandle_t = FakeTask*;
 struct TaskStatus_t { uint32_t ulRunTimeCounter=0; };
 static constexpr int pdFALSE=0,eInvalid=0;
 static TaskHandle_t master_loop_task_handle=&tasks[0],web_service_task_handle=&tasks[1];
 static TaskHandle_t mqtt_service_task_handle=&tasks[2],heap_diag_task_handle=&tasks[3];
+static TaskHandle_t mqtt_publish_task_handle=&tasks[4];
 static bool developer_mode_enabled=false;
 static uint32_t clock_ms=0,clock_runtime=0,reads=0;
 static uint32_t millis() { return clock_ms; }
@@ -61,23 +62,26 @@ int main() {
   developer_mode_enabled=true;master_runtime_begin(0);
   master_runtime_window.record(ofe_runtime::Logic,1500);
   clock_ms=1000;clock_runtime=1000000;master_runtime_sample(clock_ms);
-  assert(reads==4&&!master_runtime_last.tasks[0].valid); // warmup is not 0% CPU
-  for(int i=0;i<4;++i)tasks[i].runtime+=100000*(i+1);
+  assert(reads==5&&!master_runtime_last.tasks[0].valid); // warmup is not 0% CPU
+  for(int i=0;i<5;++i)tasks[i].runtime+=100000*(i+1);
   master_runtime_window.record(ofe_runtime::Scheduler,2000);
   clock_ms=2000;clock_runtime=2000000;master_runtime_sample(clock_ms);
-  for(int i=0;i<4;++i)assert(master_runtime_last.tasks[i].valid&&master_runtime_last.tasks[i].percent==10*(i+1));
+  for(int i=0;i<5;++i)assert(master_runtime_last.tasks[i].valid&&master_runtime_last.tasks[i].percent==10*(i+1));
   assert(master_runtime_last.phases[ofe_runtime::Scheduler].total_us==2000);
   assert(master_runtime_last.phases[ofe_runtime::Logic].calls==0);
   Buffer json;append_master_runtime_json(json);
   assert(json.text.find("\"id\":\"mqtt\",\"core\":1,\"cpu_pct\":30")!=std::string::npos);
+  assert(json.text.find("\"id\":\"mqtt_send\",\"core\":0,\"cpu_pct\":50")!=std::string::npos);
   assert(json.text.find("\"avg_us\":2000")!=std::string::npos);
   web_service_task_handle=nullptr;clock_ms+=1000;clock_runtime+=1000000;master_runtime_sample(clock_ms);
   assert(!master_runtime_last.tasks[ofe_runtime::HttpTask].valid); // inline HTTP belongs to loopTask
+  mqtt_publish_task_handle=nullptr;clock_ms+=1000;clock_runtime+=1000000;master_runtime_sample(clock_ms);
+  assert(!master_runtime_last.tasks[ofe_runtime::MqttPublishTask].valid); // direct fallback has no worker
   developer_mode_enabled=false;master_runtime_begin(clock_ms);
   const auto previous_reads=reads;master_runtime_sample(clock_ms);
   Buffer off;append_master_runtime_json(off);assert(off.text.empty()&&reads==previous_reads&&!master_runtime_last.active);
   developer_mode_enabled=true;master_runtime_begin(clock_ms);
   clock_ms+=1000;clock_runtime+=1000000;master_runtime_sample(clock_ms);
   assert(!master_runtime_last.tasks[0].valid);
-  puts("PASS: actual task/phase profiling hooks+JSON: gated sampling, four task loads, unavailable/fallback tasks, re-enable warmup, window isolation, 32/64-bit wrap and bounded storage");
+  puts("PASS: actual task/phase profiling hooks+JSON: gated sampling, five task loads, core-0 publish task, unavailable/fallback tasks, re-enable warmup, window isolation, 32/64-bit wrap and bounded storage");
 }

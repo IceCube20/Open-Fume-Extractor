@@ -8,7 +8,7 @@ NAMES = ('DisplayModule_320x480', 'DisplayModule_800x480',
 
 class JbcDisplayDetailTests(unittest.TestCase):
     def test_shared_wire_and_ui(self):
-        canonical = (ROOT / 'OpenFumeExtractorMaster/src/bus/OfeJbcDetailWire.h').read_bytes()
+        canonical = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/OfeJbcDetailWire.h').read_bytes()
         source = ROOT / 'Module/DisplayModule_800x480/src'
         for name in NAMES:
             folder = ROOT / 'Module' / name / 'src'
@@ -17,7 +17,7 @@ class JbcDisplayDetailTests(unittest.TestCase):
                 self.assertEqual((source / file).read_bytes(), (folder / file).read_bytes())
 
     def test_transport_parity_and_opt_in(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
         self.assertIn('consumeDisplayJbcExtension(display, resp, rp, marker)', source)
         self.assertIn('consumeDisplayJbcExtension(*display, resp, rp, marker)', source)
         self.assertEqual(source.count('? sendDisplayJbcPage(rec, *detail)'), 2)
@@ -48,9 +48,9 @@ class JbcDisplayDetailTests(unittest.TestCase):
         self.assertIn('jbc_detail_row_controls(i, number ? NUMBER', ui)
 
     def test_twelve_rows_with_legacy_negotiation(self):
-        wire = (ROOT / 'OpenFumeExtractorMaster/src/bus/OfeJbcDetailWire.h').read_text()
+        wire = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/OfeJbcDetailWire.h').read_text()
         state = (ROOT / 'Module/DisplayModule_800x480/src/OfeJbcDetailState.h').read_text()
-        scheduler = (ROOT / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text()
+        scheduler = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text()
         self.assertIn('WINDOW = 12', wire)
         self.assertIn('LEGACY_REQUEST = 0xB0', wire)
         self.assertIn('REQUEST = 0xB2', wire)
@@ -71,7 +71,7 @@ class JbcDisplayDetailTests(unittest.TestCase):
         self.assertIn('LV_EVENT_CANCEL', ui)
 
     def test_reuses_common_capabilities(self):
-        source = (ROOT / 'OpenFumeExtractorMaster/src/DisplayJbcCatalog.h').read_text()
+        source = (ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/DisplayJbcCatalog.h').read_text()
         for text in ('ha_jbc_control(m, id', 'ha_jbc_counter_supported', 'ha_jbc_counter_value',
                      'jbc_usb_core_state(m)', 'master_developer_mode_enabled_for_modules()'):
             self.assertIn(text, source)

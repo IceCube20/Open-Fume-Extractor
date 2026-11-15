@@ -1,10 +1,13 @@
 param(
   [string]$ProjectRoot = (Join-Path $PSScriptRoot '..'),
   [string]$Python = "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
-  [string]$MasterBuildPath = ''
+  [string]$MasterBuildPath = '',
+  [string]$P4BuildPath = '',
+  [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
+if (!(Test-Path -LiteralPath $Python)) { $Python = (Get-Command python -ErrorAction Stop).Source }
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $release = Join-Path $root 'GitHub-Release'
 $firmwareRoot = Join-Path $release 'firmware'
@@ -17,16 +20,21 @@ $publicKey = Join-Path $root 'Open Fume Extractor Signing Key\ofe_ed25519_public
 $logo = Join-Path $root 'assets\IceCube20_96.png'
 
 if ([string]::IsNullOrWhiteSpace($MasterBuildPath)) {
-  $MasterBuildPath = Join-Path $release 'build\community-master'
+  $MasterBuildPath = Join-Path $root 'tools\tests\build-checks\community-mcu\OpenFumeExtractorMCU_S3\build\esp32.esp32.esp32s3'
 }
 $MasterBuildPath = [IO.Path]::GetFullPath($MasterBuildPath)
+if ([string]::IsNullOrWhiteSpace($P4BuildPath)) {
+  $P4BuildPath = Join-Path $root 'tools\tests\build-checks\community-mcu\OpenFumeExtractorMCU_P4\build\esp32.esp32.esp32p4'
+}
+$P4BuildPath = [IO.Path]::GetFullPath($P4BuildPath)
 
 foreach ($required in @($Python, $signer, $privateKey, $publicKey, $docsRoot, $logo)) {
   if (!(Test-Path -LiteralPath $required)) { throw "Required release input missing: $required" }
 }
 
 $targets = @(
-  @{ Name='OpenFumeExtractor-Master'; Label='Open Fume Extractor Master'; Target='MASTER'; Chip='ESP32-S3'; Flash='16 MB'; App=(Join-Path $MasterBuildPath 'OpenFumeExtractorMaster.ino.bin'); Merged=(Join-Path $MasterBuildPath 'OpenFumeExtractorMaster.ino.merged.bin') },
+  @{ Name='OpenFumeExtractor-Master'; Label='Open Fume Extractor MCU-S3'; Target='MASTER'; Chip='ESP32-S3'; Flash='16 MB'; App=(Join-Path $MasterBuildPath 'OpenFumeExtractorMCU_S3.ino.bin'); Merged=(Join-Path $MasterBuildPath 'OpenFumeExtractorMCU_S3.ino.merged.bin') },
+  @{ Name='OpenFumeExtractor-MCU-P4'; Label='Open Fume Extractor MCU-P4 (Waveshare PRE-V3)'; Target='MASTER'; Chip='ESP32-P4'; Flash='16 MB'; App=(Join-Path $P4BuildPath 'OpenFumeExtractorMCU_P4.ino.bin'); Merged=(Join-Path $P4BuildPath 'OpenFumeExtractorMCU_P4.ino.merged.bin') },
   @{ Name='JBC-FAE-Bus'; Label='JBC FAE Bus'; Target='JBC_BUS'; Chip='ESP32'; Flash='4 MB'; App='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.bin'; Merged='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.merged.bin' },
   @{ Name='JBC-USB'; Label='JBC USB'; Target='JBC_USB'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.bin'; Merged='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.merged.bin' },
   @{ Name='Fan-IO'; Label='Fan/IO'; Target='FAN_IO'; Chip='ESP32'; Flash='4 MB'; App='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.bin'; Merged='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.merged.bin' },
@@ -97,11 +105,16 @@ foreach ($target in $targets) {
   }
   $info = Get-FirmwareInfo $app
   $mergedInfo = Get-FirmwareInfo $merged
+  $header = [IO.File]::ReadAllBytes($app)
+  if ($header.Length -lt 24) { throw "Truncated firmware image: $app" }
+  $chipId = [int]$header[12] -bor ([int]$header[13] -shl 8)
+  $expectedChip = switch ($target.Chip) { 'ESP32-S3' { 9 } 'ESP32-P4' { 18 } 'ESP32' { 0 } default { throw 'Unknown firmware chip' } }
+  if ($header[0] -ne 0xE9 -or $chipId -ne $expectedChip) { throw "Wrong ESP image architecture for $($target.Name)" }
   if ($info.Target -ne $target.Target -or $mergedInfo.Target -ne $target.Target -or $info.Version -ne $mergedInfo.Version) {
     throw "Target/version mismatch for $($target.Name)"
   }
   if ($target.Target -eq 'MASTER') {
-    $sourcePath = Join-Path $root 'OpenFumeExtractorMaster\src\MasterBuildConfig.h'
+    $sourcePath = Join-Path $root 'OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\MasterBuildConfig.h'
     $prefix = 'MASTER_FW'
     Assert-CommunityMaster $app
     if ($info.Version -match 'Developer') { throw 'Developer firmware must not be published' }
@@ -118,7 +131,11 @@ foreach ($target in $targets) {
     $macro.Groups[1].Value
   }
   $suffixes = [regex]::Matches($sourceText, '(?m)^#define\s+' + $prefix + '_SUFFIX\s+"([^"]+)"')
-  if ($suffixes.Count -eq 1) {
+  if ($target.Target -eq 'MASTER') {
+    $wantedSuffix = 'RC'
+    $suffix = $suffixes | Where-Object { $_.Groups[1].Value -eq $wantedSuffix } | Select-Object -First 1
+    if (!$suffix) { throw "MCU release suffix missing: $sourcePath" }
+  } elseif ($suffixes.Count -eq 1) {
     $suffix = $suffixes[0]
   } elseif ($target.Target -eq 'DISPLAY_800X480') {
     # Only publish the ordinary RGB build, never a diagnostic/SRAM trial.
@@ -133,6 +150,11 @@ foreach ($target in $targets) {
     throw "Stale firmware for $($target.Name): compiled $($info.Version), source $expectedVersion"
   }
   Assert-MergedContainsApp $app $merged
+}
+
+if ($ValidateOnly) {
+  Write-Output 'All firmware inputs validated; no files changed, signed or published.'
+  return
 }
 
 if (Test-Path -LiteralPath $firmwareRoot) {

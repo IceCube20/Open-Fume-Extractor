@@ -18,7 +18,7 @@ def main():
     ble = (P4 / "OfeP4DisplayBle.h").read_text()
     tunnel = (ROOT / "Module/DisplayModule_800x480/src/OfeDisplayTunnel.h").read_text(encoding="utf-8-sig")
     config = tunnel[tunnel.index("namespace ofe_wifi {"):tunnel.index("inline uint64_t nonce()")]+"}\n"
-    master_ble = (ROOT / "OpenFumeExtractorMaster/src/OfeDisplayBle.h").read_text(encoding="utf-8-sig")
+    master_ble = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeDisplayBle.h").read_text(encoding="utf-8-sig")
     protocol = master_ble[master_ble.index("namespace ofe_ble {"):master_ble.index("class OfeDisplayBle {")]
     protocol = protocol.replace("namespace ofe_ble {", "namespace ofe_master_ble {")
     cpp = OUT / "test.cpp"

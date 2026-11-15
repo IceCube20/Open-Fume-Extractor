@@ -5,7 +5,7 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "OpenFumeExtractorMaster/src"
+SRC = ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 
 
 class SignalCatalogueTests(unittest.TestCase):

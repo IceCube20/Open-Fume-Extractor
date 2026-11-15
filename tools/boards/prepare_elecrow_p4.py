@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "Module/DisplayModule_800x480"
 DEST = ROOT / "Module/DisplayModule_P4_800x480"
 TEMPLATES = Path(__file__).resolve().parent / "elecrow_p4_5inch"
-P4_FW_PATCH = 14
+P4_FW_PATCH = 16
 P4_FW_SUFFIX = "RC"
 
 
@@ -147,7 +147,7 @@ def generated_files():
     end = source.index('  Serial.printf("LVGL renderer:', start)
     source = source[:start] + ('  ofe_p4_log_sdk_cache_profile();\n'
         '  Serial.println("P4: board-owner RNG/RGB test profile; no S3 SDK required");\n'
-        '  Serial.println("P4: C6 hosted BLE pairing + RS485/WiFi OTA; requires P4-aware Master");\n'
+        '  Serial.println("P4: C6 hosted BLE pairing + RS485/WiFi OTA; requires P4-aware MCU");\n'
         '  Serial.println("P4 BLE ECC: software-only + P4 hardware RNG + self-test v3");\n') + source[end:]
     source = source.replace("display800>", "displayP4>")
     source = once(source, "// --- LVGL performance profiler", '''static void p4_print_renderer_stats() {

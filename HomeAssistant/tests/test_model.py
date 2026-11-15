@@ -20,6 +20,34 @@ def definition(typ="number", mode="rw", **meta):
 
 
 class ModelTests(unittest.TestCase):
+    def test_mcu_network_diagnostic_updates_without_identity_change(self):
+        for language in ("de", "en"):
+            for developer in (False, True):
+                state = {"ui_lang": language, "developer_mode": developer}
+                for transport, expected in (("ethernet", "Ethernet"),
+                                            ("wifi", "WLAN" if language == "de" else "WiFi"),
+                                            ("ap", "Access Point"),
+                                            ("offline", "Getrennt" if language == "de" else "Disconnected"),
+                                            ("ethernet", "Ethernet")):
+                    state["network_transport"] = transport
+                    with self.subTest(language=language, developer=developer, transport=transport):
+                        spec = model.build_specs(MASTER, state, {})[MASTER + ":network_transport"]
+                        self.assertEqual(spec.value, expected)
+                        self.assertEqual(spec.name, "Netzwerk" if language == "de" else "Network")
+                        self.assertEqual(spec.icon, "mdi:lan")
+                        self.assertTrue(spec.valid)
+                        self.assertTrue(spec.diagnostic)
+                        self.assertEqual(spec.group, "diagnostics")
+                        self.assertIsNone(spec.unit)
+                        self.assertIsNone(spec.state_class)
+
+    def test_mcu_network_missing_or_invalid_is_not_invented_as_wifi(self):
+        self.assertNotIn(MASTER + ":network_transport", model.build_specs(MASTER, {}, {}))
+        for transport in (None, "unknown", [], False):
+            spec = model.build_specs(MASTER, {"network_transport": transport}, {})[MASTER + ":network_transport"]
+            self.assertIsNone(spec.value)
+            self.assertFalse(spec.valid)
+
     def test_confirmed_station_absence_ignores_all_cached_station_classes(self):
         for family in ("SOLD", "HA", "CL", "PH", "FE", "SF", "UNKNOWN"):
             module = {"type": 9, "jbc_usb_station_name": "Old station",
@@ -115,7 +143,7 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(spec.attributes["ofe_led_event"], event)
 
     def test_led_styles_match_master_web_event_mapping(self):
-        source = (ROOT.parent / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(encoding="utf-8-sig")
+        source = (ROOT.parent / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h").read_text(encoding="utf-8-sig")
         styles = re.findall(r"case (\d+):return \{c:'(#[0-9a-f]+)',kind:'([^']+)',(period|step):(\d+)", source)
         self.assertEqual(len(styles), 13)
         for event, color, effect, timing, milliseconds in styles:

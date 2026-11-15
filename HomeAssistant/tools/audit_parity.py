@@ -19,7 +19,7 @@ sys.modules[spec.name] = fixtures
 spec.loader.exec_module(fixtures)
 model, MASTER, MODULE = fixtures.model, fixtures.MASTER, fixtures.MODULE
 COUNTERS = re.findall(r'HA_JBC_COUNTER\((\w+), (\w+), (0x[0-9A-F]+)U, (\w+), "([^"]+)", "([^"]+)", ("min"|nullptr)\)',
-                     (HA.parent / "OpenFumeExtractorMaster/src/JbcUsbHaCounters.h").read_text(encoding="utf-8"))
+                     (HA.parent / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/JbcUsbHaCounters.h").read_text(encoding="utf-8"))
 
 
 def definition(id, key, typ, mode="ro", label=None, **meta):

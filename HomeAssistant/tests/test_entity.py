@@ -104,8 +104,21 @@ class EntityTests(unittest.IsolatedAsyncioTestCase):
         item = entity.OfeEntity(self.coordinator, spec)
         self.assertTrue(item._attr_has_entity_name)
         self.assertEqual(item.name, "Power")
-        self.assertEqual(item.device_info["name"], "0x01 Open Fume Extractor Master")
-        self.assertEqual(item.device_info["model"], "Open Fume Extractor Master")
+        self.assertEqual(item.device_info["name"], "0x01 Open Fume Extractor MCU")
+        self.assertEqual(item.device_info["model"], "Open Fume Extractor MCU")
+
+    def test_mcu_model_changes_metadata_without_changing_identity(self):
+        item = entity.OfeEntity(self.coordinator, model.Spec("MASTER", "power", "sensor", "Power", 55))
+        identity = item._attr_unique_id
+        identifiers = item.device_info["identifiers"]
+        for mcu in ("MCU-S3", "MCU-P4"):
+            self.coordinator.data["master_model"] = mcu
+            self.assertEqual(item.device_info["name"], "0x01 Open Fume Extractor " + mcu)
+            self.assertEqual(item.device_info["model"], mcu)
+            self.assertEqual(item.extra_state_attributes["ofe_device_model"], mcu)
+            self.assertEqual(item.extra_state_attributes["ofe_device_name"], item.device_info["name"])
+            self.assertEqual(item._attr_unique_id, identity)
+            self.assertEqual(item.device_info["identifiers"], identifiers)
 
     def test_card_metadata_uses_live_module_type_and_transport(self):
         self.coordinator.modules["MODULE"].update(type=3, transport="rs485")
@@ -117,7 +130,16 @@ class EntityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.entity.extra_state_attributes["ofe_transport"], "wifi")
         master = entity.OfeEntity(self.coordinator, model.Spec("MASTER", "power", "sensor", "Power", 55))
         self.assertEqual(master.extra_state_attributes["ofe_device_type"], 0)
-        self.assertEqual(master.extra_state_attributes["ofe_device_model"], "Open Fume Extractor Master")
+        self.assertEqual(master.extra_state_attributes["ofe_device_model"], "Open Fume Extractor MCU")
+
+    def test_mcu_card_transport_follows_active_network_and_keeps_identity(self):
+        master = entity.OfeEntity(self.coordinator, model.Spec("MASTER", "power", "sensor", "Power", 55))
+        identity = master._attr_unique_id
+        self.assertEqual(master.extra_state_attributes["ofe_transport"], "wifi")
+        for transport in ("ethernet", "wifi", "ap", "offline", "ethernet"):
+            self.coordinator.data["network_transport"] = transport
+            self.assertEqual(master.extra_state_attributes["ofe_transport"], transport)
+            self.assertEqual(master._attr_unique_id, identity)
 
     async def test_removed_channel_can_be_discovered_again_without_duplicates(self):
         add = Mock()

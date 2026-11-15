@@ -1,5 +1,5 @@
 #include "OfeDisplayTunnel.h"
-#include "../../../OpenFumeExtractorMaster/src/WifiTiming.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WifiTiming.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>

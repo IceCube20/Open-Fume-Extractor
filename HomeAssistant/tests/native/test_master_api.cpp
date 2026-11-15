@@ -111,7 +111,7 @@ static bool master_cmd_calibrate_fanio_filter(uint8_t addr, uint8_t action, uint
   dispatched = "fanio_reset_filter"; return command_ok;
 }
 
-#include "../../../OpenFumeExtractorMaster/src/WebHomeAssistant.inc.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebHomeAssistant.inc.h"
 
 static void reset(const char* action = "entity") {
   web.args = {{"action", action}, {"addr", "32"}, {"uid", "200000001234abcd"}};

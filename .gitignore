@@ -21,4 +21,7 @@ Open Fume Extractor Signing Key/
 
 # Local developer credentials
 OpenFumeExtractorMaster/src/MasterPrivateConfig.h
+**/src/MasterPrivateConfig.h
+MasterP4/**/MasterPrivateConfig.h
+**/src/MasterBoardLocalConfig.h
 

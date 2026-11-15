@@ -122,7 +122,7 @@ private:
     button(form_,LV_SYMBOL_REFRESH,column-44,wifi_y+28,44,scanEvent);
     ssid_=field("SSID",0,wifi_y+82,column,32);
     password_=field(text("Password","Passwort"),0,wifi_y+136,column,64,true);
-    section(text("Master","Master"),right,master_y,column);
+    section(text("MCU","MCU"),right,master_y,column);
     host_=field(text("IP / host","IP / Host"),right,master_y+28,column,63);
     key_=field(text("Pairing code","Kopplungscode"),right,master_y+82,column,32,true);
     lv_textarea_set_accepted_chars(key_,"0123456789ABCDEFabcdef");
@@ -135,8 +135,8 @@ private:
     lv_obj_set_style_bg_color(apply,ui_theme_color(0x176792,0x14628F),0);
     lv_obj_set_style_text_color(apply,lv_color_white(),0);
     lv_obj_set_style_text_color(lv_obj_get_child(apply,0),lv_color_white(),0);
-    button(form_,text("From master","Vom Master"),action_width+12,actions_y,action_width,importEvent);
-    auto* forget=button(form_,text("Forget master pairing","Master-Kopplung löschen"),
+    button(form_,text("From MCU","Vom MCU"),action_width+12,actions_y,action_width,importEvent);
+    auto* forget=button(form_,text("Forget MCU pairing","MCU-Kopplung löschen"),
       right,wide ? 278 : 604,column,forgetEvent);
     lv_obj_set_style_text_color(forget,ui_theme_color(0xFFAAA4,0xAF3434),0);
     lv_obj_set_style_text_color(lv_obj_get_child(forget,0),ui_theme_color(0xFFAAA4,0xAF3434),0);
@@ -169,7 +169,7 @@ private:
       v.result==6 ? text("Scan failed","Netzwerksuche fehlgeschlagen") : "";
     if (v.scanning && v.result!=5) result=text("Scanning...","Suche läuft...");
     if (ble.active) result=ble.phase==ofe_ble::CONFIRM ? text("Compare code","Code vergleichen") :
-      ble.phase==ofe_ble::AUTHENTICATING ? text("Confirm on the master too","Auch am Master bestätigen") :
+      ble.phase==ofe_ble::AUTHENTICATING ? text("Confirm on the MCU too","Auch am MCU bestätigen") :
       ble.phase==ofe_ble::SAVING ? text("Bluetooth: saving","Bluetooth: speichert") :
       text("Bluetooth pairing active","Bluetooth-Kopplung aktiv");
     else if (ble_feedback_ && ble.phase==ofe_ble::DONE) result=text("Bluetooth: paired","Bluetooth: gekoppelt");
@@ -178,9 +178,9 @@ private:
     else if (ble_feedback_ && ble.phase==ofe_ble::CANCELLED) result=text("Bluetooth: cancelled","Bluetooth: abgebrochen");
     else if (ble_feedback_ && ble.phase==ofe_ble::EXPIRED) result=text("Bluetooth: timed out","Bluetooth: Zeit abgelaufen");
     char line[128];
-    const char* transport=v.active ? text("WiFi: master connected","WLAN: Master verbunden") :
-      v.config.mode==ofe_wifi::WIRELESS ? text("WiFi: waiting for master","WLAN: wartet auf Master") :
-      master_link_online() ? "RS485" : text("No master connection","Keine Master-Verbindung");
+    const char* transport=v.active ? text("WiFi: MCU connected","WLAN: MCU verbunden") :
+      v.config.mode==ofe_wifi::WIRELESS ? text("WiFi: waiting for MCU","WLAN: wartet auf MCU") :
+      master_link_online() ? "RS485" : text("No MCU connection","Keine MCU-Verbindung");
     snprintf(line,sizeof(line),"%s%s%s",transport,
       v.wifi ? " | " : "",v.wifi ? v.ip : "");
     if (v.wifi) {
@@ -228,8 +228,8 @@ private:
     controlTheme(panel);
     lv_obj_set_style_pad_all(panel,0,0); lv_obj_remove_flag(panel,LV_OBJ_FLAG_SCROLLABLE);
     ofe_display_ui::flat(panel,ofe_display_ui::surface(),8);
-    label(panel,kind==1 ? text("Forget master pairing?","Master-Kopplung löschen?") :
-      text("Same code on the master?","Gleicher Code im Master?"),12,12,width-24);
+    label(panel,kind==1 ? text("Forget MCU pairing?","MCU-Kopplung löschen?") :
+      text("Same code on the MCU?","Gleicher Code im MCU?"),12,12,width-24);
     if (kind==2) {
       char code[8]; snprintf(code,sizeof(code),"%06lu",(unsigned long)pin);
       auto* value=label(panel,code,12,48,width-24);
@@ -284,7 +284,7 @@ private:
     const char* key=lv_textarea_get_text(ui->key_);
     bool key_ok=ofe_wifi::unhex(key,c.key,16);
     if ((!key_ok && c.mode!=ofe_wifi::WIRED) || !display_wifi.save(c))
-      lv_label_set_text(ui->state_,ui->text("Check SSID, master and 32-digit code","SSID, Master und 32-stelligen Code prüfen"));
+      lv_label_set_text(ui->state_,ui->text("Check SSID, MCU and 32-digit code","SSID, MCU und 32-stelligen Code prüfen"));
     else { ui->dirty_=false; ui->reload_on_save_=true; ui->hideKeyboard(); }
   }
   static void networkEvent(lv_event_t* e) {

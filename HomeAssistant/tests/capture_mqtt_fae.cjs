@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/MasterMqtt.inc.h'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h'), 'utf8');
 const captured = [];
 const context = vm.createContext({
   master_device_id: 'test-master', master_extmem_malloc_enabled: false, developer_mode_enabled: true,
@@ -37,7 +37,7 @@ const translate = text => text
   .replace(/String\((m\.station_addr|addr), HEX\)/g, '$1.toString(16)')
   .replace(/char station_address\[6\];\s*snprintf\([^;]*;/, 'let station_address = " 0x" + m.station_addr.toString(16).toUpperCase().padStart(2, "0");')
   .replace('hxAddr.toUpperCase();', 'hxAddr = hxAddr.toUpperCase();');
-const iconSource = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/src/HaEntityIcons.h'), 'utf8');
+const iconSource = fs.readFileSync(path.join(__dirname, '../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HaEntityIcons.h'), 'utf8');
 context.HA_ENTITY_ICONS = [...iconSource.matchAll(/\{"([^"]+)", "(mdi:[^"]+)"\}/g)].map(m => ({key: m[1], icon: m[2]}));
 const iconFunction = iconSource.match(/static inline const char\* ha_entity_icon\([\s\S]*?\n}/)[0]
   .replace(/^static inline const char\* [\s\S]*?\{/, 'function ha_entity_icon(key, component, unit = null) {')

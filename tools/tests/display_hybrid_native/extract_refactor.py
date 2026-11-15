@@ -23,10 +23,10 @@ names = ['modbus_func_is_read', 'modbus_func_is_write', 'modbus_send_request',
          'modbus_queue_write', 'modbus_reset_exchange', 'process_profile_rx',
          'modbus_response_timeout_ms', 'profile_poll_tick']
 Path(sys.argv[1]).write_text('\n\n'.join(function(name) for name in names), encoding='utf-8')
-source = (root / 'OpenFumeExtractorMaster/src/WebSecurity.inc.h').read_text(encoding='utf-8')
+source = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebSecurity.inc.h').read_text(encoding='utf-8')
 Path(sys.argv[1]).with_name('generated_security.inc.h').write_text(
     function('web_check_credentials') + '\n' + function('web_require_config_auth'), encoding='utf-8')
-source = (root / 'OpenFumeExtractorMaster/src/MasterMqtt.inc.h').read_text(encoding='utf-8')
+source = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h').read_text(encoding='utf-8')
 Path(sys.argv[1]).with_name('generated_mqtt_offline.inc.h').write_text(
     function('mqtt_publish_all_availability_offline'), encoding='utf-8')
 Path(sys.argv[1]).with_name('generated_mqtt_availability.inc.h').write_text(

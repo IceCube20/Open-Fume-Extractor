@@ -8,8 +8,8 @@ const artifacts = path.resolve(__dirname, "artifacts");
 const master = "0000000012345678", moduleUid = "2000000012345678";
 const row = (entity_id, uid, key, group, name, state = "on", extra = {}) => ({entity_id, state, attributes: {
   ofe_master_uid: master, ofe_uid: uid, ofe_key: key, ofe_group: group, ofe_name: name,
-  ofe_device_name: uid === master ? "0x01 Open Fume Extractor Master" : "0x20 Fan/IO Pro Testbank", ofe_active: true,
-  ofe_device_type: uid === master ? 0 : 3, ofe_device_model: uid === master ? "Open Fume Extractor Master" : "Fan/IO Pro",
+  ofe_device_name: uid === master ? "0x01 Open Fume Extractor MCU-P4" : "0x20 Fan/IO Pro Testbank", ofe_active: true,
+  ofe_device_type: uid === master ? 0 : 3, ofe_device_model: uid === master ? "MCU-P4" : "Fan/IO Pro",
   ofe_transport: uid === master ? "wifi" : "rs485", ...extra,
 }});
 const states = Object.fromEntries([
@@ -93,6 +93,16 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelectorAll(".device").length), 2);
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelector(".eco").hidden), false);
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelector(".transport span").textContent), "Wi-Fi");
+    for (const transport of ["ethernet", "wifi", "ethernet"]) {
+      await page.evaluate(transport => {
+        for (const state of Object.values(hassFixture.states))
+          if (state.attributes.ofe_uid === state.attributes.ofe_master_uid) state.attributes.ofe_transport = transport;
+        card.hass = hassFixture;
+      }, transport);
+      assert.equal(await page.evaluate(() => card.shadowRoot.querySelector(".transport").hidden), false);
+      assert.equal(await page.evaluate(() => card.shadowRoot.querySelector(".transport span").textContent), transport === "ethernet" ? "Ethernet" : "Wi-Fi");
+      assert.equal(await page.evaluate(() => card.shadowRoot.querySelector(".transport ha-icon").getAttribute("icon")), transport === "ethernet" ? "mdi:ethernet" : "mdi:wifi");
+    }
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelectorAll(".device")[1].querySelector(".transport span").textContent), "RS485");
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelectorAll(".device")[1].querySelector("progress").value), 55);
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelectorAll(".device")[1].querySelector("progress").parentElement.dataset.entity), "number.ofe_fan_power");
@@ -230,6 +240,67 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     assert.equal(await page.evaluate(() => [...card.shadowRoot.querySelectorAll(".device")].find(el => el.querySelector(".device-title").textContent === "JBC USB").querySelectorAll(".metric").length), 4);
     assert.equal(await page.evaluate(() => [...card.shadowRoot.querySelectorAll(".device")].find(el => el.querySelector(".device-title").textContent === "Display 800x480").querySelectorAll(".metric").length), 4);
     assert.equal(await page.evaluate(() => [...card.shadowRoot.querySelectorAll(".device")].find(el => el.querySelector(".device-title").textContent === "Display 800x480").querySelector(".model").hidden), true);
+    await page.setViewportSize({width: 1600, height: 1000});
+    await page.evaluate(() => {
+      const host = document.querySelector("#host");
+      host.style.cssText = "max-width:none;width:1200px";
+      window.columnsEditor = document.createElement("ofe-card-editor");
+      columnsEditor.hass = hassFixture;
+    });
+    const checkColumns = expected => page.waitForFunction(expected =>
+      getComputedStyle(card.shadowRoot.querySelector(".cards")).gridTemplateColumns.split(" ").length === expected, expected);
+    for (const automatic of [false, true]) {
+      for (const columns of [1, 4, 2, 3, 1, 4]) {
+        await page.evaluate(async ({columns, automatic}) => {
+          const Strategy = customElements.get("ll-strategy-dashboard-ofe-dashboard");
+          columnsEditor.setConfig({type: automatic ? "custom:ofe-dashboard" : "custom:ofe-overview-card", columns: 1});
+          let edited;
+          columnsEditor.addEventListener("config-changed", event => {edited = event.detail.config;}, {once: true});
+          const select = columnsEditor.shadowRoot.querySelector('[data-field="columns"] select');
+          select.value = String(columns); select.dispatchEvent(new Event("change", {bubbles: true}));
+          if (automatic) {
+            const dashboard = await Strategy.generate(edited, hassFixture);
+            if (dashboard.views[0].type !== "panel") throw Error("Generated overview must use full panel width");
+            card.setConfig(dashboard.views[0].cards[0]);
+          } else card.setConfig(edited);
+        }, {columns, automatic});
+        await checkColumns(columns);
+      }
+    }
+    await page.evaluate(() => {
+      window.layoutControl = card.shadowRoot.querySelector("native-card").shadowRoot.querySelector("select");
+      layoutControl.focus(); layoutControl.value = "Low";
+      window.layoutPanel = card._panels[0].root;
+      window.layoutCreated = createdCards;
+    });
+    for (const [width, columns] of [[520, 1], [800, 2], [1000, 3], [1200, 4]]) {
+      await page.locator("#host").evaluate((el, width) => el.style.width = width + "px", width);
+      await checkColumns(columns);
+      assert.equal(await page.evaluate(() => card._panels[0].root === layoutPanel && createdCards === layoutCreated && layoutControl.value === "Low"), true);
+    }
+    await page.evaluate(() => card.setConfig({...card._config, columns: 1}));
+    await checkColumns(1);
+    assert.equal(await page.evaluate(() => createdCards === layoutCreated && layoutControl === card.shadowRoot.querySelector("native-card").shadowRoot.querySelector("select")), true);
+    await page.screenshot({path: path.join(artifacts, "columns-one-desktop.png"), fullPage: true});
+    await page.evaluate(() => card.setConfig({...card._config, columns: 4}));
+    await checkColumns(4);
+    await page.screenshot({path: path.join(artifacts, "columns-four-desktop.png"), fullPage: true});
+    await page.locator("#host").evaluate(el => el.style.display = "none");
+    await page.waitForFunction(() => card.shadowRoot.querySelector(".cards").style.gridTemplateColumns.startsWith("repeat(1,"));
+    await page.locator("#host").evaluate(el => el.style.removeProperty("display"));
+    await checkColumns(4);
+    await page.evaluate(() => {card.remove();document.querySelector("#host").append(card);});
+    await checkColumns(4);
+    assert.equal(await page.evaluate(() => createdCards === layoutCreated && card._panels[0].root === layoutPanel), true);
+    await page.locator("#host").evaluate(el => el.style.cssText = "max-width:none");
+    await page.setViewportSize({width: 390, height: 844});
+    await checkColumns(1);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({path: path.join(artifacts, "columns-four-mobile.png"), fullPage: true});
+    await page.evaluate(() => {
+      document.querySelector("#host").style.cssText = "";
+      const config = {...card._config}; delete config.columns; card.setConfig(config);
+    });
     await page.setViewportSize({width: 1200, height: 1000});
     await page.screenshot({path: path.join(artifacts, "cards-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
@@ -254,7 +325,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><style>
         attributes: {...hassFixture.states["sensor.ofe_requested"].attributes, ofe_master_uid: "OTHER", ofe_uid: "OTHER"}};
       card.hass = hassFixture;
     });
-    assert.match(await page.evaluate(() => card.shadowRoot.querySelector(".message").textContent), /Master/);
+    assert.match(await page.evaluate(() => card.shadowRoot.querySelector(".message").textContent), /MCU/);
     assert.equal(await page.evaluate(() => card.shadowRoot.querySelectorAll("native-card").length), 0);
     await page.evaluate(() => {
       delete hassFixture.states["sensor.other"];

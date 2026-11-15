@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
 $root = (Resolve-Path "$PSScriptRoot/../../..").Path
-$src = Join-Path $root 'OpenFumeExtractorMaster/src'
+$src = Join-Path $root 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 $python = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
 & $python "$PSScriptRoot/extract_modbus.py" "$build/module_functions.h"
 if ($LASTEXITCODE -ne 0) { throw 'Modbus decoder extraction failed' }

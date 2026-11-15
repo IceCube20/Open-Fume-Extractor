@@ -2,7 +2,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const assert=require('node:assert/strict');
 const {chromium}=require('playwright');
-const src=fs.readFileSync(path.join(__dirname,'../../OpenFumeExtractorMaster/src/WebStatus.inc.h'),'utf8');
+const src=fs.readFileSync(path.join(__dirname,'../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h'),'utf8');
 const css=src.match(/<style>([\s\S]*?)<\/style>/)[1];
 const helpers=['moduleSerialGlyph','moduleSwitchGlyph','moduleFanGlyph','moduleMonitorGlyph','jbcUsbPortGlyph','escHtml']
   .map(name=>src.split('\n').find(line=>line.startsWith('function '+name+'('))).join('\n');

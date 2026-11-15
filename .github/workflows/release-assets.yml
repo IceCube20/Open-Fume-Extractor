@@ -27,9 +27,9 @@ jobs:
         id: release
         shell: bash
         run: |
-          version="$(jq -r '.[] | select(.signatureTarget == "MASTER") | .version' flasher/firmware-catalog.json)"
+          version="$(jq -er '[.[] | select(.signatureTarget == "MASTER" and .chipFamily == "ESP32-S3")] | if length == 1 then .[0].version else error("Expected exactly one MCU-S3 release") end' flasher/firmware-catalog.json)"
           if [[ -z "$version" || "$version" == "null" ]]; then
-            echo "Master version is missing from firmware-catalog.json" >&2
+            echo "MCU-S3 version is missing from firmware-catalog.json" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -48,25 +48,15 @@ jobs:
             git push origin "$RELEASE_TAG"
           fi
 
-      - name: Prepare release notes
-        id: notes
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          notes="docs/RELEASE-$RELEASE_VERSION.md"
-          if [[ ! -f "$notes" ]]; then
-            notes="$RUNNER_TEMP/ofe-release-notes.md"
-            printf '%s\n' 'Signed OTA packages and complete merged USB images.' '' 'Use normal .bin files for OTA; use *-merged.bin only for initial USB flashing at 0x0.' > "$notes"
-          fi
-          echo "path=$notes" >> "$GITHUB_OUTPUT"
-
       - name: Publish signed and merged firmware files
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: Open Fume Extractor ${{ steps.release.outputs.version }}
-          body_path: ${{ steps.notes.outputs.path }}
+          body: |
+            Signed OTA packages and complete merged images for initial USB flashing.
+
+            Use the normal `.bin` files for OTA updates. Use `*-merged.bin` only for an initial USB flash at address `0x0`.
           prerelease: true
           make_latest: false
           fail_on_unmatched_files: true

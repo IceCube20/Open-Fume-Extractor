@@ -7,7 +7,7 @@ NAMES = ("DisplayModule_320x480", "DisplayModule_800x480", "DisplayModule_ST7796
 
 class DisplayBacklightSourceTests(unittest.TestCase):
     def test_mqtt_dynamic_options_match_const_char_publisher_contract(self):
-        source = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+        source = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
         self.assertIn('const char* value_template, const char* extra_json = nullptr', source)
         self.assertIn('delay_options.c_str(), mqtt_module_command_leaf(addr, "display_backlight_timeout")', source)
 
@@ -32,7 +32,7 @@ class DisplayBacklightSourceTests(unittest.TestCase):
             self.assertIn("ui_defer_flags(UI_DEFER_DISPLAY_SETTINGS)", handler)
 
     def test_master_backlight_extension_is_scoped_and_preserves_legacy_length(self):
-        source = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+        source = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
         setter = source.split("bool MasterScheduler::setDisplaySettings(", 1)[1].split("bool MasterScheduler::setUniversalProfile(", 1)[0]
         self.assertEqual(source.count("backlight_requested ? 6 : 4"), 1)
         self.assertIn("backlight_requested ? 6 : 4", setter)

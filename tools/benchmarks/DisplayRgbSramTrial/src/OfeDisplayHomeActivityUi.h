@@ -11,7 +11,7 @@ inline unsigned bits(uint8_t mask) {
   return count;
 }
 struct Fan { lv_obj_t* image = nullptr; bool active = false, running = false; unsigned percent = 0, period = 0; };
-static Fan fans[22]; // Extractor, legacy tiles and up to 17 addressed module cards.
+static Fan fans[5 + DISPLAY_MODULE_CAPACITY]; // Extractor, legacy tiles and addressed cards.
 static Fan saver_fan;
 static bool saver_lit = true;
 static lv_obj_t *work_image = nullptr, *stand_image = nullptr, *work_count = nullptr, *stand_count = nullptr;

@@ -11,9 +11,9 @@ class FanIoDynamicSourceTest(unittest.TestCase):
     def setUpClass(cls):
         cls.fan = (ROOT / "Module/FanIoModule/FanIoModule.ino").read_text(encoding="utf-8")
         cls.pro = (ROOT / "Module/FanIoProModule/FanIoProModule.ino").read_text(encoding="utf-8")
-        cls.master_controls = (ROOT / "OpenFumeExtractorMaster/src/WebControls.inc.h").read_text(encoding="utf-8")
-        cls.master_status = (ROOT / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(encoding="utf-8")
-        cls.master_mqtt = (ROOT / "OpenFumeExtractorMaster/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
+        cls.master_controls = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebControls.inc.h").read_text(encoding="utf-8")
+        cls.master_status = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h").read_text(encoding="utf-8")
+        cls.master_mqtt = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterMqtt.inc.h").read_text(encoding="utf-8")
         cls.small = (ROOT / "Module/DisplayModule_320x480/DisplayModule_320x480.ino").read_text(encoding="utf-8")
         cls.large = (ROOT / "Module/DisplayModule_800x480/DisplayModule_800x480.ino").read_text(encoding="utf-8")
 
@@ -87,14 +87,14 @@ class FanIoDynamicSourceTest(unittest.TestCase):
         self.assertIn("Relaisausgang", self.master_status)
 
     def test_disabled_main_output_is_removed_from_routing(self):
-        scheduler = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+        scheduler = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
         self.assertIn('strstr(rec.universal_descriptor, "fan_enabled=")', scheduler)
         self.assertIn("configured[12] == '0'", scheduler)
         self.assertIn("web_caps &= ~(CAP_RELAY_OUTPUT | CAP_PWM_OUTPUT)", self.master_status)
         self.assertIn('strstr(m.universal_descriptor, "fan_enabled=")', self.master_mqtt)
 
     def test_afterrun_led_uses_shared_half_second_phase(self):
-        paths = [ROOT / "OpenFumeExtractorMaster/src/OfeStatusLed.h"]
+        paths = [ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/OfeStatusLed.h"]
         paths.extend((ROOT / "Module").glob("*/src/OfeStatusLed.h"))
         self.assertGreaterEqual(len(paths), 10)
         for path in paths:
@@ -103,7 +103,7 @@ class FanIoDynamicSourceTest(unittest.TestCase):
             self.assertRegex(line, r"OFE_LED_BLINK,\s+500,")
 
     def test_direct_input_routes_cover_all_fanio_channels(self):
-        root = ROOT / "OpenFumeExtractorMaster/src"
+        root = ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
         registry = (root / "ModuleRegistry.h").read_text(encoding="utf-8")
         scheduler = (root / "MasterScheduler.cpp").read_text(encoding="utf-8")
         settings = (root / "MasterSettingsStore.h").read_text(encoding="utf-8")

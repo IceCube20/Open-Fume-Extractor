@@ -3,7 +3,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
 const {chromium} = require("playwright");
-const source = fs.readFileSync(path.join(__dirname, "../../OpenFumeExtractorMaster/src/WebStatus.inc.h"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h"), "utf8");
 const template = source.match(/^if\(m.type==6\)\{det\+=\x60(.*)\x60\}\}\);document/m)[1];
 const render = language => vm.runInNewContext("\x60" + template + "\x60", {
   uiLang: language, m: {addr: 64, type: 6, type_name: "Display 800x480"},

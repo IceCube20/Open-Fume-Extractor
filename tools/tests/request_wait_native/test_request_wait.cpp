@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <initializer_list>
 #include <stdio.h>
-#include "../../../OpenFumeExtractorMaster/src/RequestWaitProbe.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/RequestWaitProbe.h"
 
 struct Stats {
   uint32_t rx_frames = 0;

@@ -4,10 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '../..');
-const sharedHeader = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/src/WebAutomationSignals.h'), 'utf8');
+const sharedHeader = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebAutomationSignals.h'), 'utf8');
 const shared = sharedHeader.match(/<script>([\s\S]*?)<\/script>/)[1];
-const status = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/src/WebStatus.inc.h'), 'utf8');
-const logic = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/src/WebLogic.inc.h'), 'utf8');
+const status = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h'), 'utf8');
+const logic = fs.readFileSync(path.join(root, 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebLogic.inc.h'), 'utf8');
 const line = (source, name) => {
   const row=source.split(/\r?\n/).find(row=>row.includes(`function ${name}(`));
   assert(row, name);
@@ -90,7 +90,7 @@ async function test() {
     const output=path.join(__dirname,'build-checks/system-automation');fs.mkdirSync(output,{recursive:true});
     try {
       const css=status.match(/<style>([\s\S]*?)<\/style>/)[1];
-      const typography=JSON.parse(fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/src/WebTypography.h'),'utf8').match(/#define OFE_WEB_TYPOGRAPHY_STYLE (".*")/)[1]);
+      const typography=JSON.parse(fs.readFileSync(path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebTypography.h'),'utf8').match(/#define OFE_WEB_TYPOGRAPHY_STYLE (".*")/)[1]);
       for(const width of [320,390,1440]) {
         const page=await browser.newPage({viewport:{width,height:900}});
         context.uiLang='de';

@@ -28,18 +28,18 @@ names = ("fw_update_abort_local", "fw_update_touch", "fw_update_check_timeout",
          "handle_fw_begin", "handle_fw_chunk", "handle_fw_end")
 out = pathlib.Path(sys.argv[2])
 out.write_text("\n\n".join(function(name) for name in names), encoding="utf-8")
-router = (root / "OpenFumeExtractorMaster/src/MasterDisplayWifi.cpp").read_text(encoding="utf-8-sig")
+router = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterDisplayWifi.cpp").read_text(encoding="utf-8-sig")
 out.with_name("generated_master_route.inc.h").write_text(
     "\n\n".join(function("MasterDisplayWifi::" + name, router, "")
                  for name in ("beginFirmware", "endFirmware", "route", "pollHook")), encoding="utf-8")
-router_header = (root / "OpenFumeExtractorMaster/src/MasterDisplayWifi.h").read_text(encoding="utf-8-sig")
+router_header = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterDisplayWifi.h").read_text(encoding="utf-8-sig")
 out.with_name("generated_master_bulk_policy.inc.h").write_text(
     "\n\n".join(function(name, router_header, "  ") for name in
         ("firmwareWireless", "firmwareBulkAvailable", "firmwareBulkConfirmed",
          "firmwareBulkSucceeded", "firmwareBulkFailed")), encoding="utf-8")
 out.with_name("generated_master_bulk.inc.h").write_text(
     function("MasterDisplayWifi::firmwareBulkChunk", router, ""), encoding="utf-8")
-update_source = (root / "OpenFumeExtractorMaster/src/WebUpdate.inc.h").read_text(encoding="utf-8-sig")
+update_source = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebUpdate.inc.h").read_text(encoding="utf-8-sig")
 limit_start = update_source.index("  module_update_wifi_bulk_limit =", update_source.index("static void web_handle_module_chunk_begin()"))
 limit_end = update_source.index("\n", limit_start)
 out.with_name("generated_bulk_limit.inc.h").write_text(
@@ -53,7 +53,7 @@ out.with_name("generated_display_jbc.inc.h").write_text(
 
 # Execute the production availability accounting, stopping before unrelated
 # extractor/routing cleanup. No duplicate implementation of the timeout policy.
-scheduler = (root / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8-sig")
+scheduler = (root / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8-sig")
 start = scheduler.index("  ModuleRecord* rec = registry_.find(dst);", scheduler.index("if (physical) return false;"))
 end = scheduler.index("    if (was_online && !rec->online) {", start)
 out.with_name("generated_module_timeout.inc.h").write_text(

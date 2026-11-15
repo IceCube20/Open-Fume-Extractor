@@ -21,7 +21,8 @@ USB target uses ESP-IDF USB host APIs supplied by Arduino-ESP32.
 
 Open the matching sketch folder directly in Arduino IDE:
 
-- `OpenFumeExtractorMaster/OpenFumeExtractorMaster.ino`
+- `OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/OpenFumeExtractorMCU_S3.ino`
+- `OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/OpenFumeExtractorMCU_P4.ino` (Waveshare PRE-V3)
 - `Module/JbcBusModule/JbcBusModule.ino`
 - `Module/JbcUsbModule/JbcUsbModule.ino`
 - `Module/FanIoModule/FanIoModule.ino`
@@ -32,9 +33,10 @@ Open the matching sketch folder directly in Arduino IDE:
 - `Module/DisplayModule_320x480/DisplayModule_320x480.ino`
 - `Module/DisplayModule_800x480/DisplayModule_800x480.ino`
 - `Module/DisplayModule_ST7796_320x480/DisplayModule_ST7796_320x480.ino`
-- `Module/DisplayModule_P4_800x480/DisplayModule_P4_800x480.ino` (experimental)
+- `Module/DisplayModule_P4_800x480/DisplayModule_P4_800x480.ino` (ELECROW PRE-V3)
 
-The master uses the included 16 MB partition CSV. A partition-layout change
+Each MCU uses its included 16 MB partition CSV. MCU-P4 supports 32 bus modules;
+MCU-S3 supports 16. A partition-layout change
 requires a complete merged USB flash and normally an erase.
 
 ## 800x480 high-performance display

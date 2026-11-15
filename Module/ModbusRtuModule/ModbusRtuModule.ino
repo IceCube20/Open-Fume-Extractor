@@ -64,7 +64,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 60
+#define OFE_MODULE_FW_PATCH 61
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -461,7 +461,7 @@ static void rebuild_descriptor() {
     "module=Modbus RTU Bridge\n"
     "profile=%s\n"
     "station=%s\n"
-    "local_bus=Modbus RTU master\n"
+    "local_bus=Modbus RTU client\n"
     "uart=%lu %s\n"
     "slave=%u\n"
     "poll_ms=%u\n"

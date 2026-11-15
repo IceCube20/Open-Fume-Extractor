@@ -3,14 +3,17 @@
 #include <cstdio>
 #include <cstring>
 
-enum { WIFI_AP=1,WIFI_STA=2,WIFI_AP_STA=3,WL_DISCONNECTED=0,WL_CONNECTED=1 };
+enum { WIFI_OFF=0,WIFI_AP=1,WIFI_STA=2,WIFI_AP_STA=3,WL_DISCONNECTED=0,WL_CONNECTED=1,WIFI_SCAN_RUNNING=-1 };
 static uint32_t now_ms=0;
 static uint32_t millis() { return now_ms; }
 struct FakeWifi {
   int mode_=0;
   bool connected=false,ap=false,auto_reconnect=false;
   unsigned begins=0,configs=0,ap_stops=0;
-  bool mode(int value) { mode_=value; if(value==WIFI_AP) connected=false; return true; }
+  unsigned stops=0; bool stop_ok=true; int scan=-2;
+  bool mode(int value) { if(value==WIFI_OFF) { ++stops; if(!stop_ok)return false; connected=false;ap=false; } mode_=value; if(value==WIFI_AP) connected=false; return true; }
+  int getMode() { return mode_; }
+  int scanComplete() { return scan; }
   bool setSleep(bool) { return true; }
   void setAutoReconnect(bool value) { auto_reconnect=value; }
   bool config(int ip,int gateway,int subnet,int dns1,int dns2) {
@@ -31,6 +34,7 @@ struct FakeDns {
 struct FakeSerial {
   template<typename T> void print(const T&) {}
   template<typename T> void println(const T&) {}
+  template<typename... T> void printf(const char*,T...) {}
 } Serial;
 static char wifi_ssid[33]="saved-network",wifi_password[65]="test-only";
 static char master_ap_password[65]="test-only",master_ap_ssid[33]="setup",master_hostname[33]="ofe";
@@ -44,6 +48,15 @@ static void apply_sta_hostname() {}
 static void generate_setup_password(char* out,size_t) { std::strcpy(out,"test-only"); }
 static void start_mdns_service() { ++mdns_starts; }
 static void configTzTime(const char*,const char*,const char*,const char*) { ++time_configs; }
+struct FakeEthernetActivity { void tick(uint32_t) {} };
+static FakeEthernetActivity& master_ethernet_activity() { static FakeEthernetActivity activity;return activity; }
+struct FakeHostedC6 {void tick(uint32_t,bool){}};
+static FakeHostedC6& hosted_c6(){static FakeHostedC6 state;return state;}
+static bool hosted_c6_busy(){return false;}
+static bool hosted_c6_radio_owned(){return false;}
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+#include "p4_wifi_support.inc.h"
+#endif
 #include "generated_wifi.inc.h"
 
 static void reset(bool saved=true) {
@@ -91,4 +104,5 @@ int main() {
   now_ms=started+29999U; wifi_service_tick(); assert(WiFi.begins==1);
   ++now_ms; wifi_service_tick(); assert(WiFi.begins==2 && captive_active);
   puts("PASS: production Master WiFi lifecycle: first setup, AP outage/recovery, repeated retries with portal retained, auto-reconnect, static IP, services and millis rollover.");
+  return 0;
 }

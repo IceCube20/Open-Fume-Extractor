@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import sys
 
-root = Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/src"
+root = Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 logic = (root / "WebLogic.inc.h").read_text(encoding="utf-8")
 
 
@@ -43,3 +43,23 @@ if len(sys.argv) > 2:
         ("sample_cpu_load", "append_cpu_load_json")), encoding="utf-8")
 if len(sys.argv) > 3:
     Path(sys.argv[3]).write_text(cpu[cpu.index('static ofe_runtime::PhaseWindow master_runtime_window;'):], encoding='utf-8')
+if len(sys.argv) > 4:
+    status = (root / "WebStatus.inc.h").read_text(encoding="utf-8")
+    Path(sys.argv[4]).write_text(function(status, "json_escape"), encoding="utf-8")
+if len(sys.argv) > 5:
+    def class_block(name):
+        start = cpu.index("class " + name + " {")
+        return cpu[start:cpu.index("\n};", start) + 3]
+    names = ("mqtt_perf_tick", "mqtt_perf_record", "mqtt_perf_snapshot",
+             "mqtt_transport_probe_enabled", "mqtt_transport_probe_record", "http_perf_record")
+    pieces = [function(cpu, name) for name in names]
+    pieces += [class_block("MqttPerfScope"), class_block("HttpPerfScope"), function(cpu, "append_http_perf_json")]
+    Path(sys.argv[5]).write_text("\n\n".join(pieces), encoding="utf-8")
+if len(sys.argv) > 6:
+    mqtt = (root / "MasterMqtt.inc.h").read_text(encoding="utf-8")
+    defs = function(status, "append_universal_entity_defs_json_uncached")
+    defs = defs.replace('  json +=', '  ++defs_builds;\n  json +=', 1)
+    pieces = [function(status, "entity_span_string"), defs,
+              function(status, "append_universal_entity_defs_json"),
+              function(mqtt, "ha_route_metadata_key"), function(mqtt, "ha_append_route_options")]
+    Path(sys.argv[6]).write_text("\n\n".join(pieces), encoding="utf-8")

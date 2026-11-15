@@ -1,0 +1,31 @@
+name: Validate C6 compatibility catalog
+
+on:
+  push:
+    paths:
+      - "updates/hosted-c6.json"
+      - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6Firmware.h"
+      - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6CatalogUi.h"
+      - "tools/tests/test_hosted_c6_catalog.cjs"
+      - ".github/workflows/c6-catalog.yml"
+  pull_request:
+    paths:
+      - "updates/hosted-c6.json"
+      - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6Firmware.h"
+      - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6CatalogUi.h"
+      - "tools/tests/test_hosted_c6_catalog.cjs"
+      - ".github/workflows/c6-catalog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node tools/tests/test_hosted_c6_catalog.cjs

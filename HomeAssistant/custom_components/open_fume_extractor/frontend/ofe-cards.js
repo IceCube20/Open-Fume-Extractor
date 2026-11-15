@@ -1,20 +1,20 @@
 /* OFE cards delegate all controls to Home Assistant's native entities card. */
-const VERSION = "0.1.29rc1";
+const VERSION = "0.1.31rc4";
 let helpersPromise;
 const words = {
-  en: {master: "Master", module: "Module", overview: "Overview", auto: "Automatic", allMasters: "All masters",
+  en: {master: "MCU", module: "Module", overview: "Overview", auto: "Automatic", allMasters: "All MCUs",
     status: "Status", controls: "Controls", filter: "Filter", diagnostics: "Diagnostics", alarms: "Active alarms",
-    thermocouples: "Thermocouples", port: "Port", title: "Title", diagnostic: "Show diagnostics",
+    thermocouples: "Thermocouples", port: "Port", title: "Title", diagnostic: "Show diagnostics", columns: "Maximum columns",
     summary: "Show summary", online: "Connected", offline: "Disconnected", unknown: "Unknown", unavailable: "Unavailable", on: "On", off: "Off", eco: "Power saving",
     noAlarms: "No active alarms", alarmSensor: "Alarm count sensor (MQTT or native)", chooseAlarm: "Select an alarm count sensor in the card editor.",
-    empty: "No Open Fume Extractor entities found.", chooseMaster: "Select a master in the card editor.",
+    empty: "No Open Fume Extractor entities found.", chooseMaster: "Select an MCU in the card editor.",
     chooseModule: "Select a module in the card editor.", missing: "The selected device is not available."},
-  de: {master: "Master", module: "Modul", overview: "Übersicht", auto: "Automatisch", allMasters: "Alle Master",
+  de: {master: "MCU", module: "Modul", overview: "Übersicht", auto: "Automatisch", allMasters: "Alle MCUs",
     status: "Status", controls: "Bedienung", filter: "Filter", diagnostics: "Diagnose", alarms: "Aktive Alarme",
-    thermocouples: "Thermoelemente", port: "Port", title: "Titel", diagnostic: "Diagnose anzeigen",
+    thermocouples: "Thermoelemente", port: "Port", title: "Titel", diagnostic: "Diagnose anzeigen", columns: "Maximale Spalten",
     summary: "Zusammenfassung anzeigen", online: "Verbunden", offline: "Getrennt", unknown: "Unbekannt", unavailable: "Nicht verfügbar", on: "Ein", off: "Aus", eco: "Energiesparen",
     noAlarms: "Keine aktiven Alarme", alarmSensor: "Alarm-Anzahl-Sensor (MQTT oder nativ)", chooseAlarm: "Alarm-Anzahl-Sensor im Karteneditor auswählen.",
-    empty: "Keine Open-Fume-Extractor-Entitäten gefunden.", chooseMaster: "Master im Karteneditor auswählen.",
+    empty: "Keine Open-Fume-Extractor-Entitäten gefunden.", chooseMaster: "MCU im Karteneditor auswählen.",
     chooseModule: "Modul im Karteneditor auswählen.", missing: "Das ausgewählte Gerät ist nicht verfügbar."},
 };
 const language = hass => String(hass?.locale?.language || hass?.language || "en").startsWith("de") ? "de" : "en";
@@ -22,6 +22,7 @@ const entities = hass => Object.values(hass?.states || {}).filter(s =>
   s.attributes?.ofe_master_uid && s.attributes.ofe_uid && s.attributes.ofe_active === true);
 const masters = rows => [...new Set(rows.map(s => s.attributes.ofe_master_uid))].sort();
 const addressRank = address => Number.isInteger(address) && address >= 0 && address <= 255 ? address : 256;
+const columnCount = value => ["number", "string"].includes(typeof value) && Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 4 ? Number(value) : 0;
 const devices = (rows, master) => [...new Map(rows.filter(s => s.attributes.ofe_master_uid === master)
   .map(s => [s.attributes.ofe_uid, {name: s.attributes.ofe_device_name, address: s.attributes.ofe_address}])).entries()]
   .sort((a, b) => addressRank(a[1].address) - addressRank(b[1].address) || a[0].localeCompare(b[0]))
@@ -95,14 +96,15 @@ class OfeCard extends HTMLElement {
     super();
     this.attachShadow({mode: "open"});
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block;min-width:0;container-type:inline-size;font-family:var(--paper-font-body1_-_font-family,inherit);letter-spacing:0}
+      :host{display:block;width:100%;max-width:100%;min-width:0;container-type:inline-size;font-family:var(--paper-font-body1_-_font-family,inherit);letter-spacing:0}
       *{box-sizing:border-box}.cards{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
       .overview{grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));align-items:start}
+      .overview[data-columns]{grid-template-columns:minmax(0,1fr)}
       .heading{display:flex;align-items:center;gap:12px;margin:0 0 16px;font-size:18px;font-weight:600;line-height:1.4}
       .heading img{width:36px;height:36px;object-fit:contain;flex-shrink:0}.heading span{min-width:0;overflow-wrap:anywhere}
       .message{padding:16px;color:var(--secondary-text-color)}
       .heading[hidden],.message:empty{display:none}
-      .device{--ofe-accent:#4a90d9;display:block;min-width:0;border-radius:8px;overflow:hidden;background:var(--ha-card-background,var(--card-background-color));
+      .device{--ofe-accent:#4a90d9;display:block;min-width:0;container-type:inline-size;border-radius:8px;overflow:hidden;background:var(--ha-card-background,var(--card-background-color));
         border:1px solid var(--ha-card-border-color,var(--divider-color));box-shadow:var(--ha-card-box-shadow,none)}
       .device-head{position:relative;display:grid;grid-template-columns:40px minmax(0,1fr) 104px;align-items:center;gap:12px;padding:18px 20px 12px;min-width:0}
       .device-head::before{content:"";position:absolute;left:7px;top:18px;bottom:12px;width:3px;border-radius:2px;background:var(--ofe-accent);pointer-events:none}
@@ -155,11 +157,17 @@ class OfeCard extends HTMLElement {
         .device-head>img,.device-head>ha-icon{width:36px;height:36px}.led-pair{grid-column:2;justify-content:flex-start}
         .device-head::before{top:16px;bottom:12px;left:5px}.indicators{padding:0 16px 14px}.metrics{padding:0 16px}
         .metric:nth-child(odd){padding-right:12px}.metric:nth-child(even){padding-left:12px}.alarms{margin:14px 16px 0}}
+      @container(max-width:340px){.device-head{padding:14px 12px 8px;gap:4px 8px}.device-title{font-size:15px}
+        .indicators{padding:0 12px 12px}.metrics{padding:0 12px}.metric{min-height:82px;padding-block:12px}
+        .metric:nth-child(odd){padding-right:6px}.metric:nth-child(even){padding-left:6px}
+        .metric-label{font-size:11px;gap:4px}.metric-label ha-icon{--mdc-icon-size:14px}.metric-value{font-size:17px;margin-top:6px}
+        .metric[data-tone="muted"] .metric-value{font-size:14px}.alarms{margin:14px 12px 0}}
     </style><div class="heading" hidden><img src="/open_fume_extractor/logo.png" alt=""><span></span></div>
     <div class="message" role="status"></div><div class="cards"></div>`;
     this._children = [];
     this._panels = [];
     this._generation = 0;
+    this._resize = () => this._updateColumns();
   }
   static getConfigElement() { return document.createElement("ofe-card-editor"); }
   static getStubConfig() { return {show_diagnostics: false, show_summary: true}; }
@@ -167,8 +175,10 @@ class OfeCard extends HTMLElement {
     if (!config?.type || !["custom:ofe-master-card", "custom:ofe-module-card", "custom:ofe-overview-card"].includes(config.type)) {
       throw new Error("Invalid OFE card type");
     }
+    const layoutOnly = this._config && JSON.stringify({...this._config, columns: undefined}) === JSON.stringify({...config, columns: undefined});
     this._config = {...config};
-    this._signature = null;
+    if (!layoutOnly) this._signature = null;
+    this._updateColumns();
     this._schedule();
   }
   set hass(hass) {
@@ -176,7 +186,32 @@ class OfeCard extends HTMLElement {
     for (const card of this._children) card.hass = hass;
     this._schedule();
   }
-  connectedCallback() { this._schedule(); }
+  connectedCallback() {
+    if (typeof ResizeObserver !== "undefined") {
+      this._resizeObserver ||= new ResizeObserver(entries => this._updateColumns(entries[0].contentRect.width));
+      this._resizeObserver.observe(this);
+    } else window.addEventListener("resize", this._resize);
+    this._updateColumns();
+    this._schedule();
+  }
+  disconnectedCallback() {
+    this._resizeObserver?.disconnect();
+    window.removeEventListener("resize", this._resize);
+  }
+  _updateColumns(width = this.getBoundingClientRect().width) {
+    const grid = this.shadowRoot.querySelector(".cards");
+    const overview = this._config?.type === "custom:ofe-overview-card";
+    const maximum = overview ? columnCount(this._config.columns) : 0;
+    grid.classList.toggle("overview", overview);
+    if (!maximum) {
+      delete grid.dataset.columns;
+      grid.style.removeProperty("grid-template-columns");
+      return;
+    }
+    const available = width >= 1040 ? 4 : width >= 820 ? 3 : width >= 560 ? 2 : 1;
+    grid.dataset.columns = String(maximum);
+    grid.style.gridTemplateColumns = `repeat(${Math.min(maximum, available)},minmax(0,1fr))`;
+  }
   getCardSize() { return this.offsetHeight ? Math.ceil(this.offsetHeight / 50) : Math.max(3, this._rowCount || 3); }
   getGridOptions() { return {columns: this._config?.type === "custom:ofe-overview-card" ? "full" : 12, min_columns: 6}; }
   _panel(config, uid, rows, helpers) {
@@ -243,9 +278,9 @@ class OfeCard extends HTMLElement {
       ecoBadge.hidden = !connected || !hasValue(eco) || !["on", "true"].includes(eco.state);
       ecoBadge.querySelector("span").textContent = text.eco;
       const transport = attr.ofe_transport || find("transport")?.state, transportBadge = panel.indicators.querySelector(".transport");
-      transportBadge.hidden = !["wifi", "rs485"].includes(transport);
-      transportBadge.querySelector("span").textContent = transport === "wifi" ? "Wi-Fi" : "RS485";
-      transportBadge.querySelector("ha-icon").setAttribute("icon", transport === "wifi" ? "mdi:wifi" : "mdi:serial-port");
+      transportBadge.hidden = !["ethernet", "wifi", "rs485"].includes(transport);
+      transportBadge.querySelector("span").textContent = transport === "ethernet" ? "Ethernet" : transport === "wifi" ? "Wi-Fi" : "RS485";
+      transportBadge.querySelector("ha-icon").setAttribute("icon", transport === "ethernet" ? "mdi:ethernet" : transport === "wifi" ? "mdi:wifi" : "mdi:serial-port");
       panel.model.textContent = attr.ofe_device_model || (panel.uid === attr.ofe_master_uid ? "Open Fume Extractor" : text.module);
       panel.model.hidden = panel.uid === attr.ofe_master_uid || panel.model.textContent === panel.root.querySelector(".device-title").textContent.replace(/^0x[0-9A-F]{2} /i, "");
       for (const led of panel.leds.children) {
@@ -331,7 +366,7 @@ class OfeCard extends HTMLElement {
       this._children = [];
       this._panels = configs.map((config, index) => this._panel(config, ids[index], rows.filter(s => s.attributes.ofe_uid === ids[index]), helpers));
       const container = this.shadowRoot.querySelector(".cards");
-      container.classList.toggle("overview", this._config.type === "custom:ofe-overview-card");
+      this._updateColumns();
       container.replaceChildren(...this._panels.map(panel => panel.root));
       this._updatePanels(entities(this._hass).filter(s => s.attributes.ofe_master_uid === master), words[language(this._hass)]);
     }).catch(error => {
@@ -399,6 +434,7 @@ class OfeCardEditor extends HTMLElement {
       label[hidden]{display:none}
     </style><label data-field="master_uid"><span></span><select></select></label>
     <label data-field="module_uid"><span></span><select></select></label>
+    <label data-field="columns" hidden><span></span><select></select></label>
     <label data-field="entity" hidden><span></span><select></select></label>
     <label data-field="title"><span></span><input type="text"></label>
     <label data-field="show_diagnostics" class="check"><input type="checkbox"><span></span></label>
@@ -406,7 +442,8 @@ class OfeCardEditor extends HTMLElement {
     this.shadowRoot.addEventListener("change", event => {
       const field = event.target.closest("label")?.dataset.field;
       if (!field) return;
-      this._config = {...this._config, [field]: field.startsWith("show_") ? event.target.checked : event.target.value};
+      this._config = {...this._config, [field]: field.startsWith("show_") ? event.target.checked :
+        field === "columns" ? columnCount(event.target.value) : event.target.value};
       if (field === "master_uid") delete this._config.module_uid;
       this.dispatchEvent(new CustomEvent("config-changed", {detail: {config: this._config}, bubbles: true, composed: true}));
       this._update();
@@ -417,6 +454,9 @@ class OfeCardEditor extends HTMLElement {
   _update() {
     if (!this._config || !this._hass) return;
     const alarmCard = this._config.type === "custom:ofe-alarms-card";
+    const overview = ["custom:ofe-overview-card", "custom:ofe-dashboard"].includes(this._config.type);
+    const columnsField = this.shadowRoot.querySelector('[data-field="columns"]');
+    columnsField.hidden = !overview;
     this.shadowRoot.querySelector('[data-field="entity"]').hidden = !alarmCard;
     for (const field of ["master_uid", "show_diagnostics", "show_summary"]) this.shadowRoot.querySelector(`[data-field="${field}"]`).hidden = alarmCard;
     if (alarmCard) {
@@ -439,6 +479,15 @@ class OfeCardEditor extends HTMLElement {
       return;
     }
     const rows = entities(this._hass), hubs = masters(rows), text = words[language(this._hass)];
+    columnsField.querySelector("span").textContent = text.columns;
+    const columnsSelect = columnsField.querySelector("select");
+    const columnsOptions = [...(this._config.type === "custom:ofe-dashboard" ? [] : [[0, text.auto]]), ...[1, 2, 3, 4].map(number => [number, String(number)])];
+    if (!columnsSelect.options.length || columnsSelect.options[0].textContent !== columnsOptions[0][1]) {
+      columnsSelect.replaceChildren(...columnsOptions.map(([value, label]) => {
+        const option = document.createElement("option"); option.value = String(value); option.textContent = label; return option;
+      }));
+    }
+    columnsSelect.value = String(columnCount(this._config.columns) || (this._config.type === "custom:ofe-dashboard" ? 4 : 0));
     const master = this._config.master_uid || (hubs.length === 1 ? hubs[0] : null);
     const mods = devices(rows, master).filter(([uid]) => uid !== master);
     const signature = JSON.stringify([hubs, mods, this._config, language(this._hass)]);
@@ -475,7 +524,7 @@ class OfeDashboardStrategy extends HTMLElement {
       path: uid ? `master-${encodeURIComponent(uid)}` : "overview", type: "panel", icon: "mdi:fan",
       cards: [{type: "custom:ofe-overview-card", ...(uid ? {master_uid: uid} : {}),
         title: config.title || "Open Fume Extractor", show_summary: config.show_summary !== false,
-        show_diagnostics: config.show_diagnostics === true}],
+        show_diagnostics: config.show_diagnostics === true, columns: columnCount(config.columns) || 4}],
     }));
     return {title: config.title || "Open Fume Extractor", views};
   }
@@ -500,9 +549,9 @@ if (!window.customCards.some(card => card.type === "ofe-alarms-card")) {
   window.customCards.push({type: "ofe-alarms-card", name: "OFE Alarms", description: "Alarm list from MQTT or the direct integration", preview: true});
 }
 for (const [name, label, description] of [
-  ["master", "OFE Master", "Extraction status and master controls"],
+  ["master", "OFE MCU", "Extraction status and MCU controls"],
   ["module", "OFE Module", "Module controls, filters and JBC ports"],
-  ["overview", "OFE Overview", "Master and all modules, automatically grouped"],
+  ["overview", "OFE Overview", "MCU and all modules, automatically grouped"],
 ]) {
   if (!customElements.get(`ofe-${name}-card`)) customElements.define(`ofe-${name}-card`, class extends OfeCard {});
   window.customCards ||= [];

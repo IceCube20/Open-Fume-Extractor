@@ -5,8 +5,8 @@
 #include <cstdio>
 #include <new>
 #include <vector>
-#include "../../../OpenFumeExtractorMaster/src/RequestWaitProbe.h"
-#include "../../../OpenFumeExtractorMaster/src/bus/Rs485PeripheralBus.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/RequestWaitProbe.h"
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/bus/Rs485PeripheralBus.h"
 using namespace jbc_rs485;
 #define F(s) s
 struct {

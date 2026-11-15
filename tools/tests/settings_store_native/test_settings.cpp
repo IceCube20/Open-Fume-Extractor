@@ -20,6 +20,9 @@ static void checksum(std::vector<uint8_t>& b) {
 int main() {
   Preferences p;
   Preferences::reset();
+  const auto fresh_input = loadMainInput(p, 1, 0);
+  check(fresh_input.type == 0 && fresh_input.addr == 0 && fresh_input.bit == 0 && Preferences::writes == 0,
+        "fresh MCU selects no input without writing preferences");
   controlEqual(loadControl(p), ControlSettings{});
   check(!p.active() && Preferences::writes == 0, "fresh load does not write settings values");
   ControlSettings s;
@@ -57,7 +60,10 @@ int main() {
   const auto legacy = loadControl(p);
   check(legacy.suction == 1 && legacy.select_flow == 430 && legacy.delay_work_sec == 23 &&
         !legacy.continuous, "legacy keys compatible, legacy Continuous ignored");
-  check(loadMainInput(p, 1, 0).type == 1, "legacy all JBC default preserved");
+  check(loadMainInput(p, 1, 0).type == 0, "missing main input defaults to none, even with other legacy settings");
+  check(p.begin(NS_CFG), "open explicit legacy input");
+  p.putUChar(KEY_LEGACY_JBC_INPUT, 1); p.end();
+  check(loadMainInput(p, 1, 0).type == 1, "explicit legacy all JBC choice preserved");
   check(saveMainInput(p, 2, 0x20, 7), "IN8 supported");
   auto input = loadMainInput(p, 1, 0);
   check(input.type == 2 && input.addr == 0x20 && input.bit == 7, "IN8 roundtrip");
@@ -151,5 +157,44 @@ int main() {
     controlEqual(loadControl(p), sample);
     check(!p.active(), "generated control closes handles");
   }
+  Preferences::reset();
+  check(p.begin(NS_NET), "open Ethernet network settings");
+  check(!loadEthernetOpen(p).use_static && Preferences::writes==0, "new Ethernet defaults to DHCP without migration/write");
+  MasterIpv4Settings lan{true,IPAddress(192,0,2,40),IPAddress(192,0,2,1),IPAddress(255,255,255,0),IPAddress(192,0,2,2),IPAddress(1,1,1,1)};
+  check(master_ipv4_valid(lan) && saveEthernetOpen(p,lan), "valid static LAN saved");
+  auto read_lan=loadEthernetOpen(p);
+  check(read_lan.use_static && read_lan.ip==lan.ip && read_lan.gateway==lan.gateway && read_lan.subnet==lan.subnet && read_lan.dns1==lan.dns1 && read_lan.dns2==lan.dns2, "all Ethernet fields roundtrip");
+  const size_t lan_writes=Preferences::writes;
+  for(unsigned i=0;i<1000;++i) check(saveEthernetOpen(p,lan), "unchanged Ethernet save succeeds");
+  check(Preferences::writes==lan_writes, "unchanged Ethernet avoids flash writes");
+  auto other=lan; other.ip=IPAddress(192,0,2,41);
+  check(!master_ipv4_conflict(lan,other) && master_ipv4_conflict(lan,lan), "different interface IPs required");
+  other.use_static=false;check(!master_ipv4_conflict(lan,other), "DHCP does not conflict with stored static address");
+  other=lan;other.gateway=IPAddress(0,0,0,0);other.dns1=IPAddress(0,0,0,0);check(master_ipv4_valid(other), "LAN-only subnet can omit gateway and DNS");
+  for(const IPAddress bad:{IPAddress(192,0,2,0),IPAddress(192,0,2,255),IPAddress(127,0,0,1),IPAddress(224,0,0,1),IPAddress(0,0,0,0)}) {
+    other=lan;other.ip=bad;check(!master_ipv4_valid(other) && !saveEthernetOpen(p,other), "invalid host rejected before write");
+  }
+  other=lan;other.subnet=IPAddress(255,0,255,0);check(!master_ipv4_valid(other), "noncontiguous netmask rejected");
+  other=lan;other.gateway=IPAddress(198,51,100,1);check(!master_ipv4_valid(other), "gateway outside subnet rejected");
+  other=lan;other.gateway=lan.ip;check(!master_ipv4_valid(other), "own IP cannot be gateway");
+  other=lan;other.dns2=IPAddress(255,255,255,255);check(!master_ipv4_valid(other), "invalid DNS rejected");
+  check(Preferences::writes==lan_writes, "validation errors do not write preferences");
+  other=lan;other.ip=IPAddress(192,0,2,41);
+  Preferences::reject_write=Preferences::writes+1;
+  check(!saveEthernetOpen(p,other) && loadEthernetOpen(p).ip==lan.ip, "rejected write retains previous complete record");
+  Preferences::reject_write=0;Preferences::drop_write=Preferences::writes+1;
+  check(!saveEthernetOpen(p,other) && loadEthernetOpen(p).ip==lan.ip, "dropped write caught by readback");
+  Preferences::drop_write=0;
+  const auto lan_golden=Preferences::db[NS_NET].at(KEY_ETHERNET_IPV4).blob;
+  for(size_t i=0;i<lan_golden.size();++i) {
+    auto& damaged=Preferences::db[NS_NET].at(KEY_ETHERNET_IPV4).blob;damaged=lan_golden;damaged[i]^=0x80;
+    check(!loadEthernetOpen(p).use_static, "corruption falls back to DHCP");
+  }
+  auto& lan_blob=Preferences::db[NS_NET].at(KEY_ETHERNET_IPV4).blob;
+  lan_blob=lan_golden;lan_blob[1]=2;checksum(lan_blob);check(!loadEthernetOpen(p).use_static, "unknown version ignored");
+  lan_blob=lan_golden;lan_blob.pop_back();check(!loadEthernetOpen(p).use_static, "short record ignored");
+  check(saveEthernetOpen(p,lan), "repair valid record");
+  lan.use_static=false;check(saveEthernetOpen(p,lan) && !loadEthernetOpen(p).use_static && loadEthernetOpen(p).ip==lan.ip, "DHCP preserves last static address");
+  p.end();
   std::cout << "Settings store native regressions passed (production .cpp, fault-injected Preferences)\n";
 }

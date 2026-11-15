@@ -16,7 +16,7 @@ $generated = $constant.Value + "`n" + (($functions | ForEach-Object { $_.Value }
 if ($LASTEXITCODE -ne 0) { throw 'Weller filter native build failed' }
 & "$build/test_filter.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Weller filter regression failed' }
-$scheduler = Get-Content (Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/src/MasterScheduler.cpp') -Raw
+$scheduler = Get-Content (Join-Path $PSScriptRoot '../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp') -Raw
 $policy = [regex]::Matches($scheduler, '(?ms)^(?:static bool module_filter_fault_current|uint16_t MasterScheduler::systemJbc(?:Error|FilterLife|FilterSaturation))\([^\r\n]*\)(?: const)? \{\r?\n.*?^}')
 if ($policy.Count -ne 4) { throw 'Master Weller fault-policy extraction failed' }
 [IO.File]::WriteAllText((Join-Path $build 'generated_master_filter.inc.h'), (($policy | ForEach-Object { $_.Value }) -join "`n`n"))

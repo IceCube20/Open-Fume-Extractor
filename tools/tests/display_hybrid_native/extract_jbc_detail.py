@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[3]
-source = (root / 'OpenFumeExtractorMaster/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+source = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
 output = []
 for name in ('consumeDisplayJbcExtension', 'sendDisplayJbcPage'):
     start = source.index('bool MasterScheduler::' + name + '(')

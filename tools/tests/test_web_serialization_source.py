@@ -2,10 +2,25 @@
 from pathlib import Path
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2] / 'OpenFumeExtractorMaster/src'
+ROOT = Path(__file__).resolve().parents[2] / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 
 
 class WebSerializationSource(unittest.TestCase):
+    def test_live_state_escapes_directly_without_temporary_strings(self):
+        source = (ROOT / 'WebStatus.inc.h').read_text(encoding='utf-8')
+        builder = source.split('static bool build_state_json(', 1)[1].split('static String normalized_hostname', 1)[0]
+        self.assertNotIn('json += json_escape(', builder)
+        self.assertIn('json.appendJsonEscaped(m.label)', builder)
+        self.assertIn('ofe_json::appendEscaped(s,', source)
+        self.assertIn('if (size && !out.reserve(size)) return out;', source)
+
+    def test_mqtt_reuses_module_state_capacity_without_changing_publish(self):
+        source = (ROOT / 'MasterMqtt.inc.h').read_text(encoding='utf-8')
+        builder = source.split('static void mqtt_publish_module_state(', 1)[1].split('static bool mqtt_apply_module_command', 1)[0]
+        self.assertIn('static String json;', builder)
+        self.assertLess(builder.index('json.remove(0);'), builder.index('json.reserve(3400)'))
+        self.assertIn('mqtt_publish_measured(mqtt_module_topic(m.addr, "state").c_str(), json.c_str(), true);', builder)
+
     def test_diagnostics_reuses_psram_only_and_does_not_send_partial_json(self):
         source = (ROOT / 'WebDiagnostics.inc.h').read_text(encoding='utf-8')
         handler = source.split('static void web_handle_diagnostics_state()', 1)[1].split('static void web_handle_diagnostics_events()', 1)[0]

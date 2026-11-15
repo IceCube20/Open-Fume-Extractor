@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Master HA API native build failed' }
 & "$build\test_master_api.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Master HA API regressions failed' }
 $project = (Resolve-Path "$PSScriptRoot\..\..\..").Path
-& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$project\tools\tests\display_hybrid_native\stubs" "/I$project\OpenFumeExtractorMaster\src" "$PSScriptRoot\test_jbc_counters.cpp" "/Fo$build\" "/Fe$build\test_jbc_counters.exe"
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$project\tools\tests\display_hybrid_native\stubs" "/I$project\OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src" "$PSScriptRoot\test_jbc_counters.cpp" "/Fo$build\" "/Fe$build\test_jbc_counters.exe"
 if ($LASTEXITCODE -ne 0) { throw 'JBC HA counter catalogue build failed' }
 & "$build\test_jbc_counters.exe"
 if ($LASTEXITCODE -ne 0) { throw 'JBC HA counter catalogue regressions failed' }

@@ -1,4 +1,4 @@
-"""Convert authoritative master values, without reapplying builder scaling."""
+"""Convert authoritative MCU values, without reapplying builder scaling."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 import math
@@ -80,7 +80,7 @@ def filter_time(value: Any) -> str | None:
 
 
 def uptime_text(value: Any, divisor: float = 1) -> str | None:
-    """Match the master's duration_text_seconds, including minute rounding."""
+    """Match the MCU's duration_text_seconds, including minute rounding."""
     seconds = divided(value, divisor)
     if seconds is None or seconds < 0:
         return None
@@ -227,6 +227,7 @@ def presentation(spec: Spec) -> None:
         "stat_error": "alert-circle-outline", "stat_error_text": "alert-circle-outline",
         "alarm_count": "bell-alert-outline", "alarm_text": "bell-alert-outline",
         "wifi_rssi": "wifi", "master_ip": "ip-network", "datetime": "calendar-clock",
+        "network_transport": "lan",
         "mqtt_state_text": "lan-connect", "mqtt_state_code": "lan-connect",
         "cpu_load_pct": "chip", "module_cpu_load_pct": "chip", "fw": "chip", "master_fw": "chip",
         "heap_free": "memory", "heap_min": "memory", "module_heap_free": "memory", "module_heap_min": "memory",
@@ -303,6 +304,7 @@ def mqtt_presentation(spec: Spec, state: dict, master_uid: str) -> None:
         "afterrun": ("Nachlauf", "Afterrun"), "modules_count": ("Module", "Modules"),
         "alarm_count": ("Alarm Anzahl", "Alarm Count"), "alarm_text": ("Alarm Text", "Alarm Text"),
         "wifi_rssi": ("WLAN Signal", "WiFi RSSI"), "master_ip": ("IP Adresse", "IP Address"),
+        "network_transport": ("Netzwerk", "Network"),
         "datetime": ("Datum/Zeit", "Date Time"), "mqtt_state_text": ("MQTT Status", "MQTT State"),
         "mqtt_state_code": ("MQTT Statuscode", "MQTT State Code"),
         "cpu_load_pct": ("CPU Last", "CPU Load"), "heap_free": ("Freier Heap", "Free Heap"),
@@ -964,6 +966,14 @@ def build_specs(master_uid: str, state: dict, definitions: dict[str, list]) -> d
         add(Spec(master_uid, key, "number", name, value, unit=unit, action="extractor", argument=argument, minimum=minimum, maximum=maximum))
     add(Spec(master_uid, "restart", "button", "Restart", action="restart", diagnostic=True))
     add(Spec(master_uid, "serial_number", "sensor", "Serial number", master_uid, diagnostic=True))
+    if "network_transport" in state:
+        german = state.get("ui_lang") == "de"
+        transport = state["network_transport"]
+        labels = {"ethernet": "Ethernet", "wifi": "WLAN" if german else "WiFi",
+                  "ap": "Access Point", "offline": "Getrennt" if german else "Disconnected"}
+        value = labels.get(transport) if isinstance(transport, str) else None
+        add(Spec(master_uid, "network_transport", "sensor", "Network", value,
+                 valid=value is not None, diagnostic=True))
     for key, name, unit, divisor in (("uptime_ms", "Uptime", None, 1000),
                                      ("heap_free", "Free heap", "KiB", 1024),
                                      ("heap_min", "Minimum free heap", "KiB", 1024),

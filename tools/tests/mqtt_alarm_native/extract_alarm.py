@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import sys
 
-root = Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/src"
+root = Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 
 
 def function(source, name):

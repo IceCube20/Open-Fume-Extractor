@@ -9,7 +9,7 @@ $env:INCLUDE = "$vc/include;$sdk/Include/$version/ucrt;$sdk/Include/$version/sha
 $env:LIB = "$vc/lib/x64;$sdk/Lib/$version/ucrt/x64;$sdk/Lib/$version/um/x64"
 & "$env:USERPROFILE/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe" "$PSScriptRoot/extract_cleanup.py" "$build/generated_cleanup.inc.h"
 if ($LASTEXITCODE) { throw 'MQTT JBC cleanup extraction failed' }
-& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "/I$project/tools/tests/display_hybrid_native/stubs" "/I$project/OpenFumeExtractorMaster/src" "$PSScriptRoot/test_cleanup.cpp" "/Fo$build/" "/Fe$build/test_cleanup.exe"
+& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "/I$project/tools/tests/display_hybrid_native/stubs" "/I$project/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "$PSScriptRoot/test_cleanup.cpp" "/Fo$build/" "/Fe$build/test_cleanup.exe"
 if ($LASTEXITCODE) { throw 'MQTT JBC cleanup native build failed' }
 & "$build/test_cleanup.exe"
 if ($LASTEXITCODE) { throw 'MQTT JBC cleanup regression failed' }

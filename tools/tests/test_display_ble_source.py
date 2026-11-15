@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 NAMES = ['DisplayModule_320x480', 'DisplayModule_800x480', 'DisplayModule_ST7796_320x480']
-MASTER = ROOT / 'OpenFumeExtractorMaster'
+MASTER = ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3'
 
 
 class BluetoothSourceTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class BluetoothSourceTests(unittest.TestCase):
             self.assertIn('#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 1', config)
             self.assertEqual(config, (MASTER / 'OfeBleBuildConfig.h').read_text())
             ui = (folder / 'src/OfeDisplayWifiUi.inc.h').read_text(encoding='utf-8')
-            self.assertIn('Master-Kopplung löschen', ui)
+            self.assertIn('MCU-Kopplung löschen', ui)
             self.assertIn('display_ble.approve(ui->dialog_token_,ui->dialog_pin_,true)', ui)
             self.assertIn('display_wifi.forgetPairing()', ui)
             wifi = (folder / 'src/OfeDisplayWifi.h').read_text(encoding='utf-8')
