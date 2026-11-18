@@ -56,9 +56,11 @@ jobs:
           body: |
             Signed OTA packages and complete merged images for initial USB flashing.
 
+            Release notes: https://github.com/IceCube20/Open-Fume-Extractor/blob/${{ github.sha }}/docs/RELEASE-${{ steps.release.outputs.version }}.md
+
             Use the normal `.bin` files for OTA updates. Use `*-merged.bin` only for an initial USB flash at address `0x0`.
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           fail_on_unmatched_files: true
           overwrite_files: true
           files: |

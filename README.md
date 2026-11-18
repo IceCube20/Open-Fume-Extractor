@@ -19,7 +19,7 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.1.9 RC release notes](docs/RELEASE-2.1.9RC.md)
+- [2.1.24 RC release notes](docs/RELEASE-2.1.24RC.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [MCU setup and configuration](docs/MASTER.md)

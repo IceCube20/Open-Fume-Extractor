@@ -139,6 +139,7 @@ enum JbcUsbConfigAction : uint8_t {
   JBC_USB_CONFIG_SELECTED_TEMP = 0x02,
   JBC_USB_CONFIG_SELECTED_FLOW = 0x03,
   JBC_USB_CONFIG_LEVELS = 0x04,
+  JBC_USB_CONFIG_SERVICE_READ = 0x05,
 };
 
 enum IoConfigAction : uint8_t {

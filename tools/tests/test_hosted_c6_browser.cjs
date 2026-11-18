@@ -51,7 +51,7 @@ try{for(const lang of ['de','en'])for(const width of [320,390,768,1440]){
   await page.waitForFunction(()=>document.getElementById('c6_catalog_state').textContent.includes(window.OFE_C6.de?'Update verfügbar':'update available'));
   const future=JSON.parse(JSON.stringify(catalog.releases[0]));future.id='future-test-only';future.host.esp_hosted='2.13.0';future.host.arduino_esp32='3.4.0';future.host.esp_idf='5.6.0';future.coprocessor.version='2.13.0';future.coprocessor.url='https://espressif.github.io/arduino-esp32/hosted/esp32c6-v2.13.0.bin';
   catalogValue={schema:1,releases:[future]};await page.locator('#c6_catalog_check').click();
-  await page.waitForFunction(()=>document.getElementById('c6_catalog_state').textContent.includes(window.OFE_C6.de?'aktualisiertes Master-SDK':'updated master SDK'));
+  await page.waitForFunction(()=>document.getElementById('c6_catalog_state').textContent.includes(window.OFE_C6.de?'aktualisiertes MCU-SDK':'updated MCU SDK'));
   assert.equal(await page.evaluate(()=>window.OFE_C6.expected),expected);assert.equal(posts.length,0);
   catalogValue=catalog;await page.locator('#c6_catalog_check').click();
   state.current=0;

@@ -29,6 +29,7 @@
 #include <sys/param.h>
 #include "msc_common.h"
 #include "usb/msc_host_vfs.h"
+#include "../UsbVolumeLabel.h"
 #include "ffconf.h"
 #include "ff.h"
 #include "esp_idf_version.h"
@@ -252,5 +253,33 @@ esp_err_t msc_host_vfs_unregister(msc_host_vfs_handle_t vfs_handle)
 }
 
 #endif // MSC_HOST_BDL_API_SUPPORTED
+
+/* OFE local extension; upstream mount behavior and formatting policy are unchanged. */
+esp_err_t ofe_usb_volume_label(msc_host_vfs_handle_t mount, char *output, size_t capacity)
+{
+    if (!output || !capacity) return ESP_ERR_INVALID_ARG;
+    output[0] = '\0';
+    if (!mount) return ESP_ERR_INVALID_ARG;
+#if FF_USE_LABEL && FF_LFN_UNICODE == 2
+    const msc_host_vfs_t *vfs = mount;
+#ifdef MSC_HOST_BDL_API_SUPPORTED
+    const BYTE pdrv = ff_diskio_get_pdrv_bdl(vfs->bdl);
+    if (pdrv >= FF_VOLUMES) return ESP_ERR_INVALID_STATE;
+    const char drive[DRIVE_STR_LEN] = {(char)('0' + pdrv), ':', 0};
+#else
+    const char *drive = vfs->drive;
+#endif
+    TCHAR label[129] = {0};
+    if (f_getlabel(drive, label, NULL) != FR_OK) return ESP_FAIL;
+    size_t length = strnlen(label, sizeof(label));
+    while (length && label[length - 1] == ' ') --length;
+    if (length == sizeof(label) || length >= capacity) return ESP_ERR_INVALID_SIZE;
+    memcpy(output, label, length);
+    output[length] = '\0';
+    return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
 
 #endif

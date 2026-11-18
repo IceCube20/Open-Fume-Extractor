@@ -170,6 +170,32 @@ static void web_handle_jbc_usb_config() {
   uint8_t payload[23] = {0};
   uint8_t len = 0;
   const String action = web.arg("action");
+  if (action == "service_read") {
+    if (!developer_mode_enabled) {
+      web.send(403, "text/plain; charset=utf-8", "developer mode required");
+      return;
+    }
+    const String raw = web.arg("command");
+    char* end = nullptr;
+    const unsigned long command = strtoul(raw.c_str(), &end, 10);
+    const bool allowed = command == 0x60U || command == 0xAAU || command == 0xA0U ||
+                         command == 0xA6U || command == 0xE3U || command == 0xBAU || command == 0xBEU;
+    if (!raw.length() || end == raw.c_str() || *end || !allowed) {
+      web.send(400, "text/plain; charset=utf-8", "unsupported service read");
+      return;
+    }
+    const uint8_t request[2] = {JBC_USB_CONFIG_SERVICE_READ, (uint8_t)command};
+    if (!master_cmd_set_jbc_usb_config(addr, request, sizeof(request))) {
+      web.send(409, "text/plain; charset=utf-8",
+               web_text("Abfrage nicht angenommen; Modul belegt oder Funktion nicht unterstuetzt",
+                        "Read not accepted; module busy or function unsupported"));
+      return;
+    }
+    web.send(202, "text/plain; charset=utf-8",
+             web_text("Abfrage vorgemerkt; Antwort noch nicht bestaetigt",
+                      "Read queued; response not yet confirmed"));
+    return;
+  }
   const uint8_t port = web.hasArg("port")
                          ? (uint8_t)strtoul(web.arg("port").c_str(), nullptr, 10) : 0;
   if (port >= 4U) {

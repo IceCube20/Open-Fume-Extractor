@@ -12,7 +12,7 @@ const style=status.match(/<style>([\s\S]*?)<\/style>/)[1]+shared.match(/<style>(
 const header=status.slice(status.indexOf('<header>'),status.indexOf('<main>')).replace(')HTML" OFE_TRANSPORT_HEADER_HTML R"HTML(',html);
 const cell=status.match(/^<div class="stat-cell wifi-cell">.*$/m)[0];
 const masterStart=status.indexOf('<div class="overview-group"><div class="section-title master-section-title">');
-const master=status.slice(masterStart,status.indexOf('\n</div></div>',masterStart)+14);
+const master=status.slice(masterStart,status.indexOf('\n</div></div>',masterStart)+14).replaceAll(')HTML" MASTER_MCU_MODEL R"HTML(','MCU-P4');
 const wifiFunctions=['wifiPct','lanActivityAt','lanAlignLeds','lanAnimate','lanReceive','lanSet','wifiSet'].map(name=>status.match(new RegExp('^function '+name+'\\(.*$','m'))[0]).join('\n');
 const out=path.join(__dirname,'build-checks/master-network-ui');fs.mkdirSync(out,{recursive:true});
 (async()=>{
@@ -30,8 +30,9 @@ const out=path.join(__dirname,'build-checks/master-network-ui');fs.mkdirSync(out
    await page.goto('http://ofe.test/');
    assert(master.includes(cell));
    await page.setContent(`<style>:root{--ofe-font-ui:Arial,sans-serif}${style}</style>${header}<main><section class="overview-board">${master}</section></main>`);
+   assert.equal(await page.locator('header button[data-i18n="refresh"]').count(),0);
    await page.addScriptTag({content:`let uiLang='de';window.setLang=v=>{uiLang=v};function t(){return uiLang==='de'?'WLAN Signal':'WiFi Signal'}function set(id,value){const e=document.getElementById(id);if(e)e.textContent=value}${wifiFunctions}\n${script}`});
-   await page.evaluate(()=>{set('master_fw','2.1.0RC-P4-Preview');set('master_serial_number','000012345678ABCD');set('master_ip','192.0.2.10');set('uptime','1m');set('datetime','2026-11-13 15:00:00');set('cpu_load','CPU 10%');set('cpu_cores','Core 0: 0% · Core 1: 19%')});
+   await page.evaluate(()=>{set('master_fw','2.1.12RC-Developer');set('master_serial_number','000012345678ABCD');set('master_ip','192.0.2.10');set('uptime','1m');set('datetime','2026-11-16 15:00:00');set('cpu_load','CPU 10%');set('cpu_cores','Core 0: 0% · Core 1: 19%')});
    await page.waitForFunction(()=>document.querySelector('.transport-network').dataset.transport==='ethernet');
    const network=page.locator('.transport-network'),ethernet=page.locator('[data-network-icon=ethernet]'),wifi=page.locator('[data-network-icon=wifi]');
    assert(await ethernet.isVisible());assert(!(await wifi.isVisible()));
@@ -47,6 +48,9 @@ const out=path.join(__dirname,'build-checks/master-network-ui');fs.mkdirSync(out
    assert((await page.locator('#ethernet_details').textContent()).includes('100 Mbit/s'));
    assert((await page.locator('#ethernet_details').textContent()).includes('WLAN aus'));
    assert((await page.locator('#lan_link').getAttribute('class')).includes('is-on'));
+   const portColor=await page.locator('#lan_port').evaluate(e=>getComputedStyle(e).color),labelColor=await page.locator('#network_title').evaluate(e=>getComputedStyle(e).color);
+   assert.equal(portColor,'rgb(127, 137, 149)');
+   assert(portColor.match(/\d+/g).every((value,i)=>Number(value)<Number(labelColor.match(/\d+/g)[i])));
    assert(!(await page.locator('#lan_activity').getAttribute('class')).includes('is-pulse'));
    await page.evaluate(d=>wifiSet(d),{...lan,ethernet_activity_seq:11});
    assert(!(await page.locator('#lan_activity').getAttribute('class')).includes('is-pulse')); // Counter/poll changes alone never flash.
@@ -64,8 +68,21 @@ const out=path.join(__dirname,'build-checks/master-network-ui');fs.mkdirSync(out
    const activityBox=await page.locator('#lan_activity').boundingBox();
    assert.equal(ledBox.width,activityBox.width);assert.equal(ledBox.height,activityBox.height);assert.equal(ledBox.y,activityBox.y);
    for(const box of [ledBox,activityBox])for(const v of [box.x,box.y])assert(Math.abs(v*dpr-Math.round(v*dpr))<0.04);
-   assert(ledBox.y+ledBox.height<portBox.y,`LED must be above port ${width}`);
+   for(const box of [ledBox,activityBox]){
+    assert(Math.abs(box.y+box.height/2-(portBox.y+36))<=0.6,`LED must center in the gray lower corner ${width}`);
+    assert(portBox.y+42-box.y-box.height>=2.5,`LED must leave space below its window ${width}`);
+   }
+   assert(ledBox.x+ledBox.width<portBox.x+portBox.width/2&&activityBox.x>portBox.x+portBox.width/2);
+   assert(Math.abs(ledBox.x+ledBox.width/2-(portBox.x+11))<=0.6,`Link LED must center between left wall and latch ${width}`);
+   assert(Math.abs(activityBox.x+activityBox.width/2-(portBox.x+37))<=0.6,`Activity LED must center between latch and right wall ${width}`);
+   assert.equal(await page.locator('#lan_activity').evaluate(e=>getComputedStyle(e).animationName),'none');
+   assert.equal(await page.locator('#lan_activity').evaluate(e=>e.getAnimations().length),0); // Actual traffic history only, no synthetic blink clock.
    await page.screenshot({path:path.join(out,`ethernet-${width}-dpr${dpr}.png`),fullPage:true});
+   if(width===1440&&dpr===1){
+    const zoom=await page.addStyleTag({content:'#network_mode{zoom:4}'});
+    await page.locator('#lan_port').screenshot({path:path.join(out,'port-detail.png')});
+    await zoom.evaluate(e=>e.remove());
+   }
    await page.locator('#lang_sel').selectOption('en');
    await page.evaluate(d=>wifiSet(d),{...lan,ethernet_activity_seq:13});
    assert((await page.locator('#ethernet_details').textContent()).includes('WiFi off'));

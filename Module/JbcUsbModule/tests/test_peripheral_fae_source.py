@@ -2,9 +2,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 module = (ROOT / "Module/JbcUsbModule/JbcUsbModule.ino").read_text(encoding="utf-8")
-master = (ROOT / "OpenFumeExtractorMaster/src/MasterScheduler.cpp").read_text(encoding="utf-8")
-registry = (ROOT / "OpenFumeExtractorMaster/src/ModuleRegistry.h").read_text(encoding="utf-8")
-web = (ROOT / "OpenFumeExtractorMaster/src/WebStatus.inc.h").read_text(encoding="utf-8")
+master = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
+registry = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/ModuleRegistry.h").read_text(encoding="utf-8")
+web = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/WebStatus.inc.h").read_text(encoding="utf-8")
 
 # Hardware-confirmed DDE FAE peripheral special format:
 # 24 ASCII hex chars (FAE Device-ID) + six spaces + peripheral id.

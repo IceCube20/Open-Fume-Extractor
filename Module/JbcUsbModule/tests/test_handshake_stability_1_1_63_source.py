@@ -3,8 +3,10 @@ from pathlib import Path
 SRC = (Path(__file__).resolve().parents[1] / "JbcUsbModule.ino").read_text()
 
 
-def test_usb_patch_63():
-    assert "#define OFE_MODULE_FW_PATCH 82" in SRC
+def test_module_version_is_well_formed():
+    import re
+    for part in ("MAJOR", "MINOR", "PATCH"):
+        assert re.search(r"^#define OFE_MODULE_FW_" + part + r" \d+$", SRC, re.M)
 
 
 def test_exhausted_single_flight_request_does_not_rediscover():

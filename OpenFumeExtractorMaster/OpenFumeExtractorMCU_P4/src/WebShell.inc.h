@@ -13,6 +13,9 @@ static String web_csrf_script() {
   js += web_csrf_token;
   js += F("';(function(){var t=window.OFE_CSRF;var of=window.fetch;window.fetch=function(u,o){o=o||{};var m=String(o.method||'GET').toUpperCase();if(m!=='GET'&&m!=='HEAD'){var h=new Headers(o.headers||{});h.set('X-CSRF-Token',t);o.headers=h;}return of(u,o)};var xo=XMLHttpRequest.prototype.open,xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(m,u){this._ofe_m=String(m||'GET').toUpperCase();return xo.apply(this,arguments)};XMLHttpRequest.prototype.send=function(b){if(this._ofe_m&&this._ofe_m!=='GET'&&this._ofe_m!=='HEAD')this.setRequestHeader('X-CSRF-Token',t);return xs.apply(this,arguments)};function f(){document.querySelectorAll('form').forEach(function(x){if(!x.querySelector('input[name=csrf]')){var i=document.createElement('input');i.type='hidden';i.name='csrf';i.value=t;x.appendChild(i);}})}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',f);else f();})();</script>");
   js += F(OFE_TRANSPORT_HEADER_SCRIPT);
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  js += F("<script defer src='/usb/ui.js'></script>");
+#endif
   js += F(R"JS(<script>
 function cpuCoreText(values){
   if(!Array.isArray(values)||!values.length)return '-';

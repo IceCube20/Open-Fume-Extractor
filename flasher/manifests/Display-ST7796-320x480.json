@@ -1,18 +1,18 @@
 {
-    "name":  "Open Fume Extractor - Display ST7796 320x480",
-    "version":  "1.0.47RC",
-    "new_install_prompt_erase":  true,
-    "new_install_improv_wait_time":  0,
-    "builds":  [
-                   {
-                       "chipFamily":  "ESP32-S3",
-                       "improv":  false,
-                       "parts":  [
-                                     {
-                                         "path":  "../../firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.47RC-merged.bin",
-                                         "offset":  0
-                                     }
-                                 ]
-                   }
-               ]
+  "name": "Open Fume Extractor - Display ST7796 320x480",
+  "version": "1.0.47RC",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/Display-ST7796-320x480/Display-ST7796-320x480-1.0.47RC-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
 }

@@ -63,7 +63,7 @@ static const uint16_t HW_VERSION = 0x0100;
 #endif
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 84
+#define OFE_MODULE_FW_PATCH 85
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -1469,6 +1469,9 @@ static JbcProtocol jbc_config_write_protocol = JBC_PROTO_UNKNOWN;
 static uint8_t jbc_config_write_command_inflight = 0;
 static uint8_t jbc_config_write_fid = 0;
 static uint32_t jbc_config_write_sent_ms = 0;
+static uint8_t jbc_service_read_pending = 0;
+static uint32_t jbc_service_read_queued_ms = 0;
+static uint32_t jbc_service_read_last_ms = 0;
 // Raw station UUID / Device-ID payload returned by JBC ReadDeviceUID.
 static uint8_t jbc_device_uid[32] = {0};
 static uint8_t jbc_device_uid_len = 0;
@@ -2214,6 +2217,9 @@ static void clear_jbc_runtime(bool mark_change) {
   jbc_config_write_fid = 0;
   jbc_config_write_sent_ms = 0;
   memset(jbc_device_uid, 0, sizeof(jbc_device_uid));
+  jbc_service_read_pending = 0;
+  jbc_service_read_queued_ms = 0;
+  jbc_service_read_last_ms = 0;
   jbc_device_uid_len = 0;
   jbc_device_uid_attempts = 0;
   next_uid_poll_ms = 0;
@@ -4045,6 +4051,34 @@ static bool jbc_send_sold_station_read(uint8_t command) {
   return false;
 }
 
+static bool jbc_sold_service_read_supported(uint8_t command) {
+  const JbcProtocol cp = jbc_command_protocol == JBC_PROTO_UNKNOWN ? jbc_frame_protocol : jbc_command_protocol;
+  if (jbc_station_kind != JBC_STATION_SOLD || jbc_frame_protocol != JBC_PROTO_02 || cp != JBC_PROTO_02) return false;
+  switch (command) {
+    case JBC_CMD_REMOTE_MODE_SOLD:
+    case JBC_CMD_POWER_LIMIT_SOLD: return true;
+    case JBC_CMD_INTERFACE_CONFIG_SOLD:
+    case JBC_CMD_AUTOCLEAN_SOLD:
+    case JBC_CMD_FRONTAL_CONNECTION_SOLD: return sold_supports_excellence_289();
+    case JBC_CMD_TYPE_GROUND_P02_SOLD: return sold_supports_ground_type();
+    case JBC_CMD_STATION_INTERFACE_P02_SOLD: return !strcmp(jbc_model, "ALE");
+    // ReadStationDateTime, read-and-clear, resets and arbitrary commands stay blocked.
+    default: return false;
+  }
+}
+
+static bool poll_jbc_service_read() {
+  if (!jbc_service_read_pending) return false;
+  if (fw_update_active || (uint32_t)(millis() - jbc_service_read_queued_ms) > 3000UL ||
+      !jbc_sold_service_read_supported(jbc_service_read_pending)) {
+    jbc_service_read_pending = 0;
+    return false;
+  }
+  // Use the normal single-flight/retry transport, without entering CONTROL.
+  if (jbc_send_sold_station_read(jbc_service_read_pending)) jbc_service_read_pending = 0;
+  return true;
+}
+
 static bool jbc_send_sold_peripheral_read(uint8_t command, uint8_t id) {
   if (!sold_supports_peripherals() || id >= min(jbc_sold_peripheral_count, (uint8_t)4)) return false;
   if (command != JBC_CMD_PERIPHERAL_CONFIG_SOLD && command != JBC_CMD_PERIPHERAL_STATUS_SOLD) return false;
@@ -4353,6 +4387,12 @@ static void decode_ha_station_diag(const JbcFrame& f) {
     default: return;
   }
   if (changed) mark_fast_changed();
+}
+
+static bool jbc_ha_detail_requires_tool(uint8_t command) {
+  return command == JBC_CMD_EXTERNAL_TC_MODE_HA || command == JBC_CMD_LEVELS_HA ||
+         command == JBC_CMD_ADJUST_TEMP_HA || command == JBC_CMD_TIME_TO_STOP_HA ||
+         command == JBC_CMD_START_MODE_HA;
 }
 
 static bool jbc_send_ha_detail(uint8_t port, uint8_t command) {
@@ -6437,12 +6477,21 @@ static void decode_cl_read(const JbcFrame& f) {
     }
   } else if (f.command == JBC_CMD_CL_CONNECT_STATUS) {
     if (!f.len) { jbc_note_decode_error(f, 1, JBC_DECODE_LEN_OPEN); return; }
-    bool control = false;
-    // DLL: UTF8 string, take text after ':' if present, trim, CONTROL iff "C".
-    for (uint8_t i=0;i<f.len;++i) {
-      const uint8_t c=f.data[i];
-      if (c=='C' || c=='c') { control=true; break; }
+    // ReceiveFrame02_CL compares the complete trimmed mode field, not its prefix.
+    uint16_t start = 0, end = f.len;
+    for (uint16_t i = 0; i < f.len; ++i) {
+      if (f.data[i] == ':') {
+        start = i + 1U;
+        for (uint16_t j = start; j < f.len; ++j) {
+          if (f.data[j] == ':') { end = j; break; }
+        }
+        break;
+      }
     }
+    while (start < end && isspace((unsigned char)f.data[start])) ++start;
+    while (end > start && isspace((unsigned char)f.data[end - 1U])) --end;
+    const bool control = end == start + 1U &&
+                         (f.data[start] == 'C' || f.data[start] == 'c');
     if (!jbc_cl_control_mode_valid || jbc_cl_control_mode != control) changed = true;
     jbc_cl_control_mode = control; jbc_cl_control_mode_valid = true;
   }
@@ -7405,6 +7454,7 @@ static void poll_jbc_protocol() {
     const bool uid_valid = jbc_device_uid_is_valid(jbc_device_uid, jbc_device_uid_len);
     if (!uid_provisioning && poll_jbc_config_write()) return;
     if (!uid_provisioning && poll_jbc_station_name_write()) return;
+    if (!uid_provisioning && poll_jbc_service_read()) return;
     // UpdateDataProcess() starts with all tier counters at zero, so the original
     // DLL enqueues one complete initial snapshot before settling into 1/2/5/15/60 s.
     // Prime every supported station family here. The original DLL enqueues all
@@ -8126,8 +8176,8 @@ static void poll_jbc_protocol() {
     // intentionally not polled in the background. They are outside
     // UpdateData_SOLD and a real DDE trace showed 0xBB ReadStationDateTime as
     // the last request immediately before the station stopped responding.
-    // Keep their decoders for future on-demand diagnostics, but never inject
-    // them into the normal cyclic traffic.
+    // The allowlisted one-shot service reader above can request selected values,
+    // but never inject these service reads into the normal cyclic traffic.
     // JBC DLL fidelity: UpdateData calls ReadPeripheralStatus for every peripheral
     // every 2 s, regardless of whether its 0xFA configuration maps to a known
     // type/port. Configuration (including count) is refreshed every 5 s.
@@ -8437,7 +8487,9 @@ static void poll_jbc_protocol() {
       if (next_ha_detail_stage >= stages) next_ha_detail_stage = 0;
       if (p < JBC_MAX_PORTS && jbc_ports[p].valid) {
         const uint8_t cmd = levels ? cmds_with_levels[next_ha_detail_stage] : cmds_no_levels[next_ha_detail_stage];
-        ok = jbc_send_ha_detail(p, cmd);
+        // A missing tool only skips tool settings, not port-level diagnostics.
+        ok = !jbc_ports[p].tool && jbc_ha_detail_requires_tool(cmd);
+        if (!ok) ok = jbc_send_ha_detail(p, cmd);
         if (ok) {
           ++next_ha_detail_stage;
           if (next_ha_detail_stage >= stages) {
@@ -8446,7 +8498,7 @@ static void poll_jbc_protocol() {
           }
         }
       }
-      if (!ok && (p >= JBC_MAX_PORTS || !jbc_ports[p].valid || !jbc_ports[p].tool)) {
+      if (!ok && (p >= JBC_MAX_PORTS || !jbc_ports[p].valid)) {
         next_ha_detail_stage = 0;
         next_ha_detail_port = (uint8_t)((p + 1U) % limit);
       }
@@ -9190,12 +9242,30 @@ static void rs485_set_address_uid(const Frame& req) {
 
 static void rs485_jbc_usb_config(const Frame& req) {
   if (req.len < 1U) { rs485_status_response(req, STATUS_BAD_LEN); return; }
+  if (req.payload[0] == JBC_USB_CONFIG_SERVICE_READ) {
+    if (req.len != 2U) { rs485_status_response(req, STATUS_BAD_LEN); return; }
+    if (!jbc_sold_service_read_supported(req.payload[1])) {
+      rs485_status_response(req, STATUS_NOT_SUPPORTED); return;
+    }
+    const bool uid_busy = jbc_uid_provision_state != JBC_UID_PROVISION_IDLE &&
+                          jbc_uid_provision_state != JBC_UID_PROVISION_DONE;
+    if (fw_update_active || uid_busy || jbc_link_state != JBC_LINK_ACTIVE || jbc_service_read_pending ||
+        (jbc_service_read_last_ms && (uint32_t)(millis() - jbc_service_read_last_ms) < 2000UL) ||
+        jbc_config_write_queued || jbc_config_write_inflight || jbc_config_write_state != JBC_CONFIG_WRITE_IDLE ||
+        jbc_station_name_write_queued || jbc_station_name_write_inflight || jbc_station_name_write_state != JBC_NAME_WRITE_IDLE) {
+      rs485_status_response(req, STATUS_BUSY); return;
+    }
+    jbc_service_read_pending = req.payload[1];
+    jbc_service_read_queued_ms = jbc_service_read_last_ms = millis();
+    rs485_status_response(req, STATUS_OK);
+    return;
+  }
   if (req.payload[0] != JBC_USB_CONFIG_STATION_NAME) {
     if (jbc_link_state != JBC_LINK_ACTIVE) {
       rs485_status_response(req, STATUS_BUSY);
       return;
     }
-    if (jbc_config_write_queued || jbc_config_write_inflight ||
+    if (jbc_service_read_pending || jbc_config_write_queued || jbc_config_write_inflight ||
         jbc_config_write_state != JBC_CONFIG_WRITE_IDLE ||
         jbc_station_name_write_queued || jbc_station_name_write_inflight ||
         jbc_station_name_write_state != JBC_NAME_WRITE_IDLE) {
@@ -9223,7 +9293,7 @@ static void rs485_jbc_usb_config(const Frame& req) {
     rs485_status_response(req, STATUS_BAD_VALUE);
     return;
   }
-  if (jbc_station_name_write_queued || jbc_station_name_write_inflight ||
+  if (jbc_service_read_pending || jbc_station_name_write_queued || jbc_station_name_write_inflight ||
       jbc_station_name_write_state != JBC_NAME_WRITE_IDLE ||
       jbc_config_write_queued || jbc_config_write_inflight ||
       jbc_config_write_state != JBC_CONFIG_WRITE_IDLE) {

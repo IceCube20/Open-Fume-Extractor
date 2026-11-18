@@ -2,9 +2,9 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[3]
 module = (root / "Module" / "JbcUsbModule" / "JbcUsbModule.ino").read_text(encoding="utf-8")
-master = (root / "OpenFumeExtractorMaster" / "src" / "MasterScheduler.cpp").read_text(encoding="utf-8")
-registry = (root / "OpenFumeExtractorMaster" / "src" / "ModuleRegistry.h").read_text(encoding="utf-8")
-web = (root / "OpenFumeExtractorMaster" / "src" / "WebStatus.inc.h").read_text(encoding="utf-8")
+master = (root / "OpenFumeExtractorMaster" / "OpenFumeExtractorMCU_S3" / "src" / "MasterScheduler.cpp").read_text(encoding="utf-8")
+registry = (root / "OpenFumeExtractorMaster" / "OpenFumeExtractorMCU_S3" / "src" / "ModuleRegistry.h").read_text(encoding="utf-8")
+web = (root / "OpenFumeExtractorMaster" / "OpenFumeExtractorMCU_S3" / "src" / "WebStatus.inc.h").read_text(encoding="utf-8")
 
 # The temporary raw 0xFA/D2 diagnostics were removed once the SOLD peripheral
 # formats had been identified. Keep this migration guard so they cannot silently

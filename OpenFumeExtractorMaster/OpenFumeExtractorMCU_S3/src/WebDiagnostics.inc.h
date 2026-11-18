@@ -1,5 +1,6 @@
 #pragma once
 #include "WebRs485Quality.h"
+#include "WebDiagnosticExports.h"
 
 // Bus diagnostics page and JSON/control endpoints. Included from the master
 // sketch so it can keep using the existing static WebServer and scheduler.
@@ -874,7 +875,8 @@ static void web_handle_diagnostics() {
   html += F("</button><button class='secondary' onclick='diagClear()'>");
   html += web_text("Leeren", "Clear");
   html += F("</button></div>");
-  html += F("<div class='diag-export-actions'><button class='secondary' onclick='diagDownload(&quot;csv&quot;)'>CSV</button><button class='secondary' onclick='diagDownload(&quot;json&quot;)'>JSON</button></div></div>");
+  html += F("</div>");
+  web_append_diagnostic_exports(html);
 
   html += F("<div class='diag-filterbar'><div class='diag-search-wrap'><span class='diag-search-icon'>⌕</span><input id='diag_filter' type='search' placeholder='");
   html += web_text("Trace durchsuchen: 0x40, DISPLAY_STATUS, Weller...", "Search trace: 0x40, DISPLAY_STATUS, Weller...");
@@ -1263,7 +1265,7 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase}
 .diag-mode-icon.local{background:#17351f;color:#91e8a2}
 .diag-mode-copy{display:flex;flex-direction:column;gap:2px;min-width:0}.diag-mode-copy strong{font-size:14px}.diag-mode-copy small{color:var(--muted);font-size:11px}
 .diag-mode-check{opacity:0;color:#74d989;font-weight:900;text-align:center}.diag-mode-card.active .diag-mode-check{opacity:1}
-.diag-control-row{display:grid;grid-template-columns:minmax(210px,1fr) auto auto;gap:10px;align-items:end;padding-top:12px;border-top:1px solid var(--line)}
+.diag-control-row{display:grid;grid-template-columns:minmax(210px,1fr) auto;gap:10px;align-items:end;padding-top:12px;border-top:1px solid var(--line)}
 .diag-wifi-timing-control{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:10px 0}
 .diag-wifi-timing-control[hidden]{display:none}
 .diag-wifi-timing{margin:8px 14px 14px;min-width:0;max-width:calc(100% - 28px);box-sizing:border-box;overflow-wrap:anywhere;line-height:1.5}
@@ -1275,7 +1277,11 @@ body:not(.dev-mode) .diag-wifi-timing,body:not(.dev-mode) .diag-wifi-timing-cont
 .diag-wifi-timing-control>[role=alert]{flex:1 1 180px;overflow-wrap:anywhere;color:#ff7676}
 .diag-wifi-timing-control>[role=alert]:empty{display:none}
 .diag-target-wrap label{display:block;margin-bottom:5px}.diag-target-wrap select{width:100%}
-.diag-session-actions,.diag-export-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.diag-session-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.diag-export-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0 14px;padding-top:14px;border-top:1px solid var(--line)}
+.diag-export-group{display:grid;align-content:start;gap:8px;min-width:0}.diag-export-label{font-size:12px;font-weight:700;color:var(--muted);line-height:1.4}.diag-export-group>button,.diag-export-group>.btn,.diag-export-group .ofe-export-actions>button,.diag-export-group .ofe-export-actions>.btn{height:40px;min-height:40px;margin:0!important;padding:9px 10px;font-size:13px;line-height:20px;white-space:nowrap}
+.diag-export-group svg{width:18px;height:18px;flex-shrink:0;fill:currentColor}.diag-export-group .ofe-export-actions{display:flex;flex-wrap:wrap;gap:8px;width:100%;min-width:0}.diag-export-group .ofe-export-actions>*{flex:1 1 auto}.diag-export-group button:disabled{opacity:.45;cursor:not-allowed}.diag-quality-export{grid-template-columns:minmax(0,300px)}
+@media(max-width:850px){.diag-export-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.diag-export-actions{grid-template-columns:minmax(0,1fr);gap:16px}.diag-export-group .ofe-export-actions{row-gap:8px}}
 .diag-start-btn{display:inline-flex;align-items:center;gap:7px}.diag-btn-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 .diag-session-actions button:disabled{opacity:.45;cursor:not-allowed}
 .diag-filterbar{display:grid;grid-template-columns:minmax(260px,1fr) auto auto;gap:10px;align-items:center;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:#0a1118}
@@ -3973,7 +3979,6 @@ loadDiagLedState();
 </script>)JS";
 
   html += OFE_RS485_QUALITY_SCRIPT;
-  web_append_usb_panel(html, "trace");
   web_shell_end(html);
   web.send(200, "text/html; charset=utf-8", html);
 }

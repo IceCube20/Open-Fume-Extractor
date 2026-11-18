@@ -499,9 +499,9 @@ assert 'JBC_CMD_SELECTED_PROFILE_SOLD' in source and 'JBC_CMD_ASSISTANT_CONFIG_S
 # The raw PIN may travel module -> Master, but WebStatus must only publish it
 # when developer mode is enabled.
 root = Path(__file__).resolve().parents[3]
-web = (root / 'OpenFumeExtractorMaster' / 'src' / 'WebStatus.inc.h').read_text()
-master = (root / 'OpenFumeExtractorMaster' / 'src' / 'MasterScheduler.cpp').read_text()
-registry = (root / 'OpenFumeExtractorMaster' / 'src' / 'ModuleRegistry.h').read_text()
+web = (root / 'OpenFumeExtractorMaster' / 'OpenFumeExtractorMCU_S3' / 'src' / 'WebStatus.inc.h').read_text()
+master = (root / 'OpenFumeExtractorMaster' / 'OpenFumeExtractorMCU_S3' / 'src' / 'MasterScheduler.cpp').read_text()
+registry = (root / 'OpenFumeExtractorMaster' / 'OpenFumeExtractorMCU_S3' / 'src' / 'ModuleRegistry.h').read_text()
 assert 'developer_mode_enabled && (m.jbc_usb_sold_extra_station_flags & 0x0004U)' in web
 assert 'jbc_usb_sold_pin' in web and 'SOLD JBC Stationsdaten' in web
 assert 'resp.payload[q] == 0xDA' in master and 'resp.payload[q] == 0xDB' in master and 'resp.payload[q] == 0xD3' in master

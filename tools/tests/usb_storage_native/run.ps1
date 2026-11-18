@@ -9,6 +9,15 @@ $build = "$root/tools/tests/build-checks/usb-storage-native"
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 python "$PSScriptRoot/extract_transfer.py"
 if ($LASTEXITCODE -ne 0) { throw 'USB transfer source extraction failed' }
+foreach ($config in @(@(1, 2, 0), @(1, 2, 1), @(0, 2, 0), @(1, 1, 0))) {
+  $suffix = $config -join '_'
+  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /TC /std:c11 /utf-8 /W4 /O2 `
+    "/DTEST_LABEL_ENABLED=$($config[0])" "/DTEST_LABEL_UNICODE=$($config[1])" "/DTEST_LABEL_BDL=$($config[2])" `
+    "/I$build" "$PSScriptRoot/test_volume_label.c" "/Fo$build/" "/Fe$build/test_volume_label_$suffix.exe"
+  if ($LASTEXITCODE -ne 0) { throw 'USB volume label accessor compile failed' }
+  & "$build/test_volume_label_$suffix.exe"
+  if ($LASTEXITCODE -ne 0) { throw 'USB volume label accessor tests failed' }
+}
 & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 `
   "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "$PSScriptRoot/test_policy.cpp" "/Fo$build/" "/Fe$build/test_policy.exe"
 if ($LASTEXITCODE -ne 0) { throw 'USB policy compile failed' }
@@ -19,6 +28,16 @@ if ($LASTEXITCODE -ne 0) { throw 'USB policy tests failed' }
 if ($LASTEXITCODE -ne 0) { throw 'USB transfer compile failed' }
 & "$build/test_transfer.exe"
 if ($LASTEXITCODE -ne 0) { throw 'USB transfer tests failed' }
+& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 `
+  "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "/I$build" "$PSScriptRoot/test_multi_drive.cpp" "/Fo$build/" "/Fe$build/test_multi_drive.exe"
+if ($LASTEXITCODE -ne 0) { throw 'USB multi-drive compile failed' }
+& "$build/test_multi_drive.exe"
+if ($LASTEXITCODE -ne 0) { throw 'USB multi-drive tests failed' }
+& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 `
+  "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "/I$build" "$PSScriptRoot/test_file_manager.cpp" "/Fo$build/" "/Fe$build/test_file_manager.exe"
+if ($LASTEXITCODE -ne 0) { throw 'USB file manager compile failed' }
+& "$build/test_file_manager.exe"
+if ($LASTEXITCODE -ne 0) { throw 'USB file manager tests failed' }
 & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 `
   "/I$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src" "$PSScriptRoot/test_diagnostics.cpp" "/Fo$build/" "/Fe$build/test_diagnostics.exe"
 if ($LASTEXITCODE -ne 0) { throw 'USB diagnostics compile failed' }

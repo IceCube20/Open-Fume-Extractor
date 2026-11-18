@@ -1,18 +1,18 @@
 {
-    "name":  "Open Fume Extractor - Open Fume Extractor MCU-S3",
-    "version":  "2.1.9RC",
-    "new_install_prompt_erase":  true,
-    "new_install_improv_wait_time":  0,
-    "builds":  [
-                   {
-                       "chipFamily":  "ESP32-S3",
-                       "improv":  false,
-                       "parts":  [
-                                     {
-                                         "path":  "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.1.9RC-merged.bin",
-                                         "offset":  0
-                                     }
-                                 ]
-                   }
-               ]
+  "name": "Open Fume Extractor - Open Fume Extractor MCU-S3",
+  "version": "2.1.24RC",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.1.24RC-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
 }

@@ -61,6 +61,6 @@
     "src/OfeSerialPortFont.h": "47d71fcf6eb67d2e5d42c723115ed106017e804a7e4c6657f2cc1519597477de",
     "src/OfeStatusLed.h": "4bfdbefb0a2112263d9a35ca121749945023f5afc90121fe6923dc26d8f29bdb",
     "src/Rs485PeripheralBus.cpp": "3d52f86323cf896571d447b8547ba23165c0c97744b18c4cbc0e3e5befc1e6f0",
-    "src/Rs485PeripheralBus.h": "0771df710e54d6cf148b44993bd5209267113195ee7d76eef20201bd6a161b50"
+    "src/Rs485PeripheralBus.h": "d02f5d401be42e404edacddb1939a2af4b4da179e188d94b1dfd1aaa95516bc4"
   }
 }

@@ -20,3 +20,8 @@
 Module/DisplayModule_P4_800x480/src/tinycrypt/** -text -eol
 tools/boards/elecrow_p4_5inch/tinycrypt/** -text -eol
 
+# MCU generation manifests verify exact source bytes, including line endings.
+OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/** -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/** -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+tools/boards/master_p4_16mb.csv -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+

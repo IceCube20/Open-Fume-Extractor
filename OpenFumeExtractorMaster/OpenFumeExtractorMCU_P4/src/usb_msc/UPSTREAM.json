@@ -50,7 +50,8 @@
     },
     "src/usb_msc/msc_host_vfs.c": {
       "upstream": "src/msc_host_vfs.c",
-      "sha256": "f2c0b8d5005aee38d8d5b2a4c9920f974c9fc2e8cfac0377867e439a97f2b46a"
+      "sha256": "b16d8177c7fb673b056854d28657faa2741b352e43cc85dbdc0d4273c986acbe",
+      "local_extension": "Read-only ofe_usb_volume_label accessor uses the mounted VFS drive; no format or label-write behavior added."
     },
     "src/usb_msc/msc_scsi_bot.c": {
       "upstream": "src/msc_scsi_bot.c",

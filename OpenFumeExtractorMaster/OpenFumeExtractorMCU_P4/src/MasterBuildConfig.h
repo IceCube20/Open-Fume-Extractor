@@ -253,20 +253,19 @@
 
 #define MASTER_FW_MAJOR 2
 #define MASTER_FW_MINOR 1
-#define MASTER_FW_PATCH 9
+#define MASTER_FW_PATCH 24
 #if MASTER_FW_PATCH >= 100
 #error "Firmware patch 100 rolls over to the next minor version with patch 0."
 #endif
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
 #define MASTER_MCU_MODEL "MCU-P4"
-#define MASTER_FW_SUFFIX "RC"
 #else
 #define MASTER_MCU_MODEL "MCU-S3"
+#endif
 #if OFE_DEVELOPER_MODE_ENABLE
 #define MASTER_FW_SUFFIX "RC-Developer"
 #else
 #define MASTER_FW_SUFFIX "RC"
-#endif
 #endif
 #define MASTER_DEVICE_NAME "Open Fume Extractor " MASTER_MCU_MODEL
 #define MASTER_MCU_DESCRIPTION "Main Control Unit"

@@ -1,6 +1,7 @@
 """Compile actual MCU metadata and all base discovery calls, not device stubs."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -24,6 +25,17 @@ def run():
         config = (src / "MasterBuildConfig.h").read_text(encoding="utf-8-sig")
         network = (src / "MasterNetwork.inc.h").read_text(encoding="utf-8-sig")
         (OUT / "identity.inc.h").write_text(config[config.index("#define MASTER_FW_MAJOR"):config.index('extern "C" inline const volatile char OFE_MASTER_FW_SIGNATURE')], encoding="utf-8")
+        identity_test = OUT / "identity_mode.cpp"
+        identity_test.write_text('#define OFE_STR_IMPL(x) #x\n#define OFE_STR(x) OFE_STR_IMPL(x)\n#include "identity.inc.h"\nconst char *label = MASTER_FW_VERSION;\n', encoding="utf-8")
+        for developer in (0, 1):
+            preprocess = [str(VC / "bin/Hostx64/x64/cl.exe"), "/nologo", "/EP", "/TP", f"/DOFE_DEVELOPER_MODE_ENABLE={developer}"]
+            if variant == "P4":
+                preprocess.append("/DCONFIG_IDF_TARGET_ESP32P4=1")
+            expanded = subprocess.run(preprocess + [str(identity_test)], env=env, capture_output=True, encoding="utf-8", check=True).stdout
+            label = "".join(re.findall(r'"([^"\n]*)"', expanded.split("const char *label =", 1)[1]))
+            expected = ".".join(re.search(r"^#define MASTER_FW_" + part + r" (\d+)$", config, re.M)[1] for part in ("MAJOR", "MINOR", "PATCH")) + ("RC-Developer" if developer else "RC")
+            assert label == expected, (variant, developer, label, expected)
+        print(f"PASS: MCU-{variant}: actual preprocessor labels private builds RC-Developer and community builds RC")
         functions = []
         for signature in ("static bool mqtt_legacy_shared_root(", "static bool mqtt_factory_topic_root(", "static String mqtt_normalized_base_topic(", "static String mqtt_client_identity("):
             start = network.index(signature)

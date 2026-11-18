@@ -65,7 +65,6 @@ static String update_page(const String& msg = String()) {
   html += F("</select>");
   html += F("<label>"); html += web_text("Modul-Firmware (.bin)", "Module firmware (.bin)"); html += F("</label><input id='module_fw_file' type='file' name='firmware' accept='.bin'><div id='module_fw_info' class='muted' style='margin-top:8px'></div><label class='dev-fw-override' style='display:none;margin-top:10px;padding:10px;border:1px solid #5b4a22;border-radius:8px;background:#211b10;color:#f4c25b'><input type='checkbox' name='unsafe' value='1' style='width:auto;min-height:0;margin-right:8px'><span>"); html += web_text("Entwicklermodus: Modultyp-Prüfung überspringen", "Developer mode: skip module type check"); html += F("</span></label><button id='module_update_btn' type='submit' style='margin-top:16px'>"); html += web_text("Modul aktualisieren", "Update Module"); html += F("</button><div class='progress'><div id='moduleBar' class='bar'></div></div><div id='moduleStat' class='upload-stat'></div></form></section></div>");
   append_hosted_c6_ui(html);
-  web_append_usb_panel(html, "update");
   html += F("<script>");
   html += web_is_german() ? F("const UI_DE=true;") : F("const UI_DE=false;");
   html += developer_override_active() ? F("let DEV_MODE=true;") : F("let DEV_MODE=false;");

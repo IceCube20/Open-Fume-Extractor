@@ -69,7 +69,6 @@ static OfeDisplayBle master_display_ble;
 
 #include "src/WebShell.inc.h"
 
-static void web_append_usb_panel(String& html, const char* purpose);
 #include "src/WebDiagnostics.inc.h"
 
 #include "src/WebLogic.inc.h"

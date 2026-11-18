@@ -26,8 +26,8 @@ class MasterP4PreparationTests(unittest.TestCase):
 
     def test_p4_release_candidate_identity_and_manifest(self):
         config = self.files["src/MasterBuildConfig.h"].decode("utf-8-sig")
-        p4 = config.split("#define MASTER_MCU_MODEL \"MCU-P4\"", 1)[1].split("#else", 1)[0]
-        self.assertIn('#define MASTER_FW_SUFFIX "RC"', p4)
+        self.assertIn('#define MASTER_MCU_MODEL "MCU-P4"', config)
+        self.assertIn('#if OFE_DEVELOPER_MODE_ENABLE\n#define MASTER_FW_SUFFIX "RC-Developer"\n#else\n#define MASTER_FW_SUFFIX "RC"\n#endif', config)
         version = ".".join(re.search(r"^#define MASTER_FW_" + part + r" (\d+)$", config, re.M)[1]
                            for part in ("MAJOR", "MINOR", "PATCH")) + "RC"
         manifest = json.loads(self.files[prepare.MANIFEST])

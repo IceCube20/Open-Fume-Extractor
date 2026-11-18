@@ -73,6 +73,8 @@ int main(int argc,char** argv) {
     fixture=fixture.replace('int main(int argc,char** argv)', '''#include "HostedC6Firmware.h"
 #include "HostedC6WebUi.h"
 #include "WebRs485Quality.h"
+#include "WebDiagnosticExports.h"
+#include "WebTypography.h"
 String html_escape(const String& value) {return value;}
 #include "WebHardwareInfo.h"
 char web_csrf_token[]="0123456789abcdef";
@@ -86,6 +88,11 @@ bool web_is_german() {return german;}
     String quality;web_append_rs485_quality(quality);quality+=OFE_RS485_QUALITY_SCRIPT;
     std::ofstream qualityfile(std::string(argv[1])+(de ? "/quality-de.html" : "/quality-en.html"));
     qualityfile<<quality.c_str();if(!qualityfile.good())return 4;
+    String exports;web_append_diagnostic_exports(exports);
+    std::ofstream exportfile(std::string(argv[1])+(de ? "/diagnostic-exports-de.html" : "/diagnostic-exports-en.html"));
+    exportfile<<exports.c_str();if(!exportfile.good())return 6;
+    std::ofstream stylefile(std::string(argv[1])+"/shared-form-style.html");
+    stylefile<<OFE_WEB_TYPOGRAPHY_STYLE;if(!stylefile.good())return 7;
     for(const bool p4:{false,true}) {
       MasterHardwareInfo info;info.p4=p4;info.model=p4 ? "ESP32-P4" : "ESP32-S3";
       info.revision=p4 ? 100 : 2;info.cores=2;info.cpu_mhz=p4 ? 360 : 240;

@@ -5,7 +5,7 @@ const {chromium}=require('playwright');
 const src=path.join(__dirname,'../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src');
 const source=fs.readFileSync(path.join(src,'WebConfig.inc.h'),'utf8');
 const shell=fs.readFileSync(path.join(src,'WebShell.inc.h'),'utf8');
-const css=shell.match(/<style>([\s\S]*?)<\/style>/)[1];
+const css=shell.match(/<style>([\s\S]*?)<\/style>/)[1]+fs.readFileSync(path.join(src,'WebFormStyles.h'),'utf8').match(/<style>([\s\S]*?)<\/style>/)[1];
 const start=source.indexOf('function toggleStaticIp(){');
 let depth=0,end=start;
 for(let i=source.indexOf('{',start);i<source.length;i++){
