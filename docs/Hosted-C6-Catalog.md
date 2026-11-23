@@ -28,6 +28,12 @@ IDF 5.5.5, Hosted/C6 2.12.13. The owner reported a successful on-device SDIO
 update from 2.12.3 to 2.12.13. This does not by itself verify every WiFi/BLE
 operation or recovery procedure.
 
+Release 2.1.38RC adds a separate `waveshare-p4-wifi6-poe-eth-v3` approval for
+the same exact Arduino 3.3.12 / IDF 5.5.5 / Hosted/C6 2.12.13 combination and
+image pins. The owner reported successful standalone recovery and 2.12.13
+operation on the PoE V3.2 board. PRE-V3 and PoE approvals remain independent;
+one board's entry is never used as the other board's fallback.
+
 At most 32 entries and 32 KiB are accepted. Unknown schemas, duplicate IDs or
 ambiguous approvals for a host combination, malformed versions/URLs/hashes
 and mismatched Hosted/C6 versions invalidate the response.

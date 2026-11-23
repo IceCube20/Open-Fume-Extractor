@@ -1,7 +1,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const root=path.resolve(__dirname,'../..'),src=path.join(root,'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src');
 const header=fs.readFileSync(path.join(src,'HostedC6Firmware.h'),'utf8');
-const constant=name=>header.match(new RegExp(`char ${name}\\[\\]="([^"]+)"`))[1];
+const boardBranches=header.match(/#if defined\(OFE_MASTER_P4_WAVESHARE_POE\)\r?\n([\s\S]*?)#else\r?\n([\s\S]*?)#endif/);
+const constant=name=>(name==='BOARD'&&boardBranches?boardBranches[2]:header).match(new RegExp(`char ${name}\\[\\]="([^"]+)"`))[1];
 const cfg=Object.freeze({expected:parseInt(header.match(/VERSION=0x([\da-f]+)/i)[1],16),size:Number(header.match(/IMAGE_SIZE=(\d+)/)[1]),board:constant('BOARD'),arduino:constant('ARDUINO_VERSION_TEXT'),idf:constant('IDF_VERSION_TEXT'),sha256:constant('SHA256_TEXT'),url:constant('URL')});
 const catalog=JSON.parse(fs.readFileSync(path.join(root,'updates/hosted-c6.json'),'utf8'));
 const clone=value=>JSON.parse(JSON.stringify(value));
@@ -15,6 +16,20 @@ assert.equal(check(catalog).kind,'approved');
 assert.equal(check(catalog).version,cfg.expected);
 assert.equal(check(catalog).newerSdk,false);
 assert.equal(inspect(catalog,cfg,0).kind,'none');
+if(boardBranches){
+ const poeBoard=boardBranches[1].match(/char BOARD\[\]="([^"]+)"/)[1];assert.notEqual(poeBoard,cfg.board);
+ const poeCfg={...cfg,board:poeBoard};
+ assert.equal(inspect(catalog,poeCfg,cfg.expected).kind,'approved');
+ assert.equal(inspect(catalog,poeCfg,0).kind,'none');
+ const withoutPoe=clone(catalog);withoutPoe.releases=withoutPoe.releases.filter(r=>r.board!==poeBoard);
+ assert.equal(inspect(withoutPoe,poeCfg,cfg.expected).kind,'none');
+ const withdrawn=clone(catalog);withdrawn.releases.find(r=>r.board===poeBoard).status='withdrawn';
+ assert.equal(inspect(withdrawn,poeCfg,cfg.expected).kind,'none');
+ assert.equal(check(withdrawn).kind,'approved');
+ const changed=clone(catalog);changed.releases.find(r=>r.board===poeBoard).coprocessor.sha256='0'.repeat(64);
+ assert.equal(inspect(changed,poeCfg,cfg.expected).kind,'master_update');
+ assert.equal(inspect(catalog,{...poeCfg,arduino:'3.3.11'},cfg.expected).kind,'none');
+}
 const entry=catalog.releases[0];
 assert.equal(entry.coprocessor.version,constant('VERSION_TEXT'));
 const bytes=header.split('SHA256[32]=')[1].split(';')[0].match(/0x[\da-f]{2}/gi).map(x=>parseInt(x,16));
