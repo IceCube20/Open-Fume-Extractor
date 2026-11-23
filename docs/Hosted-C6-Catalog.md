@@ -18,6 +18,41 @@ catalog and firmware pins. Do not add an approval just because Espressif has
 published a newer version. Review the exact board, SDIO transport, host SDK,
 chip, image size and SHA-256 first.
 
+## Automatic Upstream Watch
+
+The separate `Watch Espressif C6 images` GitHub Actions workflow is scheduled
+daily at **06:23 UTC**, can be started manually in Actions, and also runs when
+its script, tests or the approval catalog change on `main`.
+
+It reads Espressif's official `arduino-esp32` hosted-image directory at an
+immutable `gh-pages` commit. Newer numeric ESP32-C6 image versions are downloaded
+with bounded size/time limits. The ESP image header, chip ID, actual size and
+Git blob are checked; SHA-256 is computed for the review notice. Filenames
+alone do not establish SDK compatibility or OFE approval.
+
+New version/hash combinations create a review issue assigned to **IceCube20**,
+with image provenance and the current approved board/SDK combinations. Existing
+bot-created issues are checked in both open and closed states to avoid daily
+duplicates. A changed binary for the same candidate version requires a new review.
+API/download failures fail the job rather than reporting that firmware is current.
+
+The watcher cannot write repository contents and never edits this catalog,
+firmware pins or devices. The MCU UI continues to show approved combinations;
+new candidates appear as GitHub issues, not immediately as installable updates.
+Review and hardware testing remain manual. No MCU firmware rebuild is needed
+to enable the watcher itself.
+
+Local read-only check:
+
+```sh
+node tools/maintenance/check_c6_upstream.cjs
+node tools/tests/test_c6_upstream.cjs
+```
+
+`--publish` is restricted to GitHub Actions and requires its scoped token.
+GitHub scheduled runs are best-effort and can be delayed or disabled after
+repository inactivity; see [GitHub's schedule notes](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
 ## Schema 1
 
 Each release has a unique ID, `approved` or `withdrawn` status, board ID,

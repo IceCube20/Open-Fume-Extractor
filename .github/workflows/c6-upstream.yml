@@ -1,0 +1,43 @@
+name: Watch Espressif C6 images
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'updates/hosted-c6.json'
+      - 'tools/maintenance/check_c6_upstream.cjs'
+      - 'tools/tests/test_c6_upstream.cjs'
+      - '.github/workflows/c6-upstream.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c6-upstream-review
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tools/tests/test_hosted_c6_catalog.cjs
+      - run: node tools/tests/test_c6_upstream.cjs
+      - name: Discover upstream images and open review issues
+        run: node tools/maintenance/check_c6_upstream.cjs --publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OFE_C6_REVIEWER: IceCube20
