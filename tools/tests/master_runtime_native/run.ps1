@@ -1,3 +1,4 @@
+param([string]$Python = 'python')
 $ErrorActionPreference = 'Stop'
 $vc = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207'
 $sdk = 'C:\Program Files (x86)\Windows Kits\10'
@@ -6,13 +7,20 @@ $build = Join-Path $env:TEMP 'ofe-master-runtime-native'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 $env:INCLUDE = "$vc\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um"
 $env:LIB = "$vc\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
-$python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-& $python "$PSScriptRoot\extract_runtime.py" "$build\generated_runtime.inc.h" "$build\generated_cpu.inc.h" "$build\generated_profile.inc.h" "$build\generated_json_escape.inc.h" "$build\generated_io_profile.inc.h" "$build\generated_ha_metadata.inc.h"
+& $Python "$PSScriptRoot\extract_runtime.py" "$build\generated_runtime.inc.h" "$build\generated_cpu.inc.h" "$build\generated_profile.inc.h" "$build\generated_json_escape.inc.h" "$build\generated_io_profile.inc.h" "$build\generated_ha_metadata.inc.h" "$build\generated_startup_scan.inc.h" "$build\generated_power_save.inc.h"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime extraction failed' }
 & "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W3 /O2 "/I$build" "$PSScriptRoot\test_runtime.cpp" "/Fo$build\" "/Fe$build\test_runtime.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime native build failed' }
 & "$build\test_runtime.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "$PSScriptRoot\test_startup_scan.cpp" "/Fo$build\" "/Fe$build\test_startup_scan.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Startup scan native build failed' }
+& "$build\test_startup_scan.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Startup scan regressions failed' }
+& "$vc\bin\Hostx64\x64\cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 "/I$build" "/I$PSScriptRoot\../display_hybrid_native/stubs" "$PSScriptRoot\test_power_save.cpp" "/Fo$build\" "/Fe$build\test_power_save.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Power-save native build failed' }
+& "$build\test_power_save.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Power-save regressions failed' }
 foreach ($variant in @('dual32', 'dual64', 'single32', 'disabled')) {
   $defines = @()
   if ($variant -eq 'dual64') { $defines += '/DTEST_COUNTER_64=1' }

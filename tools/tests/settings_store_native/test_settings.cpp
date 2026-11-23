@@ -1,5 +1,6 @@
 #include "MasterSettingsStore.h"
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
@@ -19,6 +20,18 @@ static void checksum(std::vector<uint8_t>& b) {
 
 int main() {
   Preferences p;
+  Preferences::reset();
+  const String warning_key = moduleConnectionWarningKey(0xFFFFFFFFFFFFFFFFULL);
+  check(warning_key.length() <= 15, "warning UID key fits NVS");
+  check(std::strcmp(warning_key.c_str(), moduleConnectionWarningKey(0x00FFFFFFFFFFFFFFULL).c_str()) != 0, "warning key preserves all UID bits");
+  check(std::strcmp(warning_key.c_str(), moduleLabelKey(0xFFFFFFFFFFFFFFFFULL).c_str()) != 0, "warning and alias keys are separate");
+  check(p.begin(NS_CFG, false), "open warning preferences");
+  check(!p.getBool(warning_key.c_str(), false), "connection warnings enabled by default");
+  check(putBoolVerified(p, warning_key.c_str(), true), "mute warnings persistently");
+  p.end();
+  check(p.begin(NS_CFG, false) && p.getBool(warning_key.c_str(), false), "mute warnings survives reopen");
+  check(putBoolVerified(p, warning_key.c_str(), false), "reenable warnings");
+  p.end();
   Preferences::reset();
   const auto fresh_input = loadMainInput(p, 1, 0);
   check(fresh_input.type == 0 && fresh_input.addr == 0 && fresh_input.bit == 0 && Preferences::writes == 0,

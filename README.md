@@ -19,7 +19,9 @@ images, a browser-based USB flasher and English end-user documentation.
 
 ## Documentation
 
-- [2.1.24 RC release notes](docs/RELEASE-2.1.24RC.md)
+- [2.1.38 RC release notes](docs/RELEASE-2.1.38RC.md)
+- [Waveshare MCU-P4 PoE V3.1+ / V3.2](docs/MCU-P4-PoE-V3.md)
+- [Standalone C6 LAN/SDIO recovery tool](OpenFumeExtractorMaster/C6_Update_P4_Waveshare_LAN/README.md)
 
 - [Installation and first commissioning](docs/INSTALLATION.md)
 - [MCU setup and configuration](docs/MASTER.md)

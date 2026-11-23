@@ -17,6 +17,7 @@ struct {
   int getMode() { return mode_; }
   int status() { return state; }
   IPAddress localIP() { return ip; }
+  IPAddress dnsIP(uint8_t index) { return IPAddress(100U+index); }
   IPAddress softAPIP() { return ap; }
   bool setPins(int a,int b,int c,int d,int e,int f,int g) {
     const int values[]={a,b,c,d,e,f,g}; memcpy(pins,values,sizeof(pins)); return pins_ok;
@@ -29,6 +30,7 @@ struct Ethernet:Interface {
   bool hasIP() { return online; }
   bool linkUp() { return link; }
   IPAddress localIP() { return ip; }
+  IPAddress dnsIP(uint8_t index) { return IPAddress(200U+index); }
   bool begin(int phy,int addr,int mdc,int mdio,int reset,int clk) {
     assert(phy==ETH_PHY_IP101 && addr==1 && mdc==31 && mdio==52 && reset==51 && clk==EMAC_CLK_EXT_IN); return true;
   }
@@ -47,11 +49,22 @@ inline int esp_efuse_mac_get_default(uint8_t* bytes) {
 #include "generated_master_network.h"
 #include "generated_master_identity.h"
 #include "MasterBoardConfig.h"
+#include "HostedC6Firmware.h"
 int main() {
+#if defined(OFE_MASTER_P4_WAVESHARE_POE)
+  assert(!strcmp(ofe_c6::BOARD,"waveshare-p4-wifi6-poe-eth-v3"));
+  assert(strstr(ofe_c6::RECOVERY_URL,"ESP32-P4-WIFI6-POE-ETH/FAQ"));
+  assert(master_p4_reserved_pin(6) && master_p4_reserved_pin(39));
+  assert(!master_p4_reserved_pin(4) && !master_p4_reserved_pin(20) && !master_p4_reserved_pin(21));
+#else
+  assert(!strcmp(ofe_c6::BOARD,"waveshare-p4-module-dev-kit-prev3"));
+  assert(strstr(ofe_c6::RECOVERY_URL,"ESP32-P4-Module-DEV-KIT/FAQ"));
+#endif
   assert(!master_network_ready()); assert(uint32_t(master_network_ip())==4);
   assert(!strcmp(master_network_transport(),"AP")); assert(master_network_begin("ofe-test"));
   WiFi.state=WL_CONNECTED;
   assert(master_network_ready()); assert(uint32_t(master_network_ip())==10);
+  assert(uint32_t(master_network_dns(0))==100 && uint32_t(master_network_dns(1))==101);
   assert(master_network_changed()); assert(!master_network_changed());
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
   assert(RS485_RX_PIN==21 && RS485_TX_PIN==20 && OFE_STATUS_LED_ENABLE);
@@ -60,6 +73,7 @@ int main() {
   WiFi.pins_ok=false; ETH.hostname=nullptr;
   assert(!master_network_begin("ofe-recovery")); assert(!strcmp(ETH.hostname,"ofe-recovery"));
   ETH.online=true; assert(master_network_changed()); assert(Network.selected==2);
+  assert(uint32_t(master_network_dns(0))==200 && uint32_t(master_network_dns(1))==201);
   assert(uint32_t(master_network_ip())==20 && master_ethernet_ready());
   assert(!strcmp(master_network_transport(),"Ethernet"));
   ETH.ip=IPAddress(21); assert(master_network_changed());

@@ -8,7 +8,7 @@ logic = (root / "WebLogic.inc.h").read_text(encoding="utf-8")
 
 
 def function(source, name):
-    match = re.search(r"^(?:static |bool MasterScheduler::)[^\n]*\b" + name + r"\([^\n]*\) \{", source, re.M)
+    match = re.search(r"^(?:static |(?:bool|void) MasterScheduler::)[^\n]*\b" + name + r"\([^\n]*\)(?: const)? \{", source, re.M)
     if not match:
         raise RuntimeError(name)
     pos = source.index("{", match.start())
@@ -35,7 +35,8 @@ scheduler = (root / "MasterScheduler.cpp").read_text(encoding="utf-8")
 pieces = [types, function(logic, "logic_index_links"), inputs,
           function(logic, "logic_collect_output"), function(logic, "logic_advance_clock"),
           evaluation, reference, function(logic, "logic_rt_lock"), function(logic, "logic_rt_unlock"),
-          tick, function(diagnostics, "diagnostics_device_link_state"), function(scheduler, "pollNextJbc")]
+          tick, function(diagnostics, "diagnostics_device_link_state"), function(scheduler, "pollNextJbc"),
+          function(scheduler, "readNextJbcState")]
 Path(sys.argv[1]).write_text("\n\n".join(pieces), encoding="utf-8")
 if len(sys.argv) > 2:
     cpu = (root / "MasterDiagnostics.inc.h").read_text(encoding="utf-8")
@@ -63,3 +64,13 @@ if len(sys.argv) > 6:
               function(status, "append_universal_entity_defs_json"),
               function(mqtt, "ha_route_metadata_key"), function(mqtt, "ha_append_route_options")]
     Path(sys.argv[6]).write_text("\n\n".join(pieces), encoding="utf-8")
+if len(sys.argv) > 7:
+    Path(sys.argv[7]).write_text("\n\n".join(function(scheduler, name) for name in
+        ("requestScanKnownModules", "requestStartupScan", "pollStartupScan", "startScanJob", "pollScanJob")),
+        encoding="utf-8")
+if len(sys.argv) > 8:
+    power = (root / "ModulePowerSaveState.h").read_text(encoding="utf-8")
+    pieces = [function(power, "module_update_uptime")]
+    pieces += [function(scheduler, name) for name in
+               ("setModulePowerSave", "wakeModule", "wakeAllModules", "refreshPowerSaveActive", "powerSaveIdle", "updatePowerSave")]
+    Path(sys.argv[8]).write_text("\n\n".join(pieces), encoding="utf-8")

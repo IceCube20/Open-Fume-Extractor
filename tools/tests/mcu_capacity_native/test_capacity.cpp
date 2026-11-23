@@ -1,4 +1,5 @@
 #include "ModuleRegistry.h"
+#include "ModuleAlarmPolicy.h"
 #include <cassert>
 #include <vector>
 #include <initializer_list>
@@ -52,7 +53,66 @@ static std::vector<uint8_t> legacy(size_t slots, size_t entities) {
   return bytes;
 }
 
+static void moduleAlarmTest() {
+  using namespace jbc_rs485;
+  using ofe_module_alarm::evaluate;
+  ModuleRecord rec;
+  rec.addr = 0x30; rec.online = true; rec.type = MODULE_WELLER_ZERO_SMOG;
+  rec.caps = CAP_WELLER_INTERFACE; rec.weller_uart_age_sec = 0xFFFF;
+  assert(evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+  rec.connection_warnings_muted = true;
+  assert(!evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+  assert(evaluate(rec, rec.addr, 0).error());
+  assert(evaluate(rec, 0, rec.addr).error()); // Required but not active yet.
+  rec.io_fault_mask = 1;
+  assert(!evaluate(rec, 0, 0).error() && !evaluate(rec, 0, 0).warning());
+  assert(evaluate(rec, rec.addr, 0).error());
+  rec.connection_warnings_muted = false;
+  assert(evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+  rec.connection_warnings_muted = true;
+  rec.io_fault_mask = 2; rec.role_output = true; rec.weller_uart_age_sec = 0;
+  assert(evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+  rec.io_fault_mask = 6;
+  assert(evaluate(rec, 0, 0).warning() && evaluate(rec, 0, 0).error());
+  rec.io_fault_mask = 0; rec.online = false;
+  assert(evaluate(rec, 0, 0).error());
+  rec.online = true; rec.type = MODULE_JBC_BUS; rec.caps = CAP_JBC_BUS; rec.role_output = false;
+  assert(!evaluate(rec, 0, 0).error() && !evaluate(rec, 0, 0).warning());
+  rec.connection_warnings_muted = false;
+  assert(evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+  rec.jbc_link_flags = FAST_FLAG_CONNECTED | FAST_FLAG_ERROR_PENDING; rec.station_addr = 0x18;
+  assert(!evaluate(rec, 0, 0).error() && !evaluate(rec, 0, 0).warning());
+  rec.type = MODULE_JBC_USB; rec.caps = CAP_JBC_USB; rec.jbc_link_flags = 0;
+  assert(evaluate(rec, 0, 0).warning());
+  rec.connection_warnings_muted = true;
+  assert(!evaluate(rec, 0, 0).warning());
+  for (auto type : {MODULE_UNIVERSAL_RS232, MODULE_MODBUS_RTU}) {
+    rec.type = type; rec.caps = 0; rec.io_fault_mask = 1;
+    assert(ofe_module_alarm::supportsConnectionWarning(rec));
+    for (bool role : {false, true}) for (bool enabled : {false, true}) {
+      rec.role_output = role; rec.output_enabled = enabled;
+      rec.connection_warnings_muted = false;
+      assert(evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+      rec.connection_warnings_muted = true;
+      assert(!evaluate(rec, 0, 0).warning() && !evaluate(rec, 0, 0).error());
+      assert(evaluate(rec, rec.addr, 0).error());
+      assert(evaluate(rec, 0, rec.addr).error());
+    }
+    rec.role_output = true; rec.io_fault_mask = 5;
+    assert(evaluate(rec, 0, 0).error()); // Muting a link never mutes another fault.
+  }
+  ModuleRegistry registry;
+  assert(registry.begin());
+  auto* item = registry.upsert(0x10); item->uid = 123; item->connection_warnings_muted = true;
+  item = registry.bindUidToAddress(123, 0x11);
+  assert(item && item->connection_warnings_muted);
+  assert(!registry.upsert(0x10)->connection_warnings_muted);
+  const auto warning = ofe_module_health::summary(true, false);
+  assert((warning & ofe_module_health::SUMMARY_WARNING) && !(warning & ofe_module_health::SUMMARY_ERROR));
+}
+
 int main() {
+  moduleAlarmTest();
   registryTest();
   for (const size_t slots : {size_t(16), size_t(32)}) {
     for (const size_t entries : {size_t(72), size_t(MQTT_HA_MANIFEST_MAX_ENTITIES)}) {

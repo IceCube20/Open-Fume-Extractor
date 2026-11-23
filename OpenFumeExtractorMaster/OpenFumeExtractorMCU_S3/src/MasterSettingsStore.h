@@ -104,6 +104,17 @@ inline String moduleLabelKey(uint64_t uid) {
   return String(key);
 }
 
+inline String moduleConnectionWarningKey(uint64_t uid) {
+  // Full 64-bit identity in base32 fits the 15-character NVS key limit.
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuv";
+  char key[15];
+  uint8_t pos = sizeof(key) - 1;
+  key[pos] = 0;
+  do { key[--pos] = digits[uid & 31U]; uid >>= 5; } while (uid);
+  key[--pos] = 'c';
+  return String(key + pos);
+}
+
 inline String moduleSnapshotKey(uint8_t index, char suffix) {
   char key[8];
   snprintf(key, sizeof(key), "m%c%02u", suffix, index);

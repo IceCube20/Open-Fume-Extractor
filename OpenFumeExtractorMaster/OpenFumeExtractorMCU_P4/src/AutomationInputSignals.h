@@ -7,6 +7,18 @@
 // status already defines Stand as "station linked and no Work". USB bridges
 // supply a true per-port Stand mask, which we must keep using.
 namespace ofe_automation_inputs {
+inline bool validMainInputSelection(unsigned type, unsigned addr, unsigned bit) {
+  if (type > 3 || bit >= 255) return false;
+  if (type == 0) return addr == 0 && bit == 0;
+  if (type == 1) return (addr == 0 || (addr >= 0x10 && addr <= 0x6F)) && bit == 0;
+  return addr >= 0x10 && addr <= 0x6F && (type != 2 || bit < 16);
+}
+inline bool mainInputSelected(uint8_t current_type, uint8_t current_addr, uint8_t current_bit,
+                              unsigned type, unsigned addr, unsigned bit) {
+  return validMainInputSelection(type, addr, bit) &&
+    current_type == type && current_addr == addr && current_bit == bit;
+}
+
 inline bool jbcStandActive(bool online, bool fae_bridge, bool linked,
                            bool station_present, uint8_t work_mask, uint8_t stand_mask) {
   if (!online || !linked) return false;

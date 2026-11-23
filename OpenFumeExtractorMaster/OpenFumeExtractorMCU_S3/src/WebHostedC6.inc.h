@@ -21,6 +21,10 @@ static void web_handle_c6_status() {
   json="{\"phase\":";json+=uint8_t(c.phase());json+=",\"error\":\"";json+=ofe_c6::errorName(c.error());
   json+="\",\"current\":";json+=c.slaveVersion();json+=",\"host\":";json+=c.hostVersion();
   json+=",\"expected\":";json+=ofe_c6::VERSION;json+=",\"received\":";json+=c.received();
+  json+=",\"version_probing\":";json+=c.versionProbing()?"true":"false";
+  json+=",\"version_error\":";json+=c.versionError();
+  json+=",\"control_error\":";json+=c.controlError();
+  json+=",\"control_mode\":";json+=c.controlMode();
   json+=",\"written\":";json+=c.written();json+=",\"size\":";json+=ofe_c6::IMAGE_SIZE;
   json+=",\"lan\":";json+=web_c6_lan()?"true":"false";
   json+=",\"other_busy\":";json+=web_c6_other_update()?"true":"false";
@@ -69,7 +73,8 @@ static void web_handle_c6_install() {
   if(!web_c6_lan()){web_c6_reply(ofe_c6::NoLan);return;}
   if(web_c6_other_update() || web.arg("recovery")!="1"){web_c6_reply(ofe_c6::Busy);return;}
   uint32_t token=0;if(!web_c6_number("token",UINT32_MAX,token)){web_c6_reply(ofe_c6::Busy);return;}
-  const bool ok=hosted_c6().start(token,[](){const uint32_t due=millis()+5000U;master_update_restart_due_ms.store(due?due:1U);});
+  const bool legacy=web.arg("legacy")=="1";
+  const bool ok=hosted_c6().start(token,[](){const uint32_t due=millis()+5000U;master_update_restart_due_ms.store(due?due:1U);},legacy);
   web_c6_reply(ok?ofe_c6::Ok:ofe_c6::TaskFailed);
 }
 static void append_hosted_c6_ui(String& html) {
@@ -82,10 +87,15 @@ static void append_hosted_c6_ui(String& html) {
   html+=web_text("Verwerfen","Discard");html+=F("</button></div><label for='c6_file'>");html+=web_text("Firmwaredatei (.bin)","Firmware file (.bin)");
   html+=F("</label><input id='c6_file' type='file' accept='.bin'><label style='display:flex;gap:8px;align-items:center;margin-top:12px'><input id='c6_recovery' type='checkbox' style='width:auto;min-height:0'>");
   html+=web_text("C6-UART-Wiederherstellung ist verfügbar","C6 UART recovery is available");
+  html+=F("</label><label style='display:flex;gap:8px;align-items:center;margin-top:12px'><input id='c6_legacy' type='checkbox' style='width:auto;min-height:0'>");
+  html+=web_text("Legacy-SDIO-Wiederherstellung ausdrücklich erlauben","Explicitly allow legacy SDIO recovery");
   html+=F("</label><p class='muted'>");
+  html+=web_text("Bei unbekannter C6-Version ist ein Downgrade möglich. UART-Rückweg erforderlich.","An unknown C6 version may be downgraded. UART recovery access is required.");
+  html+=F("</p><p class='muted'>");
   html+=web_text("Nur über LAN. WLAN/Bluetooth werden unterbrochen; danach startet die MCU neu.","Ethernet only. WiFi/Bluetooth will be interrupted; the MCU restarts afterwards.");
   html+=F("</p><div class='actions'><button type='button' id='c6_install' disabled>");html+=web_text("C6 aktualisieren","Update C6");
-  html+=F("</button><a class='btn secondary' href='https://docs.waveshare.com/ESP32-P4-Module-DEV-KIT/FAQ' target='_blank' rel='noopener noreferrer'>");
+  html+=F("</button><a class='btn secondary' href='");html+=ofe_c6::RECOVERY_URL;
+  html+=F("' target='_blank' rel='noopener noreferrer'>");
   html+=web_text("Wiederherstellung","Recovery");html+=F("</a></div><div class='progress'><div id='c6_bar' class='bar'></div></div></section><script>window.OFE_C6={de:");
   html+=web_is_german()?"true":"false";html+=F(",size:");html+=ofe_c6::IMAGE_SIZE;html+=F(",url:'");html+=ofe_c6::URL;
   html+=F("',expected:");html+=ofe_c6::VERSION;html+=F(",board:'");html+=ofe_c6::BOARD;

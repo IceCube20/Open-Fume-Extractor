@@ -1,4 +1,4 @@
-"""Stage the shared master for Waveshare ESP32-P4-Module-DEV-KIT (PRE-V3).
+"""Stage the shared MCU for Waveshare Module PRE-V3 or WIFI6-PoE-ETH V3.1+.
 
 No SDK/IDE installation, flashing or private configuration copying is performed.
 """
@@ -15,13 +15,16 @@ ECC = Path(__file__).resolve().parent / "elecrow_p4_5inch"
 MANIFEST = "p4-master-manifest.json"
 FQBN = ("esp32:esp32:esp32p4:ChipVariant=prev3,PSRAM=enabled,USBMode=hwcdc,"
         "CDCOnBoot=default,FlashSize=16M,PartitionScheme=custom")
+POE_FQBN = ("esp32:esp32:esp32p4:ChipVariant=postv3,PSRAM=enabled,USBMode=hwcdc,"
+            "CDCOnBoot=default,FlashSize=32M,PartitionScheme=custom")
+POE_NAME = "OpenFumeExtractorMCU_P4_POE"
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def generated_files():
+def generated_files(poe=False):
     outputs = {}
     for path in sorted(SOURCE.rglob("*")):
         relative = path.relative_to(SOURCE)
@@ -33,7 +36,7 @@ def generated_files():
             continue
         name = relative.as_posix()
         if name == "OpenFumeExtractorMCU_S3.ino":
-            name = "OpenFumeExtractorMCU_P4.ino"
+            name = (POE_NAME if poe else "OpenFumeExtractorMCU_P4") + ".ino"
         outputs[name] = path.read_bytes()
     upstream = json.loads((ECC / "tinycrypt/UPSTREAM.json").read_text())
     for name, info in upstream["files"].items():
@@ -44,7 +47,8 @@ def generated_files():
     for path in sorted((ECC / "tinycrypt").iterdir()):
         if path.is_file():
             outputs["src/p4/tinycrypt/" + path.name] = path.read_bytes()
-    outputs['partitions.csv']=(ROOT/'tools/boards/master_p4_16mb.csv').read_bytes()
+    partition = 'master_p4_32mb.csv' if poe else 'master_p4_16mb.csv'
+    outputs['partitions.csv']=(ROOT/'tools/boards'/partition).read_bytes()
     usb_manifest=SOURCE/'src/usb_msc/UPSTREAM.json'
     if usb_manifest.exists():
         usb=json.loads(usb_manifest.read_text())
@@ -54,6 +58,8 @@ def generated_files():
         for name in ('LICENSE','UPSTREAM.json'):
             outputs['src/usb_msc/'+name]=(SOURCE/'src/usb_msc'/name).read_bytes()
     outputs["build_opt.h"] = b"-O3\n-DOFE_MASTER_P4_WAVESHARE=1\n"
+    if poe:
+        outputs["build_opt.h"] += b"-DOFE_MASTER_P4_WAVESHARE_POE=1\n"
     ble = (SOURCE / "src/OfeDisplayBle.h").read_text(encoding="utf-8-sig")
     protocol = ble[ble.index("namespace ofe_ble {"):ble.index("class OfeDisplayBle {")]
     outputs["src/p4/OfeBleProtocol.h"] = ("#pragma once\n" + protocol).encode()
@@ -62,10 +68,10 @@ def generated_files():
                        for part in ("MAJOR", "MINOR", "PATCH")) + "RC"
     manifest = {
         "firmware_version": version,
-        "status": "RC; PRE-V3 owner-tested; other board revisions unverified",
-        "board": "Waveshare ESP32-P4-Module-DEV-KIT",
+        "status": "Prepared; V3.2 board testing required" if poe else "RC; PRE-V3 owner-tested; other board revisions unverified",
+        "board": "Waveshare ESP32-P4-WIFI6-POE-ETH" if poe else "Waveshare ESP32-P4-Module-DEV-KIT",
         "sdk": "Arduino-ESP32 3.3.12 / ESP-IDF 5.5.5",
-        "fqbn": FQBN,
+        "fqbn": POE_FQBN if poe else FQBN,
         "private_config_copied": False,
         "ota_slot_bytes": 5242880,
         "partition_migration": "USB flash after backup; NVS address retained, LittleFS relocated",
@@ -78,14 +84,16 @@ def generated_files():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--poe", action="store_true", help="Prepare the separate 32 MB WIFI6-PoE-ETH V3.1+ sketch")
     parser.add_argument("--force", action="store_true", help="Replace reviewed local generated-file edits")
     args = parser.parse_args()
-    outputs = generated_files()
-    manifest = DEST / MANIFEST
+    outputs = generated_files(args.poe)
+    dest = ROOT / "OpenFumeExtractorMaster" / POE_NAME if args.poe else DEST
+    manifest = dest / MANIFEST
     previous = json.loads(manifest.read_text())["generated_sha256"] if manifest.exists() else {}
     def destination(name):
-        path = (DEST / name).resolve()
-        if not path.is_relative_to(DEST.resolve()) or path == DEST.resolve():
+        path = (dest / name).resolve()
+        if not path.is_relative_to(dest.resolve()) or path == dest.resolve():
             raise SystemExit("Unsafe generated manifest path: " + name)
         return path
     obsolete = [name for name in previous if name not in outputs]

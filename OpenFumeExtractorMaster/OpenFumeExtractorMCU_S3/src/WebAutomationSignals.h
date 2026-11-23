@@ -10,10 +10,13 @@ function ofeAutomationSignals(d,lang,moduleName){
   add(12,0,tr('Alarm vorhanden','Alarm present'));
   add(13,0,tr('Warnung vorhanden','Warning present'));
   add(14,0,tr('Fehler vorhanden','Error present'));
+  add(21,0,tr('Haupteingang gew\u00e4hlt','Main input selected'));
+  add(22,0,tr('Haupteingang verf\u00fcgbar','Main input available'));
+  add(23,0,tr('Haupteingang aktiv','Main input active'));
   const filterNames=[[15,tr('Filter bald wechseln','Filter change soon')],[16,tr('Filter wechseln','Replace filter')],[17,tr('Filterdaten g\u00fcltig','Filter data valid')]];
   for(const [bit,label] of filterNames)add(bit,0,label+tr(' - mindestens ein Modul',' - any module'),filter);
   add(19,0,tr('Ger\u00e4t verbunden - mindestens ein Modul','Device connected - any module'));
-  add(20,0,tr('JBC Stand aktiv - alle JBC-Module','JBC Stand active - all JBC modules'));
+  add(20,0,tr('Alle JBC-Module','All JBC modules')+' ('+Number(d.jbc_inputs_count||0)+') - JBC Stand');
   for(const m of modules){
     const addr=Number(m.addr), name=moduleName(m);
     add(18,addr,name+tr(' - Modul online',' - module online'));
@@ -42,7 +45,13 @@ function ofeAutomationInputInfo(d,signal){
   if(!match)return null;
   const bit=Number(match[1]),addr=Number(match[2]),row=addr?(d.modules||[]).find(m=>Number(m.addr)===addr):d;
   const mask=Number(row&&row.system_inputs_mask||0),valid=bit<15||bit>16||!!(mask&(1<<17))||!!(mask&(1<<bit));
-  return {known:bit>=11&&bit<=20&&!!row&&Number.isFinite(row.system_inputs_mask)&&valid,on:!!(mask&(1<<bit)),online:!!row};
+  return {known:bit>=11&&bit<=23&&(bit<=20||addr===0)&&!!row&&Number.isFinite(row.system_inputs_mask)&&valid,on:!!(mask&(1<<bit)),online:!!row};
+}
+function ofeMainInputSelectionInfo(d,signal){
+  const match=String(signal||'').match(/^(?:extractor:select_input|state:input:selected):([0-3]):(\d+):(\d+)$/);
+  if(!match)return null;
+  const selected=[d.main_input_source_type,d.main_input_source_addr,d.main_input_source_bit];
+  return {known:selected.every(Number.isFinite),on:selected.every((value,index)=>value===Number(match[index+1])),online:true};
 }
 function ofeSignalModuleName(m){return String(m.label||m.display_name||m.name||m.type_name||('0x'+Number(m.addr).toString(16).toUpperCase()))}
 function ofeSignalModuleLabel(m){return '0x'+Number(m.addr).toString(16).toUpperCase().padStart(2,'0')+' '+ofeSignalModuleName(m)}
@@ -104,8 +113,8 @@ function ofeRoutingSignals(d,lang){
   for(const m of mods)if(provides(m))addInput('state:output:active:'+m.addr,ofeSignalModuleLabel(m),active,4,Number(m.addr),10);
   if(d.jbc_inputs_count){
     const group=tr('Alle JBC-Module','All JBC modules');
-    addInput('jbc:0',group+' ('+d.jbc_inputs_count+')',group,1,0,0,true);
-    for(const m of mods)if(m.online&&(Number(m.caps||0)&16777217))addInput('jbc:'+m.addr,ofeSignalModuleLabel(m)+' - JBC',group,1,Number(m.addr),0,true);
+    addInput('jbc:0',group+' ('+d.jbc_inputs_count+') - JBC Work',group,1,0,0,true);
+    for(const m of mods)if(m.online&&(Number(m.caps||0)&16777217))addInput('jbc:'+m.addr,ofeSignalModuleLabel(m)+' - JBC Work',group,1,Number(m.addr),0,true);
   }
   addOutput('main_output',tr('Absaugung Hauptausgang','Extractor output'),'',1,0,0);
   const controls=tr('Absaugung steuern','Control extractor');
@@ -145,6 +154,56 @@ function ofeRoutingSignals(d,lang){
   }
   const automation=ofeAutomationSignals({...d,modules:mods},lang,ofeSignalModuleLabel);
   inputs.push(...automation.inputs);outputs.push(...automation.outputs);
+  const selectInput=tr('Haupteingang w\u00e4hlen','Select main input');
+  const choices=[{source_type:0,source_addr:0,source_bit:0,name:tr('Kein Eingang','No input')},...inputs.filter(item=>item.mainInput)];
+  for(const item of choices)addOutput(`extractor:select_input:${item.source_type}:${item.source_addr}:${item.source_bit}`,item.name,selectInput,9+item.source_type,item.source_addr,item.source_bit);
+  const stateChoices=[...choices],current=[d.main_input_source_type,d.main_input_source_addr,d.main_input_source_bit];
+  const [type,addr,bit]=current;
+  const currentValid=current.every(Number.isInteger)&&type>=0&&type<=3&&bit>=0&&bit<255&&
+    (type===0?addr===0&&bit===0:type===1?(addr===0||addr>=16&&addr<=111)&&bit===0:addr>=16&&addr<=111&&(type!==2||bit<16));
+  if(currentValid&&!stateChoices.some(item=>item.source_type===type&&item.source_addr===addr&&item.source_bit===bit)){
+    const m=mods.find(m=>Number(m.addr)===addr),e=m?defs(m).find(e=>Number(e.id)===(type===2?20+bit:bit)):null;
+    const name=type===1&&!addr?tr('Alle JBC-Module','All JBC modules')+' - JBC Work':(m?ofeSignalModuleLabel(m):'0x'+addr.toString(16).toUpperCase())+
+      (type===1?' - JBC Work':' - '+(type===2&&bit<2&&m&&m[bit?'io_in2_alias':'io_in1_alias']||e&&entityName(e)||(type===2?'IN'+(bit+1):'Entity '+bit)));
+    stateChoices.push({source_type:type,source_addr:addr,source_bit:bit,name});
+  }
+  for(const item of stateChoices)addInput(`state:input:selected:${item.source_type}:${item.source_addr}:${item.source_bit}`,item.name,'',6+item.source_type,item.source_addr,item.source_bit);
+  return ofeOrderRoutingSignals(inputs,outputs,lang);
+}
+function ofeOrderRoutingSignals(inputs,outputs,lang){
+  const tr=(de,en)=>lang==='de'?de:en;
+  const inputRank=item=>{
+    if(item.source_type>=6)return 1;
+    if(item.source_type===5)return 8;
+    if(item.source_type===1)return 6;
+    if(item.source_type!==4)return 7;
+    const bit=item.source_bit;
+    return bit<=7?0:bit<=10?2:bit<=14?3:bit<=17?5:bit<=19?4:bit===20?6:1;
+  };
+  for(const item of inputs){
+    const rank=inputRank(item);
+    if(rank===0)item.group=tr('Absaugung - Zustand','Extractor - State');
+    if(rank===1)item.group=item.source_type===4?tr('Haupteingang - Zustand','Main input - State'):tr('Haupteingang - Gew\u00e4hlt','Main input - Selected');
+    if(rank===2)item.group=item.source_bit===10?tr('Hauptausgang - Aktiv','Main output - Active'):tr('Hauptausgang - Gew\u00e4hlt','Main output - Selected');
+    if(rank===3)item.group=tr('System - ECO und Alarme','System - Power saving and alarms');
+    if(rank===4)item.group=tr('Module - Verbindungen','Modules - Connections');
+    if(rank===5)item.group=tr('Filter - Zustand','Filter - State');
+    if(rank===6)item.group='JBC - Work / Stand';
+  }
+  inputs.sort((a,b)=>inputRank(a)-inputRank(b)||
+    (inputRank(a)>=4&&inputRank(a)<=7?Number(a.source_addr)-Number(b.source_addr):0));
+  const outputRank=item=>item.target_type===1?0:item.target_type===5?1:item.target_type===4?(item.target_bit<=6?2:3):
+    item.target_type>=9?4:item.target_type===6?5:item.target_type===2||item.target_type===3?6:item.target_type===8?9:item.target_bit>=2?7:8;
+  for(const item of outputs){
+    const rank=outputRank(item);
+    if(rank===1)item.group=tr('Absaugung schalten','Switch extractor');
+    if(rank===2)item.group=tr('Absaugstufe','Suction level');
+    if(rank===3)item.group=tr('Benutzerleistung','Custom power');
+    if(rank===7)item.group=tr('Displays','Displays');
+  }
+  const actionRank=item=>item.target_bit>=3&&item.target_bit<=6?item.target_bit-3:item.target_bit+4;
+  outputs.sort((a,b)=>outputRank(a)-outputRank(b)||(outputRank(a)===2?actionRank(a)-actionRank(b):0)||
+    (outputRank(a)===6||outputRank(a)===7?Number(a.target_addr)-Number(b.target_addr):0));
   return {inputs,outputs};
 }
 function ofeSignalEscape(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}

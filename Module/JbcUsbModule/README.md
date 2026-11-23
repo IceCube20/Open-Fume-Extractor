@@ -2,6 +2,7 @@
 
 OpenFumeExtractor peripheral for connecting JBC stations through the CP210x-based USB interface.
 
+
 - **MCU:** ESP32-S3 with native USB in host mode
 - **JBC USB bridge:** Silicon Labs CP210x
 - **UART behind CP210x:** 500000 baud, 8E1, no flow control
@@ -15,7 +16,8 @@ See [`JBC_USB_PROTOCOL.md`](JBC_USB_PROTOCOL.md) for the protocol/state-machine 
 
 ## Hardware notes
 
-The ESP32-S3 must act as USB host, so the module board must provide protected/current-limited 5 V VBUS. With the internal USB PHY, the native USB data pins are GPIO19 (D-) and GPIO20 (D+). Use a separate programming/debug UART while validating USB-host operation.
+The
+ ESP32-S3 must act as USB host, so the module board must provide protected/current-limited 5 V VBUS. With the internal USB PHY, the native USB data pins are GPIO19 (D-) and GPIO20 (D+). Use a separate programming/debug UART while validating USB-host operation.
 
 The sketch uses the ESP-IDF USB Host API exposed by Arduino-ESP32 3.x. Hardware validation with the exact Arduino-ESP32/core version used for the final board is still required.
 

@@ -253,7 +253,7 @@ static constexpr uint32_t DISPLAY_NATIVE_CAP = (1UL << 22);
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 4
-#define OFE_MODULE_FW_PATCH 37
+#define OFE_MODULE_FW_PATCH 39
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -1389,6 +1389,7 @@ static lv_obj_t* ui_module_rows[DISPLAY_MODULE_CAPACITY] = {nullptr};
 static lv_obj_t* ui_module_row_status_stripes[DISPLAY_MODULE_CAPACITY] = {nullptr};
 static lv_obj_t* ui_module_row_names[DISPLAY_MODULE_CAPACITY] = {nullptr};
 static lv_obj_t* ui_module_row_meta[DISPLAY_MODULE_CAPACITY] = {nullptr};
+static lv_obj_t* ui_module_row_progress[DISPLAY_MODULE_CAPACITY] = {nullptr};
 static lv_obj_t* ui_module_update_notice = nullptr;
 static lv_obj_t* ui_detail_title = nullptr;
 static lv_obj_t* ui_detail_meta = nullptr;
@@ -2734,7 +2735,7 @@ static void bus_update_scroll_to_target(bool force) {
 
   // Put the updating row roughly in the middle when possible, so neighbouring
   // modules stay visible instead of showing only the target row.
-  int32_t y = (int32_t)idx * 54L - 54L;
+  int32_t y = lv_obj_get_y(ui_module_rows[(uint8_t)idx]) - 54L;
   if (y < 0) y = 0;
   lv_obj_scroll_to_y(ui_module_list, y, LV_ANIM_OFF);
 }
@@ -5983,33 +5984,11 @@ static void lv_create_app_screens() {
   lv_obj_clear_flag(ui_module_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
   lv_obj_set_style_anim_duration(ui_module_list, 0, 0);
   for (uint8_t i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
-    lv_obj_t* row = lv_button_create(ui_module_list);
-    ui_module_rows[i] = row;
-    lv_obj_set_pos(row, 0, i * 54);
-    lv_obj_set_size(row, 438, 48);
-    lv_stabilize_button(row);
-    lv_obj_set_style_radius(row, ofe_display_ui::RADIUS, 0);
-    lv_obj_set_style_bg_color(row, ui_theme_color(0x151D27, 0xF7FAFC), 0);
-    lv_obj_set_style_border_width(row, 1, 0);
-    lv_obj_set_style_border_color(row, ui_theme_color(0x2C3B4A, 0xC4D0DB), 0);
-    lv_obj_set_style_shadow_width(row, 0, 0);
-    lv_obj_set_style_bg_grad_dir(row, LV_GRAD_DIR_NONE, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_user_data(row, (void*)(uintptr_t)i);
-    lv_obj_add_event_cb(row, lv_module_row_event, LV_EVENT_CLICKED, NULL);
-    ui_module_row_status_stripes[i] = lv_obj_create(row);
-    lv_obj_set_pos(ui_module_row_status_stripes[i], 4, 8);
-    lv_obj_set_size(ui_module_row_status_stripes[i], 6, 32);
-    lv_obj_set_style_radius(ui_module_row_status_stripes[i], 3, 0);
-    lv_obj_set_style_bg_color(ui_module_row_status_stripes[i], ui_theme_color(0x47515D, 0x9AA8B6), 0);
-    lv_obj_set_style_bg_opa(ui_module_row_status_stripes[i], LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ui_module_row_status_stripes[i], 0, 0);
-    lv_obj_set_style_pad_all(ui_module_row_status_stripes[i], 0, 0);
-    lv_obj_clear_flag(ui_module_row_status_stripes[i], LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(ui_module_row_status_stripes[i], LV_OBJ_FLAG_CLICKABLE);
-    ui_module_row_names[i] = lv_label(row, "", 18, 5, lv_color_hex(0xFFFFFF), UI_FONT_DEFAULT, 406);
-    ui_module_row_meta[i] = lv_label(row, "", 18, 27, lv_color_hex(0x96A0AA), UI_FONT_DEFAULT, 406);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    ui_module_rows[i] = nullptr;
+    ui_module_row_status_stripes[i] = nullptr;
+    ui_module_row_names[i] = nullptr;
+    ui_module_row_meta[i] = nullptr;
+    ui_module_row_progress[i] = nullptr;
   }
   ui_module_update_notice = lv_label(ui_module_list_screen, "", 16, 248, lv_color_hex(0x2997FF), UI_FONT_DEFAULT, 448);
   lv_obj_add_flag(ui_module_update_notice, LV_OBJ_FLAG_HIDDEN);
@@ -6272,7 +6251,9 @@ static void lv_update_module_list() {
   const bool master_lost_now = master_state == 2;
   const bool master_waiting = master_state == 0;
   bool update_target_found = false;
+  int16_t row_y = 0;
   for (uint8_t i = 0; i < DISPLAY_MODULE_CAPACITY; ++i) {
+    if (i < module_total && module_summaries[i].valid) ofe_module_cards::create_row(i);
     if (!ui_module_rows[i]) continue;
     if (i >= module_total || !module_summaries[i].valid) {
       lv_set_visible(ui_module_rows[i], false);
@@ -6282,6 +6263,10 @@ static void lv_update_module_list() {
     lv_set_visible(ui_module_rows[i], true);
     const bool row_is_updating = !master_lost_now && bus_update_is_for_addr(m.addr);
     if (row_is_updating) update_target_found = true;
+    const int height = ofe_module_cards::row_height(row_is_updating);
+    lv_obj_set_y(ui_module_rows[i], row_y);
+    lv_obj_set_height(ui_module_rows[i], height);
+    row_y += height + 6;
 
     String title = lv_addr_text(m.addr) + "  " + String(m.name[0] ? m.name : display_module_type_name(m.type));
     String meta;
@@ -6316,12 +6301,20 @@ static void lv_update_module_list() {
       accent = border;
       meta_color = (m.flags & 1) ? ui_theme_color(0x2DFF88, 0x047857) : ui_theme_color(0xFF8A98, 0xB42318);
       bg = (m.flags & 1) ? ui_theme_color(0x151D27, 0xECFDF3) : ui_theme_color(0x151D27, 0xFFF1F3);
+      const auto severity = ofe_module_cards::severity(m, true);
+      if ((m.flags & 1) && severity != ofe_module_cards::Normal) {
+        border = ofe_module_cards::border(severity, border);
+        accent = border;
+        meta_color = border;
+        meta += severity == ofe_module_cards::Fault ? tr(" - Fault", " - Fehler") : tr(" - Warning", " - Warnung");
+      }
     }
     lv_set_text(ui_module_row_names[i], title);
     lv_set_text(ui_module_row_meta[i], meta);
     lv_obj_set_style_border_color(ui_module_rows[i], border, 0);
     lv_obj_set_style_bg_color(ui_module_rows[i], bg, 0);
     lv_obj_set_style_text_color(ui_module_row_meta[i], meta_color, 0);
+    ofe_module_cards::row_progress(ui_module_row_progress[i], ui_module_rows[i], row_is_updating, status.update_progress);
     if (ui_module_row_status_stripes[i]) lv_obj_set_style_bg_color(ui_module_row_status_stripes[i], accent, 0);
   }
 

@@ -12,11 +12,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build", type=Path)
     parser.add_argument("--master", action="store_true", help="Verify the generated Waveshare P4 master instead of the display")
+    parser.add_argument("--poe", action="store_true", help="Verify the separate WIFI6-PoE-ETH master")
     args = parser.parse_args()
+    if args.poe and not args.master:
+        parser.error('--poe requires --master')
     build = args.build.resolve()
-    name = "OpenFumeExtractorMCU_P4.ino" if args.master else "DisplayModule_P4_800x480.ino"
+    master_name = 'OpenFumeExtractorMCU_P4_POE' if args.poe else 'OpenFumeExtractorMCU_P4'
+    name = master_name + '.ino' if args.master else "DisplayModule_P4_800x480.ino"
     root = Path(__file__).resolve().parents[2]
-    folder = root / ("OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4" if args.master else "Module/DisplayModule_P4_800x480")
+    folder = root / ("OpenFumeExtractorMaster/" + master_name if args.master else "Module/DisplayModule_P4_800x480")
     manifest_name = "p4-master-manifest.json" if args.master else "p4-preparation-manifest.json"
     manifest = json.loads((folder / manifest_name).read_text())
     ecc_dir = "src/p4" if args.master else "src"
@@ -79,17 +83,25 @@ def main():
             raise RuntimeError("Expected exactly one strong definition of " + symbol)
     data = image.read_bytes()
     target = "MASTER" if args.master else "DISPLAY_P4_800X480"
-    marker = b"[P4 MCU] Waveshare Module DEV KIT" if args.master else b"P4 BLE ECC: software-only + P4 hardware RNG + self-test v3"
+    marker = b"[P4 MCU] %s / %s / chip revision" if args.master else b"P4 BLE ECC: software-only + P4 hardware RNG + self-test v3"
+    identity = re.search(rb'OFE_FW_SIG:v1;target=([A-Z0-9_]+);version=([^;]+);', data)
+    allowed_versions = {version, version + '-Developer'} if args.master else {version}
     if (data[0]!=0xE9 or int.from_bytes(data[12:14], "little")!=0x12 or
-            ("target=" + target + ";version=" + version + ";").encode() not in data or marker not in data):
+            not identity or identity[1].decode()!=target or identity[2].decode() not in allowed_versions or marker not in data):
         raise RuntimeError("Wrong P4 firmware/version/backport marker")
+    version = identity[2].decode()
     report = {"firmware": version, "sha256": hashlib.sha256(data).hexdigest(), "origins": origins,
               "old_sdk_ecc_objects_linked": False, "ble_ecc_uses_accelerator": False,
               "ble_rng": "P4 esp_fill_random", "rgb_profile": {"pclk_hz": 16000000, "bounce_lines": 20},
               "hardware_pairing_verified": False}
     if args.master:
         report.pop("rgb_profile")
-        report["board"] = "Waveshare ESP32-P4-Module-DEV-KIT PRE-V3"
+        report["board"] = manifest['board']
+        report["image_revision_min"] = int.from_bytes(data[15:17], 'little')
+        report["image_revision_max"] = int.from_bytes(data[17:19], 'little')
+        expected_range = (301,399) if args.poe else (1,199)
+        if (report['image_revision_min'],report['image_revision_max']) != expected_range:
+            raise RuntimeError('Unbounded or wrong MCU revision range; use tools/build_master_p4.ps1')
         report["hardware_network_verified"] = False
     (build / "ecc-link-verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print("PASS: complete P4 ELF/BIN, sketch ECC origins proven, old SDK ECC excluded, BLE ECC has no accelerator calls")

@@ -8,6 +8,21 @@ static void p4reset(bool saved=true) {
   if(saved)wifi_start_sta_connect(); else wifi_start_setup_ap();
 }
 int main() {
+  test_time_policy();
+  p4reset(); wifi_service_tick(); assert(hosted_c6().last_blocked);
+  now_ms=100; wifi_pause_connection_for_scan();
+  assert(!wifi_sta_pending && WiFi.disconnects==1 && !WiFi.auto_reconnect);
+  wifi_service_tick(); assert(!hosted_c6().last_blocked && WiFi.begins==1);
+  p4reset(false); eth_ready=true; wifi_service_tick();
+  now_ms=1500; wifi_service_tick(); assert(WiFi.mode_==WIFI_OFF && time_configs==0);
+  now_ms=2000; wifi_service_tick(); assert(time_configs==1); // LAN-only boot, no SSID.
+  now_ms=62000; wifi_service_tick(); assert(time_configs==2); // No NTP reply yet.
+  epoch=1800000000; now_ms=122000; wifi_service_tick(); assert(time_configs==2);
+  std::strcpy(wifi_ssid,"saved-network");
+  eth_ready=false; now_ms=122001; wifi_service_tick();
+  WiFi.connected=true; now_ms=122002; wifi_service_tick();
+  now_ms=124002; wifi_service_tick(); assert(time_configs==3); // Restart on WiFi fallback.
+
   p4reset(); WiFi.connected=true; eth_ready=true;
   wifi_service_tick(); now_ms=1499; wifi_service_tick(); assert(WiFi.stops==0);
   now_ms=1500; wifi_service_tick();

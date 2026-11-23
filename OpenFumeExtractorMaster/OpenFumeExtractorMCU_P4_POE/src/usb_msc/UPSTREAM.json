@@ -1,0 +1,61 @@
+{
+  "repository": "https://github.com/espressif/esp-usb",
+  "commit": "7d9431146f9078ebe4f0ac94e9a69e88cee64deb",
+  "version": "1.3.0",
+  "license": "Apache-2.0",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "files": {
+    "CMakeLists.txt": "f577ae29951e5f7b906f264d058643246188a919bd8bc89b3fc67eedf9513f3e",
+    "README.md": "e78b223ea6671be1c7acbfe5559dcff0ec2889ff3a0fde8b2ff976bd2a959cb2",
+    "idf_component.yml": "9f95fd9787e7dd5e269a9ca768f1ae5f8f80c6ef3a4cd3011c865db30110aab3",
+    "include/esp_private/msc_scsi_bot.h": "ecb09ee1bbf8f1a37f32ee5f978465493d872cd58a9a0ebd83bc80e13c6c5547",
+    "include/usb/msc_host.h": "f3957ffe188157147a31518b610527be2f2961dc83a17029ef7acf7b403c65f0",
+    "include/usb/msc_host_vfs.h": "4ef947ca2a730bf8c4d9a9dc2eb277589b9bdc3211f78cfdebfca5cf196b40ee",
+    "private_include/diskio_usb.h": "91b5eba3c81df1d86d8c3681e6871feb4760d34cb78d9ca337c20e0e4cc23f4c",
+    "private_include/msc_common.h": "af15862c069245b5a5b5f88483e7c58fcdec3e9aecdc103e977e8fd3d090c55b",
+    "src/diskio_usb.c": "da1ed927c1150ef4e9351294ae67c611fe4d1d19ee6c19bcdd8fec8591df234d",
+    "src/msc_bdl.c": "d6be59a99f1ae867290664eca9550bc686d3078a4975a5e163ce1b64e87177a1",
+    "src/msc_host.c": "6a752f537a7945e287dd93aedce5a2f5ae0cce0ad9d0371a890d2e319eb5e02e",
+    "src/msc_host_vfs.c": "5e66056125eabb1441c24d11c1b4113de79dc5a9e27f3bda86597854e6c2a65c",
+    "src/msc_scsi_bot.c": "4f871f0913a1435cd3a5ab4935512356da28230bfb50b2770b71f8514e5d408d"
+  },
+  "staged": {
+    "src/usb_msc/msc_scsi_bot.h": {
+      "upstream": "include/esp_private/msc_scsi_bot.h",
+      "sha256": "ecb09ee1bbf8f1a37f32ee5f978465493d872cd58a9a0ebd83bc80e13c6c5547"
+    },
+    "usb/msc_host.h": {
+      "upstream": "include/usb/msc_host.h",
+      "sha256": "f3957ffe188157147a31518b610527be2f2961dc83a17029ef7acf7b403c65f0"
+    },
+    "usb/msc_host_vfs.h": {
+      "upstream": "include/usb/msc_host_vfs.h",
+      "sha256": "4ef947ca2a730bf8c4d9a9dc2eb277589b9bdc3211f78cfdebfca5cf196b40ee"
+    },
+    "src/usb_msc/diskio_usb.h": {
+      "upstream": "private_include/diskio_usb.h",
+      "sha256": "91b5eba3c81df1d86d8c3681e6871feb4760d34cb78d9ca337c20e0e4cc23f4c"
+    },
+    "src/usb_msc/msc_common.h": {
+      "upstream": "private_include/msc_common.h",
+      "sha256": "af15862c069245b5a5b5f88483e7c58fcdec3e9aecdc103e977e8fd3d090c55b"
+    },
+    "src/usb_msc/diskio_usb.c": {
+      "upstream": "src/diskio_usb.c",
+      "sha256": "51cf4686998ef4a036898e957e442cfe43c0c7c01583fcb0d0ced5737df87887"
+    },
+    "src/usb_msc/msc_host.c": {
+      "upstream": "src/msc_host.c",
+      "sha256": "2d4968fab872cdb2334c0294e9593bd5ae80b15c39683574b6026e9369545651"
+    },
+    "src/usb_msc/msc_host_vfs.c": {
+      "upstream": "src/msc_host_vfs.c",
+      "sha256": "b16d8177c7fb673b056854d28657faa2741b352e43cc85dbdc0d4273c986acbe",
+      "local_extension": "Read-only ofe_usb_volume_label accessor uses the mounted VFS drive; no format or label-write behavior added."
+    },
+    "src/usb_msc/msc_scsi_bot.c": {
+      "upstream": "src/msc_scsi_bot.c",
+      "sha256": "f219ce24c4a3fa683003f31f3dc3919e6477acbd12c618003b3a7d9343e6748f"
+    }
+  }
+}

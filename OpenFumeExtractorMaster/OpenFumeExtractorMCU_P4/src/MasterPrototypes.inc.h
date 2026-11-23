@@ -52,6 +52,7 @@ static void serial_cli_tick();
 static void serial_cli_task(void* parameter);
 static void web_service_task(void* parameter);
 static void wifi_service_tick();
+static void wifi_pause_connection_for_scan();
 static void ui_config_load();
 static void web_handle_state();
 static void web_handle_descriptors();

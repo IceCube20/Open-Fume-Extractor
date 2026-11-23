@@ -74,7 +74,7 @@ Local builds can still override the setting in `MasterBoardLocalConfig.h`;
 the owner's existing enabled setting is retained. Private/local configuration
 files are not published. The S3 status LED configuration is unchanged.
 
-## Verification
+## Historical Verification (2.0.101 Development)
 
 The final local P4 build is 2.0.101RC-P4-Preview, with the shared GPIO4 LED
 default enabled and the existing enabled local override retained. It uses

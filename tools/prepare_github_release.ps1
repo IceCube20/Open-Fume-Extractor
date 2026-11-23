@@ -3,6 +3,7 @@ param(
   [string]$Python = "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
   [string]$MasterBuildPath = '',
   [string]$P4BuildPath = '',
+  [string]$P4PoeBuildPath = '',
   [switch]$ValidateOnly
 )
 
@@ -27,6 +28,10 @@ if ([string]::IsNullOrWhiteSpace($P4BuildPath)) {
   $P4BuildPath = Join-Path $root 'tools\tests\build-checks\community-mcu\OpenFumeExtractorMCU_P4\build\esp32.esp32.esp32p4'
 }
 $P4BuildPath = [IO.Path]::GetFullPath($P4BuildPath)
+if ([string]::IsNullOrWhiteSpace($P4PoeBuildPath)) {
+  $P4PoeBuildPath = Join-Path $root 'tools\tests\build-checks\community-mcu\OpenFumeExtractorMCU_P4_POE\build\esp32.esp32.esp32p4'
+}
+$P4PoeBuildPath = [IO.Path]::GetFullPath($P4PoeBuildPath)
 
 foreach ($required in @($Python, $signer, $privateKey, $publicKey, $docsRoot, $logo)) {
   if (!(Test-Path -LiteralPath $required)) { throw "Required release input missing: $required" }
@@ -35,6 +40,7 @@ foreach ($required in @($Python, $signer, $privateKey, $publicKey, $docsRoot, $l
 $targets = @(
   @{ Name='OpenFumeExtractor-Master'; Label='Open Fume Extractor MCU-S3'; Target='MASTER'; Chip='ESP32-S3'; Flash='16 MB'; App=(Join-Path $MasterBuildPath 'OpenFumeExtractorMCU_S3.ino.bin'); Merged=(Join-Path $MasterBuildPath 'OpenFumeExtractorMCU_S3.ino.merged.bin') },
   @{ Name='OpenFumeExtractor-MCU-P4'; Label='Open Fume Extractor MCU-P4 (Waveshare PRE-V3)'; Target='MASTER'; Chip='ESP32-P4'; Flash='16 MB'; App=(Join-Path $P4BuildPath 'OpenFumeExtractorMCU_P4.ino.bin'); Merged=(Join-Path $P4BuildPath 'OpenFumeExtractorMCU_P4.ino.merged.bin') },
+  @{ Name='OpenFumeExtractor-MCU-P4-POE'; Label='Open Fume Extractor MCU-P4 (Waveshare WIFI6-PoE-ETH V3.1+)'; Target='MASTER'; Chip='ESP32-P4'; Flash='32 MB'; App=(Join-Path $P4PoeBuildPath 'OpenFumeExtractorMCU_P4_POE.ino.bin'); Merged=(Join-Path $P4PoeBuildPath 'OpenFumeExtractorMCU_P4_POE.ino.merged.bin') },
   @{ Name='JBC-FAE-Bus'; Label='JBC FAE Bus'; Target='JBC_BUS'; Chip='ESP32'; Flash='4 MB'; App='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.bin'; Merged='Module\JbcBusModule\build\esp32.esp32.esp32\JbcBusModule.ino.merged.bin' },
   @{ Name='JBC-USB'; Label='JBC USB'; Target='JBC_USB'; Chip='ESP32-S3'; Flash='16 MB'; App='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.bin'; Merged='Module\JbcUsbModule\build\esp32.esp32.esp32s3\JbcUsbModule.ino.merged.bin' },
   @{ Name='Fan-IO'; Label='Fan/IO'; Target='FAN_IO'; Chip='ESP32'; Flash='4 MB'; App='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.bin'; Merged='Module\FanIoModule\build\esp32.esp32.esp32\FanIoModule.ino.merged.bin' },
@@ -110,6 +116,13 @@ foreach ($target in $targets) {
   $chipId = [int]$header[12] -bor ([int]$header[13] -shl 8)
   $expectedChip = switch ($target.Chip) { 'ESP32-S3' { 9 } 'ESP32-P4' { 18 } 'ESP32' { 0 } default { throw 'Unknown firmware chip' } }
   if ($header[0] -ne 0xE9 -or $chipId -ne $expectedChip) { throw "Wrong ESP image architecture for $($target.Name)" }
+  if ($target.Name -in @('OpenFumeExtractor-MCU-P4', 'OpenFumeExtractor-MCU-P4-POE')) {
+    $minimum = if ($target.Name -eq 'OpenFumeExtractor-MCU-P4-POE') { 301 } else { 1 }
+    $maximum = if ($target.Name -eq 'OpenFumeExtractor-MCU-P4-POE') { 399 } else { 199 }
+    if ([BitConverter]::ToUInt16($header, 15) -ne $minimum -or [BitConverter]::ToUInt16($header, 17) -ne $maximum) {
+      throw "Incorrect P4 silicon revision limits for $($target.Name)"
+    }
+  }
   if ($info.Target -ne $target.Target -or $mergedInfo.Target -ne $target.Target -or $info.Version -ne $mergedInfo.Version) {
     throw "Target/version mismatch for $($target.Name)"
   }
@@ -286,6 +299,7 @@ $lines.Add('- Never use a merged image in the web updater.')
 $lines.Add('- Never flash an OTA package at address `0x0`.')
 $lines.Add('- Display 320x480, Display 800x480 and Display ST7796 320x480 are different firmware targets.')
 $lines.Add('- Display P4 800x480 requires the ELECROW PRE-V3 hardware/SDK profile; never use an S3 image on it.')
+$lines.Add('- MCU-P4 PRE-V3 and MCU-P4 WIFI6-PoE-ETH V3.1+ use different silicon/board profiles; choose the exact board.')
 $lines.Add('- The web updater rejects a file whose target or Ed25519 signature does not match the selected device.')
 
 [IO.File]::WriteAllLines((Join-Path $docsRoot 'FIRMWARE.md'), $lines, [Text.UTF8Encoding]::new($false))

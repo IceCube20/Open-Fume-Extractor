@@ -14,8 +14,8 @@ static void master_setup() {
   delay(500);
   Serial.printf("[LED] %s: %s\n", MASTER_MCU_MODEL, led_task_started ? "20 ms task / whole-frame RMT" : "loop fallback or LEDs disabled");
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
-  Serial.printf("[P4 MCU] Waveshare Module DEV KIT / PRE-V3 / chip revision %u / RS485 RX=%d TX=%d\n",
-    ESP.getChipRevision(), RS485_RX_PIN, RS485_TX_PIN);
+  Serial.printf("[P4 MCU] %s / %s / chip revision %u / RS485 RX=%d TX=%d\n",
+    OFE_MASTER_BOARD_NAME, OFE_MASTER_CHIP_PROFILE, ESP.getChipRevision(), RS485_RX_PIN, RS485_TX_PIN);
 #endif
 
   // Route large ordinary malloc/realloc allocations to PSRAM while keeping
@@ -124,7 +124,7 @@ static void master_setup() {
   mqtt_start_publish_worker();
   xTaskCreatePinnedToCore(mqtt_service_task, "mqtt", 8192, nullptr, 1, &mqtt_service_task_handle, 1);
 #endif
-  scheduler.requestScanKnownModules(false, false);
+  scheduler.requestStartupScan();
 #if WEB_ENABLE
   apply_module_labels();
   load_routing_config();

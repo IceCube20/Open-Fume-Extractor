@@ -71,6 +71,19 @@ static void web_handle_module_label() {
   }
   web.send(200, "text/plain; charset=utf-8", label.length() ? "label saved in module" : "label cleared in module");
 }
+static void web_handle_connection_warnings() {
+  const String id = web.arg("uid");
+  const String enabled = web.arg("enabled");
+  bool valid = id.length() == 16 && (enabled == "0" || enabled == "1");
+  for (size_t i = 0; i < id.length(); ++i) valid &= isxdigit((unsigned char)id[i]) != 0;
+  const uint64_t uid = strtoull(id.c_str(), nullptr, 16);
+  if (!valid || !uid) { web.send(400, "text/plain", "invalid module warning setting"); return; }
+  if (!master_cmd_set_connection_warnings(uid, enabled == "1")) {
+    web.send(503, "text/plain", "module warning setting could not be saved"); return;
+  }
+  web.send(200, "application/json", "{\"ok\":true}");
+}
+
 static void web_handle_io_alias() {
   if (!web.hasArg("uid") || !web.hasArg("key")) {
     web.send(400, "text/plain; charset=utf-8", "missing uid or key");

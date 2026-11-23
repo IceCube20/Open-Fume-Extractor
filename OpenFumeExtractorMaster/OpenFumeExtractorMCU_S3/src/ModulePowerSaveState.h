@@ -7,6 +7,7 @@ static inline bool module_update_uptime(ModuleRecord& rec, uint32_t uptime_s) {
   const bool restarted = rec.telemetry_valid && uptime_s < rec.module_uptime_s;
   if (restarted) {
     rec.eco_mode = false;
+    rec.eco_state_known = false;
     rec.light_sleep = false;
     rec.eco_since_ms = 0;
   }

@@ -3,6 +3,8 @@
 
 struct MasterHardwareInfo {
   const char* model="-";
+  const char* board="-";
+  const char* build_board="-";
   const char* flash_mode="-";
   const char* arduino="-";
   const char* idf="-";

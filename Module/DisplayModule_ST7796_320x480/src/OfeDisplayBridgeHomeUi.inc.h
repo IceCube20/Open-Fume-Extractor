@@ -171,12 +171,8 @@ static void update(Card& card, unsigned slot, const DisplayModuleSummary& module
   lv_obj_set_flag(card.detail, LV_OBJ_FLAG_HIDDEN, !detail.length());
   lv_obj_set_y(card.detail, y);
   card.height = int16_t(y + (detail.length() ? measure(card.detail) : 0) + 14);
-  const bool warning = have && (state.flags & HAS_FILTER) && state.filter == 10;
-  const bool fault = have && ((state.faults && !(warning && state.faults == 0x0002U)) ||
-    ((state.flags & HAS_FILTER) && state.filter == 100));
-  const lv_color_t border = fault ? lv_color_hex(0xFF4D5E) : warning ? lv_color_hex(0xFFB020) : outline();
-  if (!lv_color_eq(lv_obj_get_style_border_color(card.root, LV_PART_MAIN), border))
-    lv_obj_set_style_border_color(card.root, border, 0);
+  ofe_module_cards::apply_border(card.root, ofe_module_cards::severity(module, master_ok), outline(),
+    status.update_active && status.update_target == module.addr);
   if (!lv_color_eq(lv_obj_get_style_bg_color(card.stripe, LV_PART_MAIN), lv_color_hex(color)))
     lv_obj_set_style_bg_color(card.stripe, lv_color_hex(color), 0);
   ofe_home_activity::set_fan(5 + slot, output, output_known && (state.flags & OUTPUT_ON),
@@ -190,6 +186,16 @@ static void lv_create_bridge_home_cards() {
   for (unsigned i = 5; i < 22; ++i) ofe_home_activity::fans[i] = {};
 }
 static void lv_update_bridge_home_cards(bool master_ok) {
+  auto jbc_severity = ofe_module_cards::Normal;
+  bool jbc_updating = false;
+  for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
+    const auto& module = module_summaries[i];
+    if (!module_summary_matches_group(module, MODULE_JBC_BUS)) continue;
+    const auto severity = ofe_module_cards::severity(module, master_ok);
+    if (severity > jbc_severity) jbc_severity = severity;
+    jbc_updating |= status.update_active && status.update_target == module.addr;
+  }
+  ofe_module_cards::apply_border(ui_home_jbc_card, jbc_severity, ofe_display_ui::outline(), jbc_updating);
   const DisplayModuleSummary* sorted[DISPLAY_MODULE_CAPACITY]; unsigned count = 0;
   for (uint8_t i = 0; i < module_total && i < DISPLAY_MODULE_CAPACITY; ++i) {
     const auto& module = module_summaries[i];

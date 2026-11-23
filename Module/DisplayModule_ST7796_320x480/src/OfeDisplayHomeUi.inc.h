@@ -1,5 +1,6 @@
 #pragma once
 #include "OfeDisplayHomeActivityUi.h"
+#include "OfeDisplayModuleCardsUi.inc.h"
 static lv_obj_t* ui_home_module_content = nullptr;
 static bool lv_home_group_match(const DisplayModuleSummary& module, uint8_t group) {
   if (group == MODULE_FAN_IO)

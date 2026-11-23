@@ -20,3 +20,10 @@ for signature in ('static bool master_update_check_real_bytes(', 'static void we
     end = source.index('\n}\n', start) + 3
     functions.append(source[start:end])
 (out / 'multipart.h').write_text('\n'.join(functions), encoding='utf-8')
+
+source = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp').read_text(encoding='utf-8')
+header = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.h').read_text(encoding='utf-8')
+(out / 'alarm_codes.inc').write_text(re.search(r'enum DisplayAlarmCode : uint8_t \{.*?\n};', source, re.S).group())
+(out / 'alarm_types.inc').write_text(re.search(r'  struct DisplayAlarmItem \{.*?\n  };\n  struct DisplayAlarmSnapshot \{.*?\n  };', header, re.S).group())
+(out / 'alarm_snapshot.inc').write_text(re.search(r'void MasterScheduler::buildDisplayAlarmSnapshot\(.*?\n}\n', source, re.S).group())
+(out / 'home_metrics.inc').write_text(re.search(r'static ofe_home_metrics::State display_home_metrics\(.*?\n}\n', source, re.S).group())

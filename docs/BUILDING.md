@@ -23,6 +23,7 @@ Open the matching sketch folder directly in Arduino IDE:
 
 - `OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/OpenFumeExtractorMCU_S3.ino`
 - `OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/OpenFumeExtractorMCU_P4.ino` (Waveshare PRE-V3)
+- `OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4_POE/OpenFumeExtractorMCU_P4_POE.ino` (Waveshare WIFI6-PoE-ETH V3.1+)
 - `Module/JbcBusModule/JbcBusModule.ino`
 - `Module/JbcUsbModule/JbcUsbModule.ino`
 - `Module/FanIoModule/FanIoModule.ino`
@@ -35,9 +36,19 @@ Open the matching sketch folder directly in Arduino IDE:
 - `Module/DisplayModule_ST7796_320x480/DisplayModule_ST7796_320x480.ino`
 - `Module/DisplayModule_P4_800x480/DisplayModule_P4_800x480.ino` (ELECROW PRE-V3)
 
-Each MCU uses its included 16 MB partition CSV. MCU-P4 supports 32 bus modules;
+MCU-S3 and PRE-V3 MCU-P4 use their included 16 MB partition CSV; the PoE P4
+uses its separate 32 MB CSV. MCU-P4 supports 32 bus modules;
 MCU-S3 supports 16. A partition-layout change
 requires a complete merged USB flash and normally an erase.
+
+The [PoE board guide](MCU-P4-PoE-V3.md) covers the V3 SDK and image-revision
+limits. Do not interchange its build with the PRE-V3 carrier. The standalone
+[C6 recovery sketch](../OpenFumeExtractorMaster/C6_Update_P4_Waveshare_LAN/README.md)
+is a separate temporary P4 application, not the normal MCU firmware.
+
+Maintainers can use `tools/build_community_release.ps1` to build the three
+MCU variants from credential-free snapshots. This script compiles and exports;
+it does not flash hardware or publish to GitHub.
 
 ## 800x480 high-performance display
 

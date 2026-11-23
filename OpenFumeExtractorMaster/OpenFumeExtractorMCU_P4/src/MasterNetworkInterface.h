@@ -12,8 +12,14 @@
 #if !CONFIG_ESP_HOSTED_ENABLED || !CONFIG_SPIRAM
 #error "P4 MCU requires ESP-Hosted and enabled PSRAM."
 #endif
+#if defined(OFE_MASTER_P4_WAVESHARE_POE)
+#if CONFIG_ESP32P4_REV_MIN_FULL < 301 || CONFIG_ESP32P4_REV_MAX_FULL < 302
+#error "The PoE MCU requires the v3.00-or-newer SDK supporting chip revision v3.2."
+#endif
+#else
 #if CONFIG_ESP32P4_REV_MAX_FULL >= 300
 #error "This P4 MCU preparation requires the Before v3.00 SDK variant."
+#endif
 #endif
 #endif
 
@@ -49,9 +55,15 @@ inline const char* master_network_transport() {
   return master_ethernet_ready() ? "Ethernet" : WiFi.status() == WL_CONNECTED ? "WiFi" :
     (WiFi.getMode() & WIFI_AP) ? "AP" : "Offline";
 }
+inline IPAddress master_network_dns(uint8_t index) {
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  if (master_ethernet_ready()) return ETH.dnsIP(index);
+#endif
+  return WiFi.status()==WL_CONNECTED ? WiFi.dnsIP(index) : IPAddress();
+}
 inline bool master_network_begin(const char* hostname) {
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
-  // Waveshare ESP32-P4-Module: internal C6 SDIO, not the Elecrow display pinout.
+  // Both Waveshare carriers share these C6 SDIO and IP101 connections.
   const bool hosted_pins_ready=WiFi.setPins(18, 19, 14, 15, 16, 17, 54);
   // RMII data pins come from the stock esp32p4 variant; IP101 is TLK110-compatible.
   if (ETH.begin(ETH_PHY_IP101, 1, 31, 52, 51, EMAC_CLK_EXT_IN)) {

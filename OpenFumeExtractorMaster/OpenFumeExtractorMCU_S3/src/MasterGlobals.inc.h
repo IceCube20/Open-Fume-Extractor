@@ -155,7 +155,8 @@ static OfePsramTextBuffer mqtt_discovery_payload_buffer;
 static uint32_t mqtt_next_discovery_check_ms = 0;
 static bool wifi_sta_pending = false;
 static bool wifi_sta_was_connected = false;
-static bool wifi_time_configured = false;
+#include "MasterTimeSyncPolicy.h"
+static MasterTimeSyncPolicy master_time_sync;
 static uint32_t wifi_sta_start_ms = 0;
 static uint32_t wifi_next_retry_ms = 0;
 #if defined(CONFIG_IDF_TARGET_ESP32P4)

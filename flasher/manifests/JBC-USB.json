@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - JBC USB",
-  "version": "1.1.85RC",
+  "version": "1.1.86RC",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/JBC-USB/JBC-USB-1.1.85RC-merged.bin",
+          "path": "../../firmware/JBC-USB/JBC-USB-1.1.86RC-merged.bin",
           "offset": 0
         }
       ]

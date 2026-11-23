@@ -320,7 +320,7 @@ static void firmware_signature_probe_feed(
 }
 
 static void master_update_signature_reset() {
-  master_firmware_header.reset();
+  master_firmware_header.reset(ESP.getChipRevision());
   master_update_header_checked = false;
   master_update_auth.reset();
   firmware_signature_probe_reset(
@@ -360,7 +360,7 @@ static void master_firmware_signature_marker(char* out, size_t cap) {
 static bool master_update_check_real_bytes(const uint8_t* data, size_t len) {
   if (!master_update_header_checked) {
     if (!master_firmware_header.append(data, len)) {
-      snprintf(update_status_msg, sizeof(update_status_msg), "Firmware image header/chip mismatch");
+      snprintf(update_status_msg, sizeof(update_status_msg), "Firmware image header/chip/revision mismatch");
       master_update_abort_active();
       return false;
     }

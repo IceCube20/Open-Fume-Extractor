@@ -46,3 +46,16 @@ class McuCapacityTests(unittest.TestCase):
         script = (ROOT / 'tools/prepare_github_release.ps1').read_text()
         self.assertIn("Chip='ESP32-P4'", script)
         self.assertIn('$chipId -ne $expectedChip', script)
+
+    def test_release_includes_poe_and_requires_bounded_p4_images(self):
+        script = (ROOT / 'tools/prepare_github_release.ps1').read_text()
+        self.assertIn("Name='OpenFumeExtractor-MCU-P4-POE'", script)
+        self.assertIn("$P4PoeBuildPath", script)
+        self.assertIn('[BitConverter]::ToUInt16($header, 15) -ne $minimum', script)
+        self.assertIn('[BitConverter]::ToUInt16($header, 17) -ne $maximum', script)
+        community = (ROOT / 'tools/prepare_community_mcu.ps1').read_text()
+        self.assertIn("'OpenFumeExtractorMCU_P4_POE'", community)
+        self.assertIn('privateconfig|MasterBoardLocalConfig', community)
+        builder = (ROOT / 'tools/build_community_release.ps1').read_text()
+        self.assertIn('--min-rev-full $minimum --max-rev-full $maximum', builder)
+        self.assertNotIn(' upload ', builder)

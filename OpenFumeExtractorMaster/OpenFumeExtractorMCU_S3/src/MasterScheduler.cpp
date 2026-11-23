@@ -1509,18 +1509,20 @@ void MasterScheduler::setPowerSaveConfig(bool enabled, uint16_t idle_minutes) {
 
 bool MasterScheduler::setModulePowerSave(ModuleRecord& rec, bool enabled) {
   if (!rec.online || !(rec.caps & CAP_POWER_SAVE)) return false;
+  if (module_fw_active_ && rec.addr == module_fw_target_) return false;
   uint8_t payload[3] = { enabled ? (uint8_t)1 : (uint8_t)0, 20, 0 };
   Frame resp;
   if (!request(rec.addr, CMD_POWER_SAVE, payload, sizeof(payload), resp, 160)) return false;
   if (resp.cmd != (CMD_POWER_SAVE | 0x80) || resp.len < 2 || resp.payload[0] != STATUS_OK) return false;
   rec.eco_mode = resp.payload[1] != 0;
+  rec.eco_state_known = true;
   rec.light_sleep = false;
   rec.eco_since_ms = rec.eco_mode ? millis() : 0;
   return true;
 }
 
 bool MasterScheduler::wakeModule(ModuleRecord& rec) {
-  if (!rec.eco_mode) return true;
+  if (rec.eco_state_known && !rec.eco_mode) return true;
   return setModulePowerSave(rec, false);
 }
 
@@ -1536,7 +1538,8 @@ void MasterScheduler::wakeAllModules() {
   for (uint8_t n = 0; n < count; ++n) {
     if (next_power_save_sync_index_ >= count) next_power_save_sync_index_ = 0;
     ModuleRecord& rec = registry_.at(next_power_save_sync_index_++);
-    if (!rec.online || !rec.eco_mode) continue;
+    if (!rec.online || !(rec.caps & CAP_POWER_SAVE) || (rec.eco_state_known && !rec.eco_mode)) continue;
+    if (module_fw_active_ && rec.addr == module_fw_target_) continue;
     wakeModule(rec);
     refreshPowerSaveActive();
     return;
@@ -1595,7 +1598,12 @@ void MasterScheduler::updatePowerSave(uint32_t now) {
   }
   if (!power_save_idle_since_ms_) power_save_idle_since_ms_ = now;
   const uint32_t delay_ms = (uint32_t)power_save_idle_minutes_ * 60000UL;
-  if ((uint32_t)(now - power_save_idle_since_ms_) < delay_ms) return;
+  if ((uint32_t)(now - power_save_idle_since_ms_) < delay_ms) {
+    // A new MCU cannot infer the local Eco state of an already powered module.
+    // Confirm awake once during the idle grace period as well as on activity.
+    wakeAllModules();
+    return;
+  }
 
   // Reconcile individual modules instead of treating Eco as one one-shot
   // transition. This restores a Fan/IO that woke on an unused local input and
@@ -1612,7 +1620,8 @@ void MasterScheduler::updatePowerSave(uint32_t now) {
   for (uint8_t n = 0; n < count; ++n) {
     if (next_power_save_sync_index_ >= count) next_power_save_sync_index_ = 0;
     ModuleRecord& rec = registry_.at(next_power_save_sync_index_++);
-    if (!rec.online || !(rec.caps & CAP_POWER_SAVE) || rec.eco_mode) continue;
+    if (!rec.online || !(rec.caps & CAP_POWER_SAVE) || (rec.eco_state_known && rec.eco_mode)) continue;
+    if (module_fw_active_ && rec.addr == module_fw_target_) continue;
     last_power_save_apply_ms_ = now;
     // Eco mode must keep every module continuously reachable on the OFE bus.
     // Real Light Sleep caused wake races and accumulated request timeouts.
@@ -2073,6 +2082,7 @@ bool MasterScheduler::request(uint8_t dst, uint8_t cmd, const uint8_t* payload, 
       // Offline means the module's local Eco state can no longer be trusted.
       // Clear it now so a later reconnect is always resynchronized.
       rec->eco_mode = false;
+      rec->eco_state_known = false;
       rec->light_sleep = false;
       rec->eco_since_ms = 0;
       refreshPowerSaveActive();
@@ -2197,6 +2207,7 @@ void MasterScheduler::recordRequestTimeout(uint8_t dst, uint8_t cmd, uint8_t seq
     rec->display_alarm_signature = 0;
     rec->display_alarm_last_ms = 0;
     rec->eco_mode = false;
+    rec->eco_state_known = false;
     rec->light_sleep = false;
     rec->eco_since_ms = 0;
     refreshPowerSaveActive();
@@ -2425,15 +2436,15 @@ bool MasterScheduler::readInfo(uint8_t addr) {
   rec->seen_in_scan = true;
   rec->firmware_recovery_pending = false;
   rec->came_online = !was_online;
-  // A module reboot/power-cycle loses its local Eco state. Never keep the
-  // previous registry value across a real offline -> online transition, or the
-  // power-save reconciler would incorrectly assume the module is already in Eco.
+  // Reconnect does not prove a reboot: a still-powered module can retain Eco
+  // from another MCU. Both awake and Eco need a fresh acknowledgement.
   if (rec->came_online) {
     rec->eco_mode = false;
+    rec->eco_state_known = false;
     rec->light_sleep = false;
     rec->eco_since_ms = 0;
     // Allow updatePowerSave() to re-apply the desired state immediately on the
-    // next scheduler tick instead of waiting for the normal 2 s retry guard.
+    // next scheduler tick instead of waiting for the retry guard.
     last_power_save_apply_ms_ = 0;
   }
   rec->consecutive_timeouts = 0;
@@ -2520,13 +2531,34 @@ bool MasterScheduler::readCaps(uint8_t addr) {
 }
 
 void MasterScheduler::scanKnownModules() {
+  startup_scan_recovery_.cancel();
   autoAddressModules();
   for (uint8_t addr = 0x10; addr <= 0x6F; ++addr) scanAddress(addr);
   selectRoles();
 }
 
 void MasterScheduler::requestScanKnownModules(bool with_auto_address, bool prune_missing) {
+  startup_scan_recovery_.cancel();
+  startScanJob(with_auto_address, prune_missing, false);
+}
+
+void MasterScheduler::requestStartupScan() {
+  requestScanKnownModules(false, false);
+  startup_scan_recovery_.arm(millis());
+}
+
+void MasterScheduler::pollStartupScan() {
+  if (startup_scan_recovery_.takeDue(millis(), scan_job_active_ || firmwareUpdateActive() ||
+      hotplug_discovery_window_until_ms_ != 0 || pending_hotplug_scan_)) {
+    // A powered module may miss the first INFO after an MCU swap. Retry all
+    // missing addresses equally, without readdressing or pruning the snapshot.
+    startScanJob(false, false, true);
+  }
+}
+
+void MasterScheduler::startScanJob(bool with_auto_address, bool prune_missing, bool missing_only) {
   scan_job_active_ = true;
+  scan_job_missing_only_ = missing_only;
   scan_job_auto_address_ = with_auto_address;
   scan_job_auto_done_ = !with_auto_address;
   scan_job_prune_missing_ = prune_missing;
@@ -2538,6 +2570,7 @@ void MasterScheduler::requestScanKnownModules(bool with_auto_address, bool prune
 
 void MasterScheduler::pollScanJob() {
   if (!scan_job_active_) return;
+  if (scan_job_missing_only_ && firmwareUpdateActive()) return;
   const uint32_t now = millis();
   if (last_scan_job_step_ms_ && (uint32_t)(now - last_scan_job_step_ms_) < 5UL) return;
 
@@ -2549,12 +2582,15 @@ void MasterScheduler::pollScanJob() {
   }
 
   if (scan_job_next_addr_ <= 0x6F) {
-    scanAddress(scan_job_next_addr_++);
+    const uint8_t addr = scan_job_next_addr_++;
+    const ModuleRecord* rec = registry_.find(addr);
+    if (!scan_job_missing_only_ || !rec || !rec->online) scanAddress(addr);
     last_scan_job_step_ms_ = millis();
     return;
   }
 
   scan_job_active_ = false;
+  scan_job_missing_only_ = false;
   scan_job_auto_address_ = false;
   scan_job_auto_done_ = true;
   if (scan_job_prune_missing_) {
@@ -2652,8 +2688,17 @@ bool MasterScheduler::setIoInputRoute(uint8_t addr, uint8_t bit, bool enabled) {
 bool MasterScheduler::setInputRule(uint8_t index, const InputActionRule& rule) {
   if (index >= MAX_INPUT_RULES) return false;
   InputActionRule next = rule;
-  if (next.source_type > INPUT_SRC_MARKER) next.source_type = INPUT_SRC_NONE;
-  if (next.target_type > INPUT_TGT_MARKER) next.target_type = INPUT_TGT_NONE;
+  if (next.source_type > INPUT_SRC_LAST) next.source_type = INPUT_SRC_NONE;
+  if (next.source_type >= INPUT_SRC_MAIN_INPUT_NONE &&
+      !ofe_automation_inputs::validMainInputSelection(
+        next.source_type - INPUT_SRC_MAIN_INPUT_NONE, next.source_addr, next.source_bit)) return false;
+  if (next.target_type > INPUT_TGT_LAST) next.target_type = INPUT_TGT_NONE;
+  if (next.target_type >= INPUT_TGT_SELECT_INPUT_NONE) {
+    MasterSettingsStore::MainInputSettings selection{
+      uint8_t(next.target_type - INPUT_TGT_SELECT_INPUT_NONE), next.target_addr, next.target_bit};
+    if (!MasterSettingsStore::normalizeMainInput(selection) ||
+        selection.addr != next.target_addr || selection.bit != next.target_bit) return false;
+  }
   if ((next.source_type == INPUT_SRC_IO_INPUT && next.source_bit > 15) ||
       (next.source_type == INPUT_SRC_MARKER && (next.source_addr != 0 || next.source_bit < 1 || next.source_bit > 8)) ||
       (next.target_type == INPUT_TGT_MARKER && (next.target_addr != 0 || next.target_bit < 1 || next.target_bit > 8)) ||
@@ -2663,6 +2708,7 @@ bool MasterScheduler::setInputRule(uint8_t index, const InputActionRule& rule) {
         (next.target_bit == SYSTEM_OUT_ECO_INHIBIT && next.target_addr != 0))) ||
       (next.source_type == INPUT_SRC_SYSTEM_STATE &&
        (next.source_bit == INPUT_STATE_NONE || next.source_bit > INPUT_STATE_LAST ||
+        (next.source_bit >= INPUT_STATE_MAIN_INPUT_SELECTED && next.source_addr != 0) ||
         ((next.source_bit <= INPUT_STATE_OUTPUT_SELECTED_AUTO ||
           (next.source_bit >= INPUT_STATE_ECO_ACTIVE && next.source_bit <= INPUT_STATE_ERROR_ACTIVE)) && next.source_addr != 0) ||
         (next.source_bit >= INPUT_STATE_FILTER_WARNING && !OfeAutomationRequests::validDisplayAddress(next.source_addr)) ||
@@ -3770,6 +3816,9 @@ uint32_t MasterScheduler::systemInputMask(uint8_t addr) const {
   // Mirror the directly evaluated routing/logic system inputs in /state too.
   // Module-specific output-selection bits are only meaningful with an address.
   if (!addr) {
+    if (main_input_source_type_ != INPUT_SRC_NONE) mask |= 1UL << INPUT_STATE_MAIN_INPUT_SELECTED;
+    if (mainInputSourceAvailable()) mask |= 1UL << INPUT_STATE_MAIN_INPUT_AVAILABLE;
+    if (systemInputActive(INPUT_STATE_MAIN_INPUT_ACTIVE)) mask |= 1UL << INPUT_STATE_MAIN_INPUT_ACTIVE;
     if (extractor_.outputEnabled()) mask |= 1UL << INPUT_STATE_EXTRACTOR_ACTIVE;
     if (extractor_.continuous()) mask |= 1UL << INPUT_STATE_CONTINUOUS_ACTIVE;
     if (extractor_.afterrunLeftMs() != 0) mask |= 1UL << INPUT_STATE_AFTERRUN_ACTIVE;
@@ -3844,6 +3893,18 @@ uint32_t MasterScheduler::systemInputMask(uint8_t addr) const {
 
 bool MasterScheduler::systemInputActive(uint8_t state, uint8_t addr) const {
   switch (state) {
+    case INPUT_STATE_MAIN_INPUT_SELECTED: return addr == 0 && main_input_source_type_ != INPUT_SRC_NONE;
+    case INPUT_STATE_MAIN_INPUT_AVAILABLE: return addr == 0 && mainInputSourceAvailable();
+    case INPUT_STATE_MAIN_INPUT_ACTIVE: {
+      if (addr) return false;
+      if (main_input_source_type_ == INPUT_SRC_JBC_WORK) {
+        InputActionRule selected;
+        selected.enabled = true; selected.source_type = INPUT_SRC_JBC_WORK;
+        selected.source_addr = main_input_source_addr_;
+        return inputRuleSourceActive(selected);
+      }
+      return mainInputSourceActive();
+    }
     case INPUT_STATE_EXTRACTOR_ACTIVE: return extractor_.outputEnabled();
     case INPUT_STATE_CONTINUOUS_ACTIVE: return extractor_.continuous();
     case INPUT_STATE_AFTERRUN_ACTIVE: return extractor_.afterrunLeftMs() != 0;
@@ -3860,8 +3921,15 @@ bool MasterScheduler::systemInputActive(uint8_t state, uint8_t addr) const {
   }
 }
 
+bool MasterScheduler::mainInputSelected(unsigned type, unsigned addr, unsigned bit) const {
+  return ofe_automation_inputs::mainInputSelected(main_input_source_type_, main_input_source_addr_,
+                                                 main_input_source_bit_, type, addr, bit);
+}
+
 bool MasterScheduler::inputRuleSourceActive(const InputActionRule& rule) const {
   if (!rule.enabled) return false;
+  if (rule.source_type >= INPUT_SRC_MAIN_INPUT_NONE && rule.source_type <= INPUT_SRC_LAST)
+    return mainInputSelected(rule.source_type - INPUT_SRC_MAIN_INPUT_NONE, rule.source_addr, rule.source_bit);
   if (rule.source_type == INPUT_SRC_JBC_WORK) {
     for (uint8_t i = 0; i < registry_.count(); ++i) {
       const ModuleRecord& rec = registry_.at(i);
@@ -3989,15 +4057,18 @@ void MasterScheduler::applyInputRuleTarget(InputActionRule& rule, bool active) {
     }
     return;
   }
-  if (rule.target_type == INPUT_TGT_SELECT_OUTPUT) {
+  if (rule.target_type == INPUT_TGT_SELECT_OUTPUT ||
+      (rule.target_type >= INPUT_TGT_SELECT_INPUT_NONE && rule.target_type <= INPUT_TGT_LAST)) {
     if (!active) {
       rule.last_active = false;
       rule.edge_armed = true;
     } else if (rule.edge_armed && !rule.last_active) {
       rule.last_active = true;
-      // Selecting a main output is a real configuration action. Persist it in
-      // exactly the same way as a manual main-output selection.
-      setPreferredOutputAddr(rule.target_addr, true);
+      // Main input/output selection is a persisted configuration action,
+      // using the same settings path as a manual selection.
+      if (rule.target_type == INPUT_TGT_SELECT_OUTPUT) setPreferredOutputAddr(rule.target_addr, true);
+      else setMainInputSource(uint8_t(rule.target_type - INPUT_TGT_SELECT_INPUT_NONE),
+                              rule.target_addr, rule.target_bit, true);
     }
     return;
   }
@@ -4251,36 +4322,27 @@ bool MasterScheduler::pollNextJbc() {
   if (disconnected_probe_interval_ms < JBC_FAST_POLL_PER_MODULE_MS)
     disconnected_probe_interval_ms = JBC_FAST_POLL_PER_MODULE_MS;
   const bool disconnected_probe_due = disconnected_count &&
-    (uint32_t)(now - last_default_jbc_probe_ms_) >= disconnected_probe_interval_ms;
+    (uint32_t)(now - last_disconnected_jbc_probe_ms_) >= disconnected_probe_interval_ms;
   if (disconnected_probe_due) {
     for (uint8_t tries = 0; tries < count; ++tries) {
       if (next_disconnected_jbc_poll_index_ >= count) next_disconnected_jbc_poll_index_ = 0;
       ModuleRecord& rec = registry_.at(next_disconnected_jbc_poll_index_++);
       if (module_fw_active_ && rec.addr == module_fw_target_) continue;
       if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY) || (rec.jbc_link_flags & FAST_FLAG_CONNECTED)) continue;
-      last_default_jbc_probe_ms_ = now;
+      last_disconnected_jbc_probe_ms_ = now;
       return fastPollJbc(rec.addr);
     }
   }
 
-  bool have_known_online_jbc = disconnected_count != 0;
   for (uint8_t tries = 0; tries < count; ++tries) {
     if (next_jbc_poll_index_ >= count) next_jbc_poll_index_ = 0;
     ModuleRecord& rec = registry_.at(next_jbc_poll_index_++);
     if (module_fw_active_ && rec.addr == module_fw_target_) continue;
     if (!rec.online || !(rec.caps & CAP_JBC_ACTIVITY)) continue;
-    have_known_online_jbc = true;
     if (rec.jbc_link_flags & FAST_FLAG_CONNECTED) return fastPollJbc(rec.addr);
   }
 
-  if (have_known_online_jbc) return false;
-
-  // No known online JBC module: do not hammer the default address at the fast-poll cadence.
-  // The fallback probe is only for first discovery / recovery and uses a slow backoff.
-  if (module_fw_active_ && active_jbc_addr_ == module_fw_target_) return false;
-  if ((uint32_t)(now - last_default_jbc_probe_ms_) < JBC_DEFAULT_PROBE_INTERVAL_MS) return false;
-  last_default_jbc_probe_ms_ = now;
-  return fastPollJbc(active_jbc_addr_);
+  return false;
 }
 
 bool MasterScheduler::readNextJbcState() {
@@ -4325,17 +4387,7 @@ bool MasterScheduler::readNextJbcState() {
       return readJbcState(rec.addr);
   }
 
-  if (module_fw_active_ && active_jbc_addr_ == module_fw_target_) return false;
-  const uint32_t now = millis();
-  if ((uint32_t)(now - last_default_jbc_state_probe_ms_) < JBC_DEFAULT_STATE_PROBE_INTERVAL_MS) return false;
-  last_default_jbc_state_probe_ms_ = now;
-  const ModuleRecord* fallback = registry_.find(active_jbc_addr_);
-  if (fallback && !(fallback->caps & CAP_JBC_BUS)) return false;
-  // A known online bridge with CONNECTED=0 is not a discovery problem. Its
-  // slow FAST_POLL path above will detect the station without redundant state
-  // traffic or timeout pressure.
-  if (fallback && fallback->online && !(fallback->jbc_link_flags & FAST_FLAG_CONNECTED)) return false;
-  return readJbcState(active_jbc_addr_);
+  return false;
 }
 
 bool MasterScheduler::pollNextWeller() {
@@ -5942,17 +5994,19 @@ void MasterScheduler::processDisplayStatusResponse(ModuleRecord& display, const 
   }
 }
 
-static ofe_home_metrics::State display_home_metrics(const ModuleRecord& rec, bool output_capable) {
+static ofe_home_metrics::State display_home_metrics(const ModuleRecord& rec, bool output_capable,
+                                                   const ofe_module_alarm::State& alarm) {
   using namespace ofe_home_metrics;
   State s;
   s.addr = rec.addr; s.type = rec.type;
+  s.flags |= ofe_module_health::metrics(alarm.warning(), alarm.error());
   if (rec.online) s.flags |= ONLINE;
   if (output_capable) s.flags |= HAS_OUTPUT;
   if (output_capable && rec.output_status_valid) s.flags |= OUTPUT_VALID | HAS_POWER;
   if (output_capable && rec.output_status_valid && rec.output_enabled) s.flags |= OUTPUT_ON;
   s.power = rec.output_power > 1000 ? 1000 : rec.output_power;
   s.rpm = rec.output_rpm;
-  s.faults = rec.output_fault_mask | rec.io_fault_mask;
+  s.faults = alarm.faults;
   if (output_capable && (rec.caps & CAP_TACHO_INPUT) && rec.output_status_valid) s.flags |= HAS_RPM;
   if (rec.type == MODULE_WELLER_ZERO_SMOG) {
     s.flags |= LINK_KNOWN;
@@ -6330,6 +6384,8 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             payload_write_u8(1);
             payload_write_u8(rec.addr);
             uint8_t flags = 0x01;
+            const auto alarm = moduleAlarmState(rec);
+            flags |= ofe_module_health::live(alarm.warning(), alarm.error());
             if (has_main_output_state) flags |= 0x02;
             if (has_main_output_state && rec.output_enabled) flags |= 0x04;
             payload_write_u8(flags);
@@ -6341,7 +6397,8 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             if (!live_can_write_to(5U, native_end)) break;
             payload_write_u8(2);
             payload_write_u8(rec.addr);
-            payload_write_u8(rec.jbc_link_flags);
+            const auto alarm = moduleAlarmState(rec);
+            payload_write_u8(rec.jbc_link_flags | ofe_module_health::summary(alarm.warning(), alarm.error()));
             payload_write_u8(rec.jbc_work_mask);
             payload_write_u8(rec.jbc_stand_mask);
           }
@@ -6363,7 +6420,7 @@ bool MasterScheduler::sendDisplayStatus(uint8_t addr) {
             if (!rec.online || (rec.type != MODULE_FAN_IO && rec.type != MODULE_FAN_IO_PRO &&
                 rec.type != MODULE_WELLER_ZERO_SMOG && rec.type != MODULE_UNIVERSAL_RS232 &&
                 rec.type != MODULE_MODBUS_RTU)) continue;
-            const auto metrics = display_home_metrics(rec, moduleProvidesExtractorOutput(rec));
+            const auto metrics = display_home_metrics(rec, moduleProvidesExtractorOutput(rec), moduleAlarmState(rec));
             payload_write_u8(ofe_home_metrics::KIND);
             ofe_home_metrics::encode(payload + payload_len, MAX_PAYLOAD - payload_len, metrics);
             payload_len += ofe_home_metrics::WIRE_SIZE;
@@ -6675,17 +6732,8 @@ void MasterScheduler::buildDisplayAlarmSnapshot(
       continue;
     }
 
-    uint16_t faults = rec.output_fault_mask | rec.io_fault_mask;
-    const bool bridge_link_fault =
-      (rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU) &&
-      (faults & 0x0001U);
-    const uint16_t output_fault_bits = 0x071FU;
-
-    if (rec.addr != active_output_addr_ && !rec.role_output && !rec.output_enabled) {
-      faults = (uint16_t)(
-        (faults & (uint16_t)~output_fault_bits) |
-        (bridge_link_fault ? 0x0001U : 0));
-    }
+    const auto alarm = moduleAlarmState(rec);
+    const uint16_t faults = alarm.faults;
 
     if (faults) {
       // A mixed mask must raise BOTH Warning and Error for routing and logic.
@@ -6695,25 +6743,28 @@ void MasterScheduler::buildDisplayAlarmSnapshot(
       if (warning) set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, warning, false);
       if (error) set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, error, true);
       if (rec.addr == active_output_addr_) active_output_fault_alarm = true;
-      continue;
+      if (!alarm.connection_error || ofe_automation_inputs::errorFaults(faults)) continue;
     }
 
-    if ((rec.caps & CAP_JBC_BUS) &&
+    if ((alarm.connection_warning || alarm.connection_error) && (rec.caps & CAP_JBC_BUS) &&
         (!(rec.jbc_link_flags & FAST_FLAG_CONNECTED) || !rec.station_addr)) {
-      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_JBC_STATION, 0, false);
+      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_JBC_STATION, 0, alarm.connection_error);
       continue;
     }
 
-    if ((rec.caps & CAP_JBC_USB) &&
+    if ((alarm.connection_warning || alarm.connection_error) && (rec.caps & CAP_JBC_USB) &&
         !(rec.jbc_link_flags & FAST_FLAG_CONNECTED)) {
-      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_JBC_STATION, 0, false);
+      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_JBC_STATION, 0, alarm.connection_error);
       continue;
     }
 
-    if ((rec.caps & CAP_WELLER_INTERFACE) &&
-        (rec.weller_uart_age_sec == 0xFFFF || rec.weller_uart_age_sec > 10)) {
-      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_WELLER_LINK, rec.weller_uart_age_sec, false);
+    if ((alarm.connection_warning || alarm.connection_error) && (rec.caps & CAP_WELLER_INTERFACE)) {
+      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_WELLER_LINK, rec.weller_uart_age_sec, alarm.connection_error);
       continue;
+    }
+    if ((alarm.connection_warning || alarm.connection_error) &&
+        (rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU)) {
+      set_alarm(rec.addr, rec.type, DISPLAY_ALARM_OUTPUT_FAULT, 1, alarm.connection_error);
     }
   }
 
@@ -6814,7 +6865,8 @@ bool MasterScheduler::sendDisplayModuleList(uint8_t display_addr, uint8_t start_
     payload_write_u8(rec->addr);
     payload_write_u8(rec->type);
     payload_write_u8((rec->online ? 0x01 : 0) | (rec->role_jbc ? 0x02 : 0) | (rec->role_output ? 0x04 : 0) |
-      (moduleProvidesExtractorOutput(*rec) ? 0x08 : 0) | 0x10); // bit3=extractor output, bit4=authoritative
+      (moduleProvidesExtractorOutput(*rec) ? 0x08 : 0) | 0x10 |
+      (rec->addr == ADDR_MASTER ? 0 : ofe_module_health::summary(moduleAlarmState(*rec).warning(), moduleAlarmState(*rec).error())));
     payload_write_u8(rec->fw_major);
     payload_write_u8(rec->fw_minor);
     payload_write_u8(rec->fw_patch);
@@ -6894,7 +6946,8 @@ bool MasterScheduler::sendDisplayModuleDetail(uint8_t display_addr, uint8_t targ
       payload_write_u8(rec->addr);
       payload_write_u8(rec->type);
       payload_write_u8((rec->online ? 0x01 : 0) | (rec->role_jbc ? 0x02 : 0) | (rec->role_output ? 0x04 : 0) |
-      (moduleProvidesExtractorOutput(*rec) ? 0x08 : 0) | 0x10); // bit3=extractor output, bit4=authoritative
+      (moduleProvidesExtractorOutput(*rec) ? 0x08 : 0) | 0x10 |
+      (rec->addr == ADDR_MASTER ? 0 : ofe_module_health::summary(moduleAlarmState(*rec).warning(), moduleAlarmState(*rec).error())));
       payload_write_u8(rec->fw_major);
       payload_write_u8(rec->fw_minor);
       payload_write_u8(rec->fw_patch);
@@ -8765,6 +8818,22 @@ bool MasterScheduler::setUniversalEntity(uint8_t addr, uint8_t entity_id, const 
   return true;
 }
 
+bool MasterScheduler::setConnectionWarnings(uint64_t uid, bool enabled) {
+  ModuleRecord* rec = nullptr;
+  for (uint8_t i = 0; i < registry_.count(); ++i)
+    if (registry_.at(i).uid == uid) { rec = &registry_.at(i); break; }
+  if (!uid || !rec || !ofe_module_alarm::supportsConnectionWarning(*rec)) return false;
+  Preferences prefs;
+  if (!prefs.begin(MasterSettingsStore::NS_CFG, false)) return false;
+  const String key = MasterSettingsStore::moduleConnectionWarningKey(uid);
+  const bool saved = MasterSettingsStore::putBoolVerified(prefs, key.c_str(), !enabled);
+  prefs.end();
+  if (!saved) return false;
+  rec->connection_warnings_muted = !enabled;
+  system_alarm_sample_valid_ = false;
+  return true;
+}
+
 bool MasterScheduler::setModuleLabel(uint8_t addr, const char* label) {
   if (module_fw_active_ && addr == module_fw_target_) return false;
   uint8_t payload[24];
@@ -9537,7 +9606,7 @@ void MasterScheduler::tick() {
   for (uint8_t i = 0; i < MAX_INPUT_RULES; ++i) {
     const auto& rule = input_rules_[i];
     if (rule.enabled && ((rule.source_type == INPUT_SRC_SYSTEM_STATE && rule.source_bit >= INPUT_STATE_ECO_ACTIVE) ||
-        rule.source_type == INPUT_SRC_MARKER || rule.target_type == INPUT_TGT_MARKER)) extended_system_rules = true;
+        rule.source_type >= INPUT_SRC_MARKER || rule.target_type == INPUT_TGT_MARKER)) extended_system_rules = true;
   }
   if (input_rule_state_sig != input_rule_system_state_signature_ ||
       (extended_system_rules && uint32_t(now - last_system_rule_update_ms_) >= 50U)) {
@@ -9570,6 +9639,7 @@ void MasterScheduler::tick() {
   // During RS485 OTA we pause discovery/full scans, but keep live control and
   // polling for all non-target modules so outputs can still react.
   if (!ota_active) {
+    { const uint32_t job_us = micros(); pollStartupScan(); noteSchedulerJob(SCHED_JOB_SCAN, job_us); }
     if (!scan_job_active_) {
       { const uint32_t job_us = micros(); pollHotplugDiscovery(); noteSchedulerJob(SCHED_JOB_HOTPLUG, job_us); }
       // pollHotplugDiscovery() may have opened a reserved response window in

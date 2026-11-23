@@ -14,6 +14,7 @@
 #endif
 
 #include "src/Rs485PeripheralBus.h"
+#include "src/OfeRs485Task.h"
 #ifndef OFE_STATUS_LED_MASTER_TIMEOUT_MS
 #define OFE_STATUS_LED_MASTER_TIMEOUT_MS 8000UL
 #endif
@@ -55,7 +56,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 70
+#define OFE_MODULE_FW_PATCH 71
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -149,6 +150,7 @@ enum RxState {
 static HardwareSerial RS485(1);
 static HardwareSerial JBC(2);
 static Link bus(RS485);
+static OfeRs485Task rs485_worker;
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
 static bool module_eco_mode = false;
@@ -1623,10 +1625,19 @@ static void poll_rs485() {
   Frame req;
   uint8_t frames = 0;
   while (frames < 8 && bus.poll(req)) {
-    handle_rs485(req);
+    { OfeRs485Task::StateGuard guard(rs485_worker); handle_rs485(req); }
     ++frames;
   }
   if (frames >= 8) yield();
+}
+
+// Only the RS485 task may poll/send on the OFE bus. This also keeps the
+// discovery/announce and firmware watchdog path independent of local IO.
+static void rs485_housekeeping() {
+  OfeRs485Task::StateGuard guard(rs485_worker);
+  poll_pending_discover_response();
+  poll_join_announce();
+  fw_update_check_timeout();
 }
 
 void setup() {
@@ -1664,28 +1675,32 @@ void setup() {
   Serial.println(my_addr, HEX);
   join_announce_left = 8;
   next_join_announce_ms = millis() + join_delay_ms(join_announce_left);
+  // All buses, handlers, NVS and initial state are ready before the worker starts.
+  // Failed task creation automatically falls back to the original Arduino loop.
+  rs485_worker.start(poll_rs485, rs485_housekeeping);
 }
 
 void loop() {
-  const uint32_t led_now = millis();
-  const bool bus_online = last_master_ms && (uint32_t)(led_now - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS;
-  const bool jbc_online = (fast_flags & FAST_FLAG_CONNECTED) && last_jbc_frame_ms && (uint32_t)(led_now - last_jbc_frame_ms) <= 2500UL;
-  ofe_status_leds.setBusOnline(bus_online);
-  ofe_status_leds.setFirmwareUpdate(fw_update_active);
-  ofe_status_leds.setModuleEvent(stat_error ? (((stat_error & (uint16_t)~0x0002U) != 0) ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (work_mask ? OFE_LED_EVENT_WORK_ACTIVE : (jbc_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
-  ofe_status_leds.tick();
   const uint32_t loop_start_us = micros();
-  // Keep the OFE master-facing bus responsive even when the local JBC parser
-  // has a busy burst. Service RS485 before and after local-device work, just
-  // like the JBC USB module does.
-  poll_rs485();
-  poll_jbc();
-  poll_rs485();
-  poll_pending_discover_response();
-  poll_join_announce();
-  fw_update_check_timeout();
-  record_loop_time((uint32_t)(micros() - loop_start_us));
-  // Prevent the Arduino loop task from busy-spinning on one CPU core.
-  // Placed after runtime measurement so loop_max_ms reports only real work.
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    const uint32_t led_now = millis();
+    const bool bus_online = last_master_ms && (uint32_t)(led_now - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS;
+    const bool jbc_online = (fast_flags & FAST_FLAG_CONNECTED) && last_jbc_frame_ms && (uint32_t)(led_now - last_jbc_frame_ms) <= 2500UL;
+    ofe_status_leds.setBusOnline(bus_online);
+    ofe_status_leds.setFirmwareUpdate(fw_update_active);
+    ofe_status_leds.setModuleEvent(stat_error ? (((stat_error & (uint16_t)~0x0002U) != 0) ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (work_mask ? OFE_LED_EVENT_WORK_ACTIVE : (jbc_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
+    ofe_status_leds.tick();
+  }
+  if (!rs485_worker.active()) poll_rs485();
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    poll_jbc();
+  }
+  if (!rs485_worker.active()) { poll_rs485(); rs485_housekeeping(); }
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    record_loop_time((uint32_t)(micros() - loop_start_us));
+  }
   delay(1);
 }

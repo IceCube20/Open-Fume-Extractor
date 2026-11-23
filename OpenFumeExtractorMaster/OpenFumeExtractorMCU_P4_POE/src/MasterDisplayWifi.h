@@ -1,0 +1,115 @@
+#pragma once
+#include "bus/OfeDisplayTunnel.h"
+#include "ModuleRegistry.h"
+#include "WifiTiming.h"
+#include "WifiOtaDiagnostics.h"
+#include <atomic>
+
+class MasterDisplayWifi {
+public:
+  using ConfigProvider = void (*)(ofe_wifi::Config&);
+  bool begin(jbc_rs485::Link& link, ModuleRegistry& registry, ConfigProvider provider);
+  bool active(uint8_t addr) const;
+  bool keyText(uint64_t uid, char out[33]) const;
+  bool rootText(char out[33]) const;
+  bool restoreRoot(const char* text);
+  bool provisioningDue(uint8_t addr);
+  bool configuration(uint8_t addr, ofe_wifi::Config& config) const;
+  bool pairingConfiguration(uint64_t uid, ofe_wifi::Config& config) const {
+    if (!provider_ || (uid >> 60) != 4) return false;
+    provider_(config);
+    config.from_master=1;
+    config.mode=ofe_wifi::AUTOMATIC;
+    return derive(uid,config.key) && ofe_wifi::configured(config);
+  }
+  bool probeDue(uint8_t addr);
+  void probeResult(uint8_t addr, bool ok);
+  void forcePhysical(bool enabled) { physical_ = enabled; }
+  void beginFirmware(uint8_t addr);
+  void endFirmware();
+  bool firmwareWireless(uint8_t addr) const { return firmware_addr_==addr && firmware_wifi_; }
+  bool firmwareBulkAvailable(uint8_t addr) const {
+    return firmwareWireless(addr) && firmware_bulk_available_ &&
+      (!firmware_bulk_retry_pending_ ||
+       (uint32_t)(millis()-firmware_bulk_retry_started_ms_)>=firmware_bulk_retry_delay_ms_);
+  }
+  bool firmwareBulkConfirmed(uint8_t addr) const {
+    return firmwareBulkAvailable(addr) && firmware_bulk_confirmed_;
+  }
+  bool firmwareBulkChunk(uint8_t addr, uint32_t offset, const uint8_t* data, uint16_t len);
+  ofe_wifi_ota::Snapshot firmwareBulkDiagnostics() const { return firmware_bulk_diagnostics_.snapshot(); }
+  bool rebindAddress(uint64_t uid, uint8_t new_addr);
+  bool timingEnabled() const { return timing_enabled_.load(); }
+  void setTimingEnabled(bool enabled);
+  void resetTiming();
+  ofe_wifi_timing::Snapshot timingSnapshot(uint8_t addr);
+  void responseProcessed(const jbc_rs485::Frame& frame);
+private:
+  struct Peer {
+    uint64_t uid=0, client=0, server=0;
+    uint64_t pending_client=0, pending_server=0;
+    sockaddr_in endpoint={}, pending_endpoint={};
+    uint32_t rx=0, tx=0, seen=0, pending_ms=0, probe_ms=0;
+    uint8_t addr=0, mode=0, wired_probes=0;
+    bool connected=false;
+    bool timing_capable=false;
+    bool timing_probe_v2=false;
+    uint8_t timing_version=0;
+    uint32_t timing_cap_generation=0;
+    ofe_wifi_timing::Tracker timing;
+  };
+  Peer peers_[16];
+  std::atomic<bool> timing_enabled_{false};
+  std::atomic<uint32_t> timing_generation_{1};
+  uint32_t timing_token_=0;
+  portMUX_TYPE timing_mux_=portMUX_INITIALIZER_UNLOCKED;
+  ofe_wifi_timing::Snapshot timing_stats_[16];
+  std::atomic<uint32_t> published_seen_[16]{};
+  uint8_t root_[16]={};
+  uint32_t provision_ms_[16]={};
+  bool ready_=false, physical_=false;
+  bool received_packet_=false;
+  std::atomic<uint8_t> firmware_addr_{0};
+  uint64_t firmware_uid_=0;
+  bool firmware_wifi_=false;
+  bool firmware_bulk_available_=false,firmware_bulk_confirmed_=false;
+  bool firmware_bulk_retry_pending_=false;
+  uint32_t firmware_bulk_retry_started_ms_=0;
+  uint32_t firmware_bulk_retry_delay_ms_=2000;
+  void firmwareBulkSucceeded() {
+    firmware_bulk_confirmed_=true;
+    firmware_bulk_retry_pending_=false;
+    firmware_bulk_retry_delay_ms_=2000;
+  }
+  void firmwareBulkFailed() {
+    // Only retry a protocol that this exact OTA session has already confirmed.
+    // Old firmware still gets one probe, then stays on the compatible OFE path.
+    if (firmware_bulk_confirmed_) {
+      if (firmware_bulk_retry_pending_) {
+        firmware_bulk_retry_delay_ms_=firmware_bulk_retry_delay_ms_>=15000UL
+          ? 30000UL : firmware_bulk_retry_delay_ms_*2UL;
+      }
+      firmware_bulk_retry_started_ms_=millis();
+      firmware_bulk_retry_pending_=true;
+    } else {
+      firmware_bulk_available_=false;
+      firmware_bulk_retry_pending_=false;
+    }
+  }
+  uint32_t firmware_bulk_request_=0;
+  ofe_wifi_ota::Diagnostics firmware_bulk_diagnostics_;
+  int fd_=-1;
+  uint32_t socket_retry_ms_=0;
+  ModuleRegistry* registry_=nullptr;
+  ConfigProvider provider_=nullptr;
+  bool derive(uint64_t uid, uint8_t key[16]) const;
+  Peer* peer(uint8_t addr);
+  void publish(const Peer& peer);
+  bool receive(jbc_rs485::Frame& frame);
+  bool route(const jbc_rs485::Frame& frame);
+  bool send(Peer& peer, uint8_t kind, const jbc_rs485::Frame* frame=nullptr);
+  void resetPeerTiming(Peer& peer);
+  static bool routeHook(void* self, const jbc_rs485::Frame& frame);
+  static bool pollHook(void* self, jbc_rs485::Frame& frame);
+};
+extern MasterDisplayWifi master_display_wifi;

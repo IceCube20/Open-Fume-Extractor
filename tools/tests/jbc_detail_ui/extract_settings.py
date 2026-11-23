@@ -18,8 +18,14 @@ for name, output in (('universal_entity_value_text', 'universal_value.inc.h'),
 pages = []
 helpers = []
 headers = []
+module_updates = []
 for name, suffix in (('DisplayModule_800x480', '800'), ('DisplayModule_320x480', '480')):
     source = (root / 'Module' / name / (name + '.ino')).read_text(encoding='utf-8')
+    module_updates.append(function(source, 'lv_update_module_list').replace('lv_update_module_list', 'update_modules_' + suffix, 1))
+    if suffix == '800':
+        Path(sys.argv[1]).with_name('module_list_update_helpers.inc.h').write_text('\n'.join(
+            function(source, symbol) for symbol in ('update_is_local_display_target', 'bus_update_is_for_addr', 'bus_update_progress_text')),
+            encoding='utf-8')
     app = function(source, 'lv_create_app_screens')
     if suffix == '800':
         headers.append(function(source, 'lv_create_eco_sprout'))
@@ -47,5 +53,6 @@ for name, suffix in (('DisplayModule_800x480', '800'), ('DisplayModule_320x480',
     if suffix == '800':
         pages.append(function(source, 'lv_alarm_add'))
 Path(sys.argv[1]).with_name('other_pages.inc.h').write_text('\n'.join(pages), encoding='utf-8')
+Path(sys.argv[1]).with_name('module_list_updates.inc.h').write_text('\n'.join(module_updates), encoding='utf-8')
 Path(sys.argv[1]).with_name('home_helpers.inc.h').write_text('\n'.join(helpers), encoding='utf-8')
 Path(sys.argv[1]).with_name('header_builders.inc.h').write_text('\n'.join(headers), encoding='utf-8')

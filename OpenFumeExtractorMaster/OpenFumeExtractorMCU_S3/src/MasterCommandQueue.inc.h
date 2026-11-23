@@ -44,6 +44,7 @@ enum MasterCommandType : uint8_t {
   MASTER_CMD_TRACE_START,
   MASTER_CMD_TRACE_STOP,
   MASTER_CMD_TRACE_CLEAR,
+  MASTER_CMD_SET_CONNECTION_WARNINGS,
 };
 
 struct MasterCommandRequest {
@@ -141,6 +142,10 @@ static void master_command_execute(MasterCommandRequest& r) {
 #endif
       break;
     }
+
+    case MASTER_CMD_SET_CONNECTION_WARNINGS:
+      r.result = scheduler.setConnectionWarnings(r.qw1, r.flag1);
+      break;
 
     case MASTER_CMD_SET_IO_ALIAS:
       r.result = scheduler.setIoAlias(r.addr, r.a, r.s1 ? r.s1 : "");
@@ -431,6 +436,14 @@ static bool master_cmd_set_io_alias(uint8_t addr, uint8_t channel, const char* a
   r.addr = addr;
   r.a = channel;
   r.s1 = alias;
+  return master_command_submit(r);
+}
+
+static bool master_cmd_set_connection_warnings(uint64_t uid, bool enabled) {
+  MasterCommandRequest r;
+  r.type = MASTER_CMD_SET_CONNECTION_WARNINGS;
+  r.qw1 = uid;
+  r.flag1 = enabled;
   return master_command_submit(r);
 }
 

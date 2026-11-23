@@ -21,9 +21,9 @@ struct Wifi {
   bool forgetPairing() { ++forgets; return true; }
   void scan() { ++scans; }
 } display_wifi;
-namespace ofe_ble { enum { READY,CONFIRM,SAVING,DONE,LOW_MEMORY,FAILED,CANCELLED,EXPIRED }; }
+namespace ofe_ble { enum { READY,CONFIRM,SAVING,DONE,LOW_MEMORY,FAILED,CANCELLED,EXPIRED,AUTHENTICATING }; }
 struct Ble {
-  struct View { bool active=false; int phase=ofe_ble::READY; uint32_t token=5,pin=123456; } data;
+  struct View { bool active=false; int phase=ofe_ble::READY,error_phase=0,error_code=0; uint32_t token=5,pin=123456; } data;
   bool active() { return data.active; }
   View view() { return data; }
   bool start() { data.active=true; return true; }
@@ -36,6 +36,10 @@ static struct {
   bool update_active=false,jbc_present=true,fan_present=true,weller_present=true,clock_valid=true,jbc_connected=true,output_enabled=false;
   uint8_t jbc_work_mask=0,jbc_stand_mask=0,output_addr=0x20;
   uint8_t master_alarm_critical_mask=0;
+  bool master_alarm_valid=false;
+  uint8_t master_alarm_item_count=0,master_alarm_addr[6]={},master_alarm_code[6]={};
+  uint8_t update_target=0,update_progress=0;
+  char update_name[32]={};
   unsigned select_flow=550,delay_work_s=12,afterrun_power=300,output_power=550,fan_rpm=1250;
   unsigned clock_hour=23,clock_minute=59,clock_day=31,clock_month=12,clock_year=2026;
 } status;

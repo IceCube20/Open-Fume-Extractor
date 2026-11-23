@@ -14,10 +14,11 @@ int main() {
   ModuleRecord m;
   for (uint8_t type = 1; type <= 9; ++type) {
     m.type = type; m.online = true; m.telemetry_valid = true;
-    m.eco_mode = true; m.light_sleep = false; m.eco_since_ms = 1000; m.module_uptime_s = 100;
-    assert(!module_update_uptime(m, 100) && m.eco_mode);
+    m.eco_mode = true; m.eco_state_known = true; m.light_sleep = false; m.eco_since_ms = 1000; m.module_uptime_s = 100;
+    assert(!module_update_uptime(m, 100) && m.eco_mode && m.eco_state_known);
     assert(!module_update_uptime(m, 101) && m.eco_mode);
     assert(module_update_uptime(m, 0) && !m.eco_mode && !m.light_sleep && !m.eco_since_ms);
+    assert(!m.eco_state_known);
     assert(m.online && m.module_uptime_s == 0);
     assert(!module_update_uptime(m, 1));
     m.telemetry_valid = false; m.module_uptime_s = 100;

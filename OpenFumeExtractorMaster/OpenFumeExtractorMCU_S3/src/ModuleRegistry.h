@@ -279,6 +279,7 @@ struct ModuleRecord {
   uint8_t fw_patch = 0;
   char fw_suffix[8] = {0};
   uint64_t uid = 0;
+  bool connection_warnings_muted = false;
   uint32_t caps = 0;
   uint32_t last_seen_ms = 0;
   bool firmware_recovery_pending = false;
@@ -293,6 +294,7 @@ struct ModuleRecord {
   bool came_online = false;
   bool seen_in_scan = false;
   bool eco_mode = false;
+  bool eco_state_known = false;
   bool light_sleep = false;
   uint32_t eco_since_ms = 0;
   bool role_jbc = false;

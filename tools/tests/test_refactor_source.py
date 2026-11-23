@@ -41,9 +41,22 @@ class RefactorIntegration(unittest.TestCase):
                         'failed to persist JBC route', 'failed to persist input route',
                         'failed to persist input rule'):
             self.assertIn('web.send(507, "text/plain; charset=utf-8", "' + message + '")', controls)
-        for name in ('saveMainInput', 'saveOutput', 'routeSet', 'ruleChanged', 'addRule', 'deleteRule'):
+        for name in ('saveMainInput', 'saveOutput', 'routeSet', 'ruleChanged', 'deleteRule'):
             action = status.split('async function ' + name + '(', 1)[1].split('async function ', 1)[0]
             self.assertIn('routingSaveOk(r)', action)
+
+    def test_rule_creation_drafts_are_inactive_and_do_not_depend_on_main_input(self):
+        for name in ('OpenFumeExtractorMCU_S3', 'OpenFumeExtractorMCU_P4', 'OpenFumeExtractorMCU_P4_POE'):
+            with self.subTest(mcu=name):
+                status = (ROOT / 'OpenFumeExtractorMaster' / name / 'src/WebStatus.inc.h').read_text(encoding='utf-8')
+                add = status.split('async function addRule(', 1)[1].split('async function deleteRule', 1)[0]
+                self.assertNotIn('fetch(', add)
+                self.assertNotIn('main_input_sel', add)
+                self.assertIn('enabled:false,source_type:0', add)
+                self.assertIn('!routingRuleDrafts[i]', add)
+                change = status.split('async function ruleChanged(', 1)[1].split('async function addRule', 1)[0]
+                self.assertLess(change.index('if(!draft.enabled)return'), change.index('fetch('))
+                self.assertLess(change.index('routingSaveOk(r)'), change.index('draft.persisted=true'))
 
     def test_identical_profile_transaction_headers(self):
         paths = [ROOT / f'Module/{name}/src/OfeStateTransaction.h' for name in

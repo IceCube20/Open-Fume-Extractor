@@ -8,12 +8,15 @@ DEST.mkdir(parents=True, exist_ok=True)
 header = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.h").read_text(encoding="utf-8")
 source = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterScheduler.cpp").read_text(encoding="utf-8")
 enums = []
-for name in ("InputSystemState", "SystemOutput", "ExtractorAction"):
+for name in ("InputSourceType", "InputSystemState", "InputTargetType", "SystemOutput", "ExtractorAction"):
     enums.append(re.search(r"  enum " + name + r" : uint8_t \{.*?\n  };", header, re.S).group())
+enums.append(re.search(r"  struct InputActionRule \{.*?\n  };", header, re.S).group())
 (DEST / "scheduler_enums.inc").write_text("\n".join(enums), encoding="utf-8")
 methods = []
-for name in ("systemInputMask", "systemInputActive", "setLogicSystemOutput", "requestDisplayWake"):
-    match = re.search(r"(?:uint32_t|bool|void) MasterScheduler::" + name + r"\(.*?\n}\n", source, re.S)
+for name in ("systemInputMask", "systemInputActive", "mainInputSelected", "inputRuleSourceActive",
+             "mainInputSourceAvailable", "mainInputSourceActive", "onlineJbcModuleCount",
+             "setLogicSystemOutput", "requestDisplayWake"):
+    match = re.search(r"(?:uint32_t|uint8_t|bool|void) MasterScheduler::" + name + r"\(.*?\n}\n", source, re.S)
     if not match:
         raise ValueError(name)
     methods.append(match.group())
@@ -26,3 +29,8 @@ for name in ("logic_extractor_action_from_signal", "logic_output_is_event_signal
         raise ValueError(name)
     methods.append(match.group())
 (DEST / "logic_methods.inc").write_text("\n".join(methods), encoding="utf-8")
+selected = logic[logic.index("static bool logic_signal_active("):]
+selected = selected[:selected.index('  if (sscanf(signal, "state:system:')] + '  return false;\n}\n'
+(DEST / "logic_selected_input.inc").write_text(selected)
+settings = (ROOT / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterSettingsStore.cpp").read_text()
+(DEST / "settings_normalize.inc").write_text(re.search(r"bool normalizeMainInput\(.*?\n}\n", settings, re.S).group())

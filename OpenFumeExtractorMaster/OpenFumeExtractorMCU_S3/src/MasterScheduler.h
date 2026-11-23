@@ -4,9 +4,11 @@
 #include <freertos/semphr.h>
 #include "bus/Rs485PeripheralBus.h"
 #include "ModuleRegistry.h"
+#include "ModuleAlarmPolicy.h"
 #include "ExtractorLogic.h"
 #include "RequestWaitProbe.h"
 #include "OfeAutomationState.h"
+#include "StartupScanRecovery.h"
 
 #ifndef JBC_MODULE_ADDR
 #define JBC_MODULE_ADDR 0x10
@@ -74,14 +76,6 @@
 
 #ifndef OFFLINE_REPROBE_INTERVAL_MS
 #define OFFLINE_REPROBE_INTERVAL_MS 750UL
-#endif
-
-#ifndef JBC_DEFAULT_PROBE_INTERVAL_MS
-#define JBC_DEFAULT_PROBE_INTERVAL_MS 500UL
-#endif
-
-#ifndef JBC_DEFAULT_STATE_PROBE_INTERVAL_MS
-#define JBC_DEFAULT_STATE_PROBE_INTERVAL_MS 1500UL
 #endif
 
 class MasterScheduler {
@@ -197,6 +191,11 @@ public:
     INPUT_SRC_UNIVERSAL_ENTITY = 3,
     INPUT_SRC_SYSTEM_STATE = 4,
     INPUT_SRC_MARKER = 5,
+    INPUT_SRC_MAIN_INPUT_NONE = 6,
+    INPUT_SRC_MAIN_INPUT_JBC = 7,
+    INPUT_SRC_MAIN_INPUT_IO = 8,
+    INPUT_SRC_MAIN_INPUT_UNIVERSAL = 9,
+    INPUT_SRC_LAST = INPUT_SRC_MAIN_INPUT_UNIVERSAL,
   };
 
 
@@ -222,7 +221,10 @@ public:
     INPUT_STATE_MODULE_ONLINE = 18,
     INPUT_STATE_DEVICE_CONNECTED = 19,
     INPUT_STATE_JBC_STAND = 20,
-    INPUT_STATE_LAST = INPUT_STATE_JBC_STAND,
+    INPUT_STATE_MAIN_INPUT_SELECTED = 21,
+    INPUT_STATE_MAIN_INPUT_AVAILABLE = 22,
+    INPUT_STATE_MAIN_INPUT_ACTIVE = 23,
+    INPUT_STATE_LAST = INPUT_STATE_MAIN_INPUT_ACTIVE,
   };
 
   enum InputTargetType : uint8_t {
@@ -235,6 +237,12 @@ public:
     INPUT_TGT_SELECT_OUTPUT = 6,
     INPUT_TGT_SYSTEM = 7,
     INPUT_TGT_MARKER = 8,
+    // Keep the existing three-byte rule target format and all previous IDs.
+    INPUT_TGT_SELECT_INPUT_NONE = 9,
+    INPUT_TGT_SELECT_INPUT_JBC = 10,
+    INPUT_TGT_SELECT_INPUT_IO = 11,
+    INPUT_TGT_SELECT_INPUT_UNIVERSAL = 12,
+    INPUT_TGT_LAST = INPUT_TGT_SELECT_INPUT_UNIVERSAL,
   };
 
   enum SystemOutput : uint8_t {
@@ -310,6 +318,7 @@ public:
   bool serialDebugLog() const { return serial_debug_log_; }
   void scanKnownModules();
   void requestScanKnownModules(bool with_auto_address = false, bool prune_missing = false);
+  void requestStartupScan();
   bool scanJobActive() const { return scan_job_active_; }
   bool consumeScanJobFinished() { const bool done = scan_job_finished_; scan_job_finished_ = false; return done; }
   void probeModule(uint8_t addr);
@@ -317,6 +326,10 @@ public:
   uint8_t outputAddr() const { return active_output_addr_; }
   uint8_t autoOutputCandidateAddr() const;
   uint8_t preferredOutputAddr() const { return preferred_output_addr_; }
+  bool setConnectionWarnings(uint64_t uid, bool enabled);
+  ofe_module_alarm::State moduleAlarmState(const ModuleRecord& rec) const {
+    return ofe_module_alarm::evaluate(rec, active_output_addr_, preferred_output_addr_);
+  }
   bool runtimeOutputOverrideActive() const { return runtime_output_override_addr_ != 0xFF; }
   uint8_t runtimeOutputOverrideAddr() const { return runtime_output_override_addr_ == 0xFF ? 0 : runtime_output_override_addr_; }
   bool jbcInputEnabled() const { return main_input_source_type_ == INPUT_SRC_JBC_WORK; }
@@ -325,6 +338,7 @@ public:
   uint8_t mainInputSourceBit() const { return main_input_source_bit_; }
   bool mainInputSourceAvailable() const;
   bool systemInputActive(uint8_t state, uint8_t addr = 0) const;
+  bool mainInputSelected(unsigned type, unsigned addr, unsigned bit) const;
   uint32_t systemInputMask(uint8_t addr = 0) const;
   uint8_t automationMarkers() const { return logic_system_requests_.markers | rule_system_requests_.markers; }
   bool automationMarker(uint8_t number) const { return number >= 1 && number <= 8 && (automationMarkers() & (1U << (number - 1))); }
@@ -515,6 +529,8 @@ private:
   void pollHotplugDiscovery();
   void pollOfflineModules();
   void pollScanJob();
+  void startScanJob(bool with_auto_address, bool prune_missing, bool missing_only);
+  void pollStartupScan();
   void updateJbcAggregate();
   uint16_t minSelectFlowForActiveOutput() const;
   void outputPowerBoundsForModule(const ModuleRecord& out, uint16_t& min_flow, uint16_t& max_flow, uint16_t& step_flow) const;
@@ -587,8 +603,7 @@ private:
   uint32_t hotplug_discovery_window_until_ms_ = 0;
   uint32_t last_offline_reprobe_ms_ = 0;
   uint32_t pending_hotplug_scan_ms_ = 0;
-  uint32_t last_default_jbc_probe_ms_ = 0;
-  uint32_t last_default_jbc_state_probe_ms_ = 0;
+  uint32_t last_disconnected_jbc_probe_ms_ = 0;
   uint16_t last_jbc_state_event_seq_ = 0;
   uint16_t last_system_jbc_error_ = 0xFFFF;
   uint16_t last_system_jbc_filter_life_ = 0xFFFF;
@@ -664,6 +679,8 @@ private:
   bool pending_hotplug_full_scan_ = false;
   uint8_t pending_hotplug_addr_ = jbc_rs485::ADDR_INVALID;
   bool scan_job_active_ = false;
+  StartupScanRecovery startup_scan_recovery_;
+  bool scan_job_missing_only_ = false;
   bool scan_job_auto_address_ = false;
   bool scan_job_auto_done_ = true;
   bool scan_job_prune_missing_ = false;

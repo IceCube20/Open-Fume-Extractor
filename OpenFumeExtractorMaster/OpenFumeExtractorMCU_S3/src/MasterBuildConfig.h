@@ -253,7 +253,7 @@
 
 #define MASTER_FW_MAJOR 2
 #define MASTER_FW_MINOR 1
-#define MASTER_FW_PATCH 24
+#define MASTER_FW_PATCH 38
 #if MASTER_FW_PATCH >= 100
 #error "Firmware patch 100 rolls over to the next minor version with patch 0."
 #endif

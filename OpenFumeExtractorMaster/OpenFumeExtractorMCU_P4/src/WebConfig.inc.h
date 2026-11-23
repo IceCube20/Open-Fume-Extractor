@@ -4,6 +4,10 @@
 
 static MasterHardwareInfo master_hardware_info() {
   MasterHardwareInfo info;
+  info.board=OFE_MASTER_BOARD_NAME;
+#if defined(ARDUINO_BOARD)
+  info.build_board=ARDUINO_BOARD;
+#endif
   info.model=ESP.getChipModel();info.revision=ESP.getChipRevision();info.cores=ESP.getChipCores();
   info.cpu_mhz=ESP.getCpuFreqMHz();info.flash_bytes=ESP.getFlashChipSize();info.flash_hz=ESP.getFlashChipSpeed();
   switch(ESP.getFlashChipMode()) {case FM_QIO:info.flash_mode="QIO";break;case FM_QOUT:info.flash_mode="QOUT";break;case FM_DIO:info.flash_mode="DIO";break;case FM_DOUT:info.flash_mode="DOUT";break;default:break;}
@@ -543,17 +547,20 @@ static void web_handle_wifi_scan() {
       WiFi.setAutoReconnect(false);
       if (!WiFi.mode(WIFI_STA)) {
         master_lan_wifi_policy.releaseScan();
+        Serial.println("[WiFi scan] station/radio initialization failed");
         web.send(503,"application/json","{\"status\":\"failed\"}"); return;
       }
     }
 #endif
+    wifi_pause_connection_for_scan();
     WiFi.scanDelete();
     n = WiFi.scanNetworks(true, true);
+    Serial.printf("[WiFi scan] start=%d, connected=%u\n",int(n),unsigned(WiFi.status()==WL_CONNECTED));
   }
   String json;
   json.reserve(256 + (n > 0 ? n * 96 : 0));
   if (n == WIFI_SCAN_RUNNING) json = F("{\"status\":\"scanning\"}");
-  else if (n < 0) json = F("{\"status\":\"failed\"}");
+  else if (n < 0) { json = F("{\"status\":\"failed\",\"code\":"); json+=n; json+='}'; }
   else {
     json = F("{\"status\":\"complete\",\"networks\":[");
     bool first = true;
@@ -589,7 +596,8 @@ async function scanConfigWifi(){
   try{
     let method='POST';const deadline=Date.now()+30000;
     while(true){
-      const response=await fetch('/config/wifi-scan',{method,headers:method==='POST'?{'X-CSRF-Token':configWifiScan.csrf}:{},cache:'no-store',signal:AbortSignal.timeout(5000)});
+      const response=await fetch('/config/wifi-scan',{method,headers:method==='POST'?{'X-CSRF-Token':configWifiScan.csrf}:{},cache:'no-store',signal:AbortSignal.timeout(method==='POST'?20000:5000)});
+      if(response.status===409&&Date.now()<deadline){status.textContent=text('Funk beschaeftigt...','Radio busy...');await new Promise(resolve=>setTimeout(resolve,500));continue;}
       if(!response.ok)throw new Error('HTTP '+response.status);
       const result=await response.json();
       if(result.status==='complete'){
@@ -603,10 +611,10 @@ async function scanConfigWifi(){
         select.replaceChildren(...options);if(selected)select.value=selected;
         status.textContent=text('Suche abgeschlossen','Scan complete');break;
       }
-      if(result.status!=='scanning'||Date.now()>=deadline)throw new Error('scan');
+      if(result.status!=='scanning'||Date.now()>=deadline)throw new Error('scan '+(Number.isInteger(result.code)?result.code:'timeout'));
       await new Promise(resolve=>setTimeout(resolve,500));method='GET';
     }
-  }catch(error){status.textContent=text('Suche fehlgeschlagen - erneut versuchen oder SSID manuell eingeben','Scan failed - try again or enter SSID manually');}
+  }catch(error){status.textContent=text('Suche fehlgeschlagen - erneut versuchen oder SSID manuell eingeben','Scan failed - try again or enter SSID manually');if(/^(HTTP |scan )/.test(error.message))status.textContent+=' ('+error.message+')';}
   finally{button.disabled=false;}
 }
 )JS");

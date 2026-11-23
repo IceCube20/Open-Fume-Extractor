@@ -15,6 +15,8 @@ static void web_append_hardware_info(String& html,const MasterHardwareInfo& info
   html+=F("</h2><dl style='display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:12px 20px;margin:0'>");
   auto row=[&](const char* de,const char* en,const String& value){html+=F("<div style='min-width:0;overflow-wrap:anywhere'><dt class='muted'>");html+=web_text(de,en);html+=F("</dt><dd style='margin:4px 0 0;font-weight:600'>");html+=html_escape(value);html+=F("</dd></div>");};
   row("Prozessor","Processor",info.model);
+  row("Board","Board",info.board);
+  row("Arduino-Boardprofil","Arduino board profile",info.build_board);
   row("Architektur","Architecture",info.p4?"RISC-V":"Xtensa LX7");
   char revision[16];snprintf(revision,sizeof(revision),"%u.%u",unsigned(info.revision/100),unsigned(info.revision%100));
   row("Siliziumrevision","Silicon revision",revision);

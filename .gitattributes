@@ -23,5 +23,7 @@ tools/boards/elecrow_p4_5inch/tinycrypt/** -text -eol
 # MCU generation manifests verify exact source bytes, including line endings.
 OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/** -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/** -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+# The new PoE mirror also preserves upstream indentation and terminal blank lines.
+OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4_POE/** -text -eol whitespace=blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
 tools/boards/master_p4_16mb.csv -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 

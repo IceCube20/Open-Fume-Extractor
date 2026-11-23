@@ -10,6 +10,7 @@
 #include <vector>
 #include "OfeJbcDetailState.h"
 #include "DisplayValueStream.h"
+#include "OfeDisplayCapacity.h"
 #undef assert
 #define assert(x) do { if (!(x)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); exit(1); } } while (0)
 using std::isfinite;
@@ -18,6 +19,7 @@ struct String : std::string {
   String(const std::string& s) : std::string(s) {}
   String(int n) : std::string(std::to_string(n)) {}
   String(unsigned n) : std::string(std::to_string(n)) {}
+  String(unsigned long n) : std::string(std::to_string(n)) {}
   unsigned length()const{return unsigned(size());}
   int indexOf(const char* text)const{const auto at=find(text);return at==npos?-1:int(at);}
   void replace(const char* from,const char* to){size_t p=0;while((p=find(from,p))!=npos){std::string::replace(p,strlen(from),to);p+=strlen(to);}}
@@ -236,11 +238,13 @@ static void pairing() {
 #include "OpenFumeBootLogo.h"
 static const int HEX=16;
 static lv_obj_t *ui_module_list_screen,*ui_module_list,*ui_module_update_notice;
-static lv_obj_t *ui_module_rows[17],*ui_module_row_status_stripes[17],*ui_module_row_names[17],*ui_module_row_meta[17];
+static lv_obj_t *ui_module_rows[DISPLAY_MODULE_CAPACITY],*ui_module_row_status_stripes[DISPLAY_MODULE_CAPACITY],*ui_module_row_names[DISPLAY_MODULE_CAPACITY],*ui_module_row_meta[DISPLAY_MODULE_CAPACITY];
+static lv_obj_t *ui_module_row_progress[DISPLAY_MODULE_CAPACITY];
 static lv_obj_t *ui_alarm_screen,*ui_alarm_list,*ui_alarm_rows[8],*ui_alarm_titles[8],*ui_alarm_details[8];
 static lv_obj_t *ui_detail_meta,*ui_detail_status,*ui_detail_work_icon;
 static lv_obj_t *ui_benchmark_screen,*ui_benchmark_list,*ui_benchmark_status,*ui_benchmark_result;
 static lv_obj_t *ui_boot_screen,*ui_boot_fw,*ui_boot_addr,*ui_status_screen,*ui_status_msg;
+static lv_obj_t *ui_status_back;
 static lv_obj_t *ui_update_screen,*ui_update_target,*ui_update_status,*ui_update_percent,*ui_update_phase,*ui_update_bar;
 static lv_obj_t *ui_update_written,*ui_update_size,*ui_update_speed,*ui_update_detail,*ui_update_hint;
 static lv_obj_t *ui_screensaver_screen,*ui_screensaver_brand,*ui_screensaver_clock,*ui_screensaver_state;
@@ -278,6 +282,7 @@ static void lv_apply_dropdown_theme(lv_obj_t*,bool=false){}
 static void lv_enable_home_module_card(lv_obj_t* obj,int type){lv_obj_set_user_data(obj,reinterpret_cast<void*>(uintptr_t(type)));}
 static void lv_set_home_work_icon(bool,bool){}
 SETTINGS_EVENT(lv_module_row_event,20)
+SETTINGS_EVENT(lv_update_abort_back_event,55)
 SETTINGS_EVENT(lv_open_boot_connection_setup,21)
 SETTINGS_EVENT(display_benchmark_back_event,22)
 SETTINGS_EVENT(display_benchmark_start_event,23)
@@ -292,7 +297,8 @@ static unsigned active_alarm_count=255,ui_header_link_count=0;
 static lv_obj_t *ui_header_link_cards[10],*ui_header_link_labels[10],*ui_header_ble_icons[10];
 static lv_obj_t *ui_header_clock_labels[10],*ui_header_alarm_labels[10],*ui_header_eco_icons[10];
 static void lv_set_visible(lv_obj_t*,bool);
-static unsigned master_link_state_now(){return 1;}
+static unsigned fixture_link_state=1;
+static unsigned master_link_state_now(){return fixture_link_state;}
 static const char* master_link_text(unsigned){return display_wifi.wireless()?LV_SYMBOL_WIFI:OFE_SYMBOL_SERIAL_PORT;}
 static lv_color_t master_link_text_color(unsigned){return ofe_display_ui::text();}
 static void lv_update_master_link_ui(bool){}
@@ -316,12 +322,17 @@ static void lv_add_main_nav(lv_obj_t* screen,uint8_t active){
 }
 #include "home_helpers.inc.h"
 static unsigned module_total=0;
-static constexpr unsigned FAST_FLAG_CONNECTED=1,CAP_RELAY_OUTPUT=32,CAP_PWM_OUTPUT=4,CAP_JBC_BUS=1;
+enum {DISPLAY_ALARM_MODULE_OFFLINE=1,DISPLAY_ALARM_OUTPUT_FAULT,DISPLAY_ALARM_JBC_STATION,
+      DISPLAY_ALARM_WELLER_LINK,DISPLAY_ALARM_JBC_STATUS,DISPLAY_ALARM_NO_MAIN_INPUT,DISPLAY_ALARM_NO_MAIN_OUTPUT};
+static constexpr unsigned FAST_FLAG_CONNECTED=1,FAST_FLAG_ERROR_PENDING=4,CAP_RELAY_OUTPUT=32,CAP_PWM_OUTPUT=4,CAP_JBC_BUS=1;
 static struct Summary {
   bool valid=false,live_io_valid=false;
   unsigned type=0,flags=0,caps=0,addr=0,live_jbc_flags=0,live_jbc_work=0,live_jbc_stand=0,live_io_ms=0,live_io_flags=0;
   char name[32]={};
-} module_summaries[17];
+  uint8_t fw_major=1,fw_minor=0,fw_patch=1;
+  char fw_suffix[8]="RC";
+  uint16_t live_io_faults=0;
+} module_summaries[DISPLAY_MODULE_CAPACITY];
 using DisplayModuleSummary=Summary;
 static bool module_summary_provides_extractor_output(const Summary& module){
   return module.valid&&(module.flags&1)&&((module.flags&0x10)?(module.flags&8):bool(module.caps&(CAP_RELAY_OUTPUT|CAP_PWM_OUTPUT)));
@@ -336,7 +347,7 @@ static struct HomeProfileCache {
   uint32_t last_ms=0;
   unsigned universal_entity_count=0,universal_entity_total=0;
   DisplayUniversalEntity universal_entities[32];
-} bridge_caches[17];
+} bridge_caches[DISPLAY_MODULE_CAPACITY];
 using DisplayUniversalModuleCache=HomeProfileCache;
 static HomeProfileCache* universal_cache_find(uint8_t addr,bool){
   for(auto& cache:bridge_caches)if(cache.valid&&cache.addr==addr)return &cache;
@@ -369,6 +380,15 @@ static void lv_set_border_color_if_changed(lv_obj_t* obj,lv_color_t color,int){l
 static unsigned module_count_by_group(unsigned,bool){return 1;}
 #include "other_pages.inc.h"
 #include "controls_fixture.h"
+static uint32_t bus_update_speed_bps=0;
+static unsigned display_view_mode=1;
+static constexpr unsigned DISPLAY_VIEW_MODULE_LIST=1;
+static const uint8_t ADDR_MASTER=1;
+static String lv_addr_text(uint8_t addr){char text[8];snprintf(text,sizeof(text),"0x%02X",addr);return text;}
+static String module_fw_text(uint8_t major,uint8_t minor,uint8_t patch,const char* suffix){return String(major)+"."+String(minor)+"."+String(patch)+suffix;}
+static String update_target_name(uint8_t addr){return addr==ADDR_MASTER?"MCU":"Module";}
+#include "module_list_update_helpers.inc.h"
+#include "module_list_updates.inc.h"
 static void remaining_pages(){
   using Build=void(*)();
   const Build small[]={build_modules_480,build_alarms_480,build_details_480,build_benchmark_480,build_boot_480,build_update_480,build_status_480};
@@ -415,6 +435,129 @@ static void remaining_pages(){
   }
 }
 static void navigation_stress();
+static void module_cards_page(){
+  using namespace ofe_module_cards;
+  using namespace ofe_home_metrics;
+  assert(fault_severity(0)==Normal&&fault_severity(2)==Warning&&fault_severity(6)==Fault);
+  now_ms=100;home_metrics_fixture.clear();module_total=5;
+  for(auto& m:module_summaries)m={};
+  const unsigned types[]={MODULE_UNKNOWN,MODULE_JBC_USB,MODULE_FAN_IO_PRO,MODULE_WELLER_ZERO_SMOG,MODULE_MODBUS_RTU};
+  const uint8_t addresses[]={1,0x11,0x20,0x30,0x60};
+  const char* names[]={"MCU-P4","JBC USB Werkbank","Fan/IO Pro Testbank","Weller Loetplatz","Modbus RTU"};
+  for(unsigned i=0;i<module_total;++i){
+    auto& m=module_summaries[i];m.valid=true;m.addr=addresses[i];m.type=types[i];m.flags=1;
+    strcpy(m.name,names[i]);
+  }
+  auto& jbc=module_summaries[1];jbc.live_io_valid=true;jbc.live_io_ms=now_ms;jbc.live_jbc_flags=1;
+  status.master_alarm_valid=false;
+  assert(severity(jbc,true)==Normal);
+  jbc.live_jbc_flags=0;assert(severity(jbc,true)==Warning);
+  jbc.live_jbc_flags=5;assert(severity(jbc,true)==Normal);
+  jbc.live_io_flags=ofe_module_health::live(false,false);
+  jbc.live_jbc_flags=0;assert(severity(jbc,true)==Normal); // Muted by MCU.
+  jbc.live_io_flags=ofe_module_health::live(true,false);assert(severity(jbc,true)==Warning);
+  jbc.live_io_flags=ofe_module_health::live(false,true);assert(severity(jbc,true)==Fault);
+  jbc.live_io_flags=0;
+  jbc.live_jbc_flags=ofe_module_health::summary(false,false);assert(severity(jbc,true)==Normal);
+  jbc.live_jbc_flags=ofe_module_health::summary(true,false);assert(severity(jbc,true)==Warning);
+  jbc.live_jbc_flags=ofe_module_health::summary(false,true);assert(severity(jbc,true)==Fault);
+  jbc.live_jbc_flags=0;
+  jbc.flags=1|ofe_module_health::summary(false,false);assert(severity(jbc,true)==Normal);
+  jbc.flags=1;
+  jbc.live_jbc_flags=1;
+  for(unsigned i=2;i<5;++i){
+    State s;s.addr=addresses[i];s.type=types[i];s.flags=ONLINE;
+    if(i==2)s.faults=0x100;
+    if(i==3)s.flags|=LINK_KNOWN;
+    if(i==4){s.flags|=HAS_FILTER;s.filter=10;}
+    home_metrics_fixture.put(s,now_ms);
+  }
+  assert(severity(module_summaries[2],true)==Fault);
+  assert(severity(module_summaries[3],true)==Warning);
+  status.output_addr=0x30;assert(severity(module_summaries[3],true)==Fault);status.output_addr=0x20;
+  State link_state;uint32_t link_received=0;
+  assert(home_metrics_fixture.get(0x30,MODULE_WELLER_ZERO_SMOG,link_state,link_received));
+  State muted_link=link_state;muted_link.flags|=ofe_module_health::metrics(false,false);
+  home_metrics_fixture.put(muted_link,now_ms);assert(severity(module_summaries[3],true)==Normal);
+  muted_link.flags|=ofe_module_health::METRICS_ERROR;
+  home_metrics_fixture.put(muted_link,now_ms);assert(severity(module_summaries[3],true)==Fault);
+  home_metrics_fixture.put(link_state,link_received);
+  assert(severity(module_summaries[4],true)==Warning);
+  assert(severity(module_summaries[2],false)==Normal);
+  now_ms=10101;
+  assert(severity(module_summaries[2],true)==Normal); // Stale values are not new faults.
+  now_ms=100;
+  module_summaries[4].flags=0;assert(severity(module_summaries[4],true)==Fault);module_summaries[4].flags=1;
+  status.master_alarm_valid=true;status.master_alarm_item_count=255;
+  memset(status.master_alarm_addr,0,sizeof(status.master_alarm_addr));
+  assert(severity(module_summaries[0],true)==Normal); // Malformed counts stay bounded.
+  status.master_alarm_item_count=1;status.master_alarm_addr[0]=1;
+  status.master_alarm_code[0]=DISPLAY_ALARM_NO_MAIN_INPUT;status.master_alarm_critical_mask=0;
+  assert(severity(module_summaries[0],true)==Warning);
+  status.master_alarm_critical_mask=1;assert(severity(module_summaries[0],true)==Fault);
+  status.master_alarm_critical_mask=0;status.master_alarm_addr[0]=0x11;
+  status.master_alarm_code[0]=DISPLAY_ALARM_JBC_STATUS;
+  assert(severity(jbc,true)==Warning&&severity(module_summaries[0],true)==Normal);
+  status.master_alarm_critical_mask=1;assert(severity(jbc,true)==Fault);
+  status.master_alarm_critical_mask=0;
+  fixture_link_state=1;status.update_active=false;display_view_mode=DISPLAY_VIEW_MODULE_LIST;
+  auto build=screen_width==800?build_modules_800:build_modules_480;
+  auto update=screen_width==800?update_modules_800:update_modules_480;
+  build();lv_screen_load(ui_module_list_screen);update();lv_obj_update_layout(ui_module_list_screen);
+  for(unsigned i=0;i<module_total;++i){
+    assert(!ui_module_row_progress[i]);
+    assert(lv_obj_get_height(ui_module_rows[i])==48&&lv_obj_get_y(ui_module_rows[i])==int(i*54));
+  }
+  for(unsigned i=1;i<4;++i)
+    assert(lv_color_eq(lv_obj_get_style_border_color(ui_module_rows[i],LV_PART_MAIN),border(i==2?Fault:Warning,lv_color_hex(0))));
+  assert(lv_color_eq(lv_obj_get_style_border_color(ui_module_rows[4],LV_PART_MAIN),border(Warning,lv_color_hex(0))));
+  for(uint8_t target:{uint8_t(1),uint8_t(0x20)}){
+    status.update_active=true;status.update_target=target;status.update_progress=0;
+    bus_update_speed_bps=34500;update();lv_obj_update_layout(ui_module_list_screen);
+    const unsigned slot=target==1?0:2;
+    auto* bar=ui_module_row_progress[slot];assert(bar&&!lv_obj_has_flag(bar,LV_OBJ_FLAG_HIDDEN));
+    assert(lv_bar_get_value(bar)==0&&lv_obj_get_height(ui_module_rows[slot])==60);
+    assert(!lv_obj_has_flag(bar,LV_OBJ_FLAG_CLICKABLE));
+    for(uint8_t progress:{uint8_t(49),uint8_t(100)}){
+      status.update_progress=progress;update();lv_obj_update_layout(ui_module_list_screen);
+      assert(ui_module_row_progress[slot]==bar&&lv_bar_get_value(bar)==progress);
+      lv_area_t row,meta,area;lv_obj_get_coords(ui_module_rows[slot],&row);
+      lv_obj_get_coords(ui_module_row_meta[slot],&meta);lv_obj_get_coords(bar,&area);
+      assert(meta.y2<area.y1&&area.y2<row.y2&&area.x1>row.x1&&area.x2<row.x2);
+      assert(lv_obj_get_y(ui_module_rows[slot+1])==lv_obj_get_y(ui_module_rows[slot])+66);
+    }
+    status.update_progress=49;update();
+    char name[96];snprintf(name,sizeof(name),"module-update-%s-%d-%s",target==1?"mcu":"fan",screen_width,dark?"de-dark":"en-light");render(name);
+    row_progress(ui_module_row_progress[slot],ui_module_rows[slot],true,255);
+    assert(lv_bar_get_value(bar)==100);
+    fixture_link_state=2;update();assert(lv_obj_has_flag(bar,LV_OBJ_FLAG_HIDDEN));
+    fixture_link_state=1;status.update_active=false;update();
+    assert(lv_obj_has_flag(bar,LV_OBJ_FLAG_HIDDEN));
+    for(unsigned i=0;i<module_total;++i)assert(lv_obj_get_height(ui_module_rows[i])==48);
+  }
+  auto* old=ui_module_list_screen;
+  build();lv_screen_load(ui_module_list_screen);lv_obj_delete(old);
+  for(auto* bar:ui_module_row_progress)assert(!bar); // No dangling bars after UI/theme rebuild.
+  status.update_active=true;status.update_target=1;status.update_progress=33;update();
+  assert(ui_module_row_progress[0]&&lv_bar_get_value(ui_module_row_progress[0])==33);
+  module_total=DISPLAY_MODULE_CAPACITY;
+  for(unsigned i=0;i<module_total;++i){
+    auto& m=module_summaries[i];m={};m.valid=true;m.flags=1;
+    m.addr=i?uint8_t(0x0F+i):ADDR_MASTER;m.type=MODULE_FAN_IO_PRO;
+    snprintf(m.name,sizeof(m.name),"Capacity module %u",i);
+  }
+  status.update_target=module_summaries[DISPLAY_MODULE_CAPACITY-1].addr;status.update_progress=67;
+  update();lv_obj_update_layout(ui_module_list_screen);
+  assert(lv_obj_get_child_count(ui_module_list)==DISPLAY_MODULE_CAPACITY);
+  assert(ui_module_row_progress[DISPLAY_MODULE_CAPACITY-1]&&lv_bar_get_value(ui_module_row_progress[DISPLAY_MODULE_CAPACITY-1])==67);
+  assert(lv_obj_has_flag(ui_module_row_progress[0],LV_OBJ_FLAG_HIDDEN));
+  status.update_active=false;status.master_alarm_valid=false;status.master_alarm_item_count=0;
+  status.master_alarm_critical_mask=0;active_alarm_count=0;
+  auto* blank=lv_obj_create(nullptr);lv_screen_load(blank);lv_obj_delete(ui_module_list_screen);
+  ui_module_list_screen=nullptr;ui_module_list=nullptr;
+  for(auto*& bar:ui_module_row_progress)bar=nullptr;
+  puts("PASS: real LVGL module fault/warning borders and per-target MCU/module update bars, freshness, bounded alarms, 0/49/100%, recovery and rebuild");
+}
 static void home_page(){
   using namespace ofe_home_metrics;
   module_total=11;home_metrics_fixture.clear();now_ms=100;
@@ -467,6 +610,19 @@ static void home_page(){
   lv_update_bridge_home_cards(true);
   (screen_width==800?layout_home_800:layout_home_480)(true);lv_obj_update_layout(ui_dashboard_screen);
   assert(ofe_module_home::count==10);
+  module_summaries[10].live_io_valid=true;module_summaries[10].live_io_ms=now_ms;
+  module_summaries[10].live_jbc_flags=0;lv_update_bridge_home_cards(true);
+  assert(lv_color_eq(lv_obj_get_style_border_color(ui_home_jbc_card,LV_PART_MAIN),ofe_module_cards::border(ofe_module_cards::Warning,ofe_display_ui::outline())));
+  module_summaries[10].live_jbc_flags=1;lv_update_bridge_home_cards(true);
+  assert(lv_color_eq(lv_obj_get_style_border_color(ui_home_jbc_card,LV_PART_MAIN),ofe_display_ui::outline()));
+  State original;uint32_t received=0;
+  assert(home_metrics_fixture.get(addresses[2],types[2],original,received));
+  State warning=original;warning.faults=2;warning.filter=10;home_metrics_fixture.put(warning,now_ms);
+  lv_update_bridge_home_cards(true);
+  assert(lv_color_eq(lv_obj_get_style_border_color(ofe_module_home::cards[2].root,LV_PART_MAIN),ofe_module_cards::border(ofe_module_cards::Warning,ofe_display_ui::outline())));
+  warning.faults|=0x100;home_metrics_fixture.put(warning,now_ms);lv_update_bridge_home_cards(true);
+  assert(lv_color_eq(lv_obj_get_style_border_color(ofe_module_home::cards[2].root,LV_PART_MAIN),ofe_module_cards::border(ofe_module_cards::Fault,ofe_display_ui::outline())));
+  home_metrics_fixture.put(original,now_ms);lv_update_bridge_home_cards(true);
   assert(lv_obj_get_width(ui_home_jbc_stripe)==3&&lv_obj_get_x(ui_home_jbc_stripe)==4&&lv_obj_get_y(ui_home_jbc_stripe)==12);
   assert(lv_obj_get_height(ui_home_jbc_stripe)==lv_obj_get_height(ui_home_jbc_card)-24);
   char name[80];snprintf(name,sizeof(name),"home-%d-%s",screen_width,dark?"de-dark":"en-light");render(name);
@@ -651,6 +807,9 @@ static void navigation_stress(){
   // page in isolation with the former unconstrained 4 MiB test-only heap.
   std::vector<lv_obj_t*> screens;
   (screen_width==800?build_modules_800:build_modules_480)();screens.push_back(ui_module_list_screen);
+  lv_screen_load(ui_module_list_screen);
+  (screen_width==800?update_modules_800:update_modules_480)();
+  lv_screen_load(ui_dashboard_screen);
   (screen_width==800?build_alarms_800:build_alarms_480)();screens.push_back(ui_alarm_screen);
   (screen_width==800?build_benchmark_800:build_benchmark_480)();screens.push_back(ui_benchmark_screen);
   (screen_width==800?build_boot_800:build_boot_480)();screens.push_back(ui_boot_screen);
@@ -859,7 +1018,7 @@ int main(){
       settings();
       pairing();
       lv_obj_delete(ui_module_detail_screen);
-      check_jbc_bounds=false;remaining_pages();home_page();detail_examples();control_examples();header_examples();screensaver_examples();check_jbc_bounds=true;
+      check_jbc_bounds=false;remaining_pages();module_cards_page();home_page();detail_examples();control_examples();header_examples();screensaver_examples();check_jbc_bounds=true;
     }
     lv_display_delete(d);
   }

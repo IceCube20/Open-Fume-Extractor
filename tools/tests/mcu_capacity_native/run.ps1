@@ -19,6 +19,12 @@ foreach ($variant in @('s3', 'p4')) {
   & "$build/test_$variant.exe"
   if ($LASTEXITCODE -ne 0) {throw "Capacity test failed: $variant"}
   & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS `
+    @defines "/I$PSScriptRoot/stubs" "/I$source" "/I$build" `
+    "$PSScriptRoot/test_module_alarms.cpp" "$source/ModuleRegistry.cpp" "$source/EntityPresentation.cpp" "/Fo$build/" "/Fe$build/alarms_$variant.exe"
+  if ($LASTEXITCODE -ne 0) {throw "Module alarm compile failed: $variant"}
+  & "$build/alarms_$variant.exe"
+  if ($LASTEXITCODE -ne 0) {throw "Module alarm test failed: $variant"}
+  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS `
     @defines "/I$source" "/I$build" "$PSScriptRoot/test_multipart.cpp" "/Fo$build/" "/Fe$build/multipart_$variant.exe"
   if ($LASTEXITCODE -ne 0) {throw "Multipart compile failed: $variant"}
   & "$build/multipart_$variant.exe"

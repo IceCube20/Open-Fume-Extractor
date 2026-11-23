@@ -6,7 +6,7 @@ if (!$destination.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::Ordin
   throw 'Community source snapshot must remain inside the project.'
 }
 $hashes = [ordered]@{}
-foreach ($name in @('OpenFumeExtractorMCU_S3', 'OpenFumeExtractorMCU_P4')) {
+foreach ($name in @('OpenFumeExtractorMCU_S3', 'OpenFumeExtractorMCU_P4', 'OpenFumeExtractorMCU_P4_POE')) {
   $source = (Resolve-Path -LiteralPath (Join-Path $root "OpenFumeExtractorMaster/$name")).Path
   foreach ($file in Get-ChildItem -LiteralPath $source -Recurse -File) {
     $relative = $file.FullName.Substring($source.Length + 1)

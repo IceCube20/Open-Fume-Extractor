@@ -88,6 +88,7 @@ void ModuleRegistry::removeAt(uint8_t index) {
 }
 
 void ModuleRegistry::mergeHistory(ModuleRecord& dst, const ModuleRecord& src) {
+  dst.connection_warnings_muted = src.connection_warnings_muted;
   // These counters belong to the physical module, not to a particular RS485
   // address. Preserve the larger value when healing an address-move duplicate.
   if (src.timeout_count > dst.timeout_count) dst.timeout_count = src.timeout_count;

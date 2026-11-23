@@ -39,6 +39,7 @@ enum { MODULE_JBC_BUS = 1, MODULE_FAN_IO, MODULE_FAN_IO_PRO,
        MODULE_WELLER_ZERO_SMOG, MODULE_DISPLAY, MODULE_UNIVERSAL_RS232,
        MODULE_MODBUS_RTU, MODULE_JBC_USB };
 constexpr uint32_t CAP_JBC_ACTIVITY = 1;
+constexpr uint32_t CAP_JBC_BUS = 2, CAP_JBC_USB = 4;
 constexpr uint8_t FAST_FLAG_CONNECTED = 1;
 struct UniversalEntityState { uint8_t id = 0, len = 0, data[32] = {}; };
 struct ModuleRecord {
@@ -54,19 +55,27 @@ struct Registry {
   std::vector<ModuleRecord> records;
   uint8_t count() const { return static_cast<uint8_t>(records.size()); }
   ModuleRecord& at(uint8_t i) { return records.at(i); }
+  ModuleRecord* find(uint8_t addr) {
+    for (auto& rec : records) if (rec.addr == addr) return &rec;
+    return nullptr;
+  }
 };
 struct MasterScheduler {
   Registry registry_;
   bool module_fw_active_ = false;
   uint8_t module_fw_target_ = 0, active_jbc_addr_ = 0x10;
   uint8_t next_jbc_poll_index_ = 0, next_disconnected_jbc_poll_index_ = 0;
-  uint32_t last_default_jbc_probe_ms_ = 0;
+  uint32_t last_disconnected_jbc_probe_ms_ = 0;
+  uint8_t pending_jbc_state_addr_ = 0, pending_jbc_usb_state_addr_ = 0, next_jbc_state_index_ = 0;
   static constexpr uint32_t JBC_DISCONNECTED_FAST_POLL_PER_MODULE_MS = 500;
   static constexpr uint32_t JBC_FAST_POLL_PER_MODULE_MS = 75;
-  static constexpr uint32_t JBC_DEFAULT_PROBE_INTERVAL_MS = 500;
   std::vector<uint8_t> polls;
+  std::vector<uint8_t> states;
   bool fastPollJbc(uint8_t addr) { polls.push_back(addr); return true; }
+  bool readJbcState(uint8_t addr) { states.push_back(addr); return true; }
+  bool readJbcUsbState(uint8_t addr) { states.push_back(addr); return true; }
   bool pollNextJbc();
+  bool readNextJbcState();
 };
 
 #include "generated_runtime.inc.h"
@@ -227,10 +236,42 @@ static void test_probe_fairness() {
   bool connected_polled = false, disconnected_polled = false;
   for (auto addr : s.polls) { connected_polled |= addr == 0x13; disconnected_polled |= addr == 0x10; }
   assert(connected_polled && disconnected_polled);
-  s.last_default_jbc_probe_ms_ = UINT32_MAX - 250;
+  s.last_disconnected_jbc_probe_ms_ = UINT32_MAX - 250;
   now_ms = 300;
   assert(s.pollNextJbc());
   std::puts("PASS: fair absent-station probes with jitter, offline/OTA exclusion, hot-plug and wraparound");
+}
+
+static void test_no_default_jbc_probe() {
+  MasterScheduler s;
+  for (now_ms = 0; now_ms <= 120000; now_ms += 500) {
+    assert(!s.pollNextJbc());
+    assert(!s.readNextJbcState());
+  }
+  ModuleRecord m;
+  m.addr = 0x10;
+  m.caps = CAP_JBC_ACTIVITY | CAP_JBC_BUS;
+  m.online = false;
+  s.registry_.records.push_back(m);
+  now_ms += 1500;
+  assert(!s.pollNextJbc() && !s.readNextJbcState());
+  assert(s.polls.empty() && s.states.empty());
+  auto& rec = s.registry_.records[0];
+  rec.online = true;
+  assert(s.pollNextJbc());
+  assert(!s.readNextJbcState());
+  rec.jbc_link_flags = FAST_FLAG_CONNECTED;
+  assert(s.readNextJbcState());
+  s.module_fw_active_ = true;
+  s.module_fw_target_ = rec.addr;
+  assert(!s.pollNextJbc() && !s.readNextJbcState());
+  s.module_fw_active_ = false;
+  rec.caps = CAP_JBC_ACTIVITY | CAP_JBC_USB;
+  rec.addr = 0x11;
+  s.pending_jbc_usb_state_addr_ = rec.addr;
+  assert(s.readNextJbcState());
+  assert(s.states.back() == 0x11 && !s.pending_jbc_usb_state_addr_);
+  std::puts("PASS: no unknown/offline default JBC probes; known FAE/USB state and station polling preserved");
 }
 
 static void test_device_diagnostics() {
@@ -286,6 +327,7 @@ int main() {
   test_clock();
   test_lock_timing();
   test_probe_fairness();
+  test_no_default_jbc_probe();
   test_device_diagnostics();
   std::mt19937 rng(7);
   Fixture optimized(rng), reference(optimized);

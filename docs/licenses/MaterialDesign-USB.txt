@@ -1,6 +1,12 @@
-Material Design Icons: usb-flash-drive
+Material Design Icons: usb-flash-drive, refresh, eject, download, magnify, close,
+file-code-outline, backup-restore, file-document-outline, tune-variant,
+content-save-outline, folder-outline, folder-open-outline, chevron-right,
+chevron-down, folder-plus-outline, upload, file-move-outline, trash-can-outline,
+unfold-more-horizontal (USB header and file manager), ethernet (network port).
 Copyright Pictogrammers and contributors.
 Icon source: https://github.com/Templarian/MaterialDesign/blob/master/svg/usb-flash-drive.svg
+Ethernet source: https://github.com/Templarian/MaterialDesign/blob/master/svg/ethernet.svg
+Additional icons: @mdi/js 7.4.47, same Pictogrammers icon library and license.
 License source: https://github.com/Templarian/MaterialDesign/blob/master/LICENSE
 
 Licensed under the Apache License, Version 2.0 (the "License");

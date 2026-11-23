@@ -45,6 +45,33 @@ static void testHeaders() {
   assert(!s3.append(nullptr,1)); assert(!s3.append(image,24));
   s3.reset(); image[0]=0; assert(!s3.append(image,24));
   s3.reset(); image[0]=0xE9; image[1]=17; assert(!s3.append(image,24));
+  image[1]=4; image[12]=18;
+  for (const bool production:{false,true}) {
+    const uint16_t minimum=production?301:0,maximum=production?399:199;
+    image[15]=uint8_t(minimum); image[16]=uint8_t(minimum>>8);
+    image[17]=uint8_t(maximum); image[18]=uint8_t(maximum>>8);
+    for(const uint16_t revision:{uint16_t(100),uint16_t(103),uint16_t(300),uint16_t(301),uint16_t(302),uint16_t(399),uint16_t(400)}) {
+      for(size_t split=0;split<=sizeof(image);++split) {
+        MasterFirmwareHeader header(18,revision);
+        const bool a=header.append(image,split),b=header.append(image+split,sizeof(image)-split);
+        assert((a&&b&&header.complete())==(revision>=minimum&&revision<=maximum));
+      }
+    }
+  }
+  MasterFirmwareHeader revision(18);
+  revision.reset(302); assert(revision.append(image,24));
+  revision.reset(103); assert(!revision.append(image,24));
+  image[15]=0;image[16]=0;image[17]=0;image[18]=0;image[14]=3;
+  image[12]=9;
+  MasterFirmwareHeader legacy(9,302); assert(legacy.append(image,24));
+  legacy.reset(199); assert(!legacy.append(image,24));
+  image[12]=18;
+  image[14]=0; image[15]=0x90; image[16]=1; image[17]=0x2D;image[18]=1;
+  revision.reset(400); assert(!revision.append(image,24));
+  image[15]=image[16]=0;image[17]=image[18]=255;
+  revision.reset(302); assert(!revision.append(image,24));
+  revision.reset(103); assert(!revision.append(image,24));
+  std::cout<<"PASS: PRE-V3/V3 revision ranges, V3.2, fragmented headers, legacy minimum and per-upload reset\n";
   std::cout<<"PASS: split image headers, wrong-chip/malformed/null/truncated rejection and reset\n";
 }
 int main() {

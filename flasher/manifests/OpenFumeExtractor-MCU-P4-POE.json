@@ -1,0 +1,18 @@
+{
+  "name": "Open Fume Extractor - Open Fume Extractor MCU-P4 (Waveshare WIFI6-PoE-ETH V3.1+)",
+  "version": "2.1.38RC",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "improv": false,
+      "parts": [
+        {
+          "path": "../../firmware/OpenFumeExtractor-MCU-P4-POE/OpenFumeExtractor-MCU-P4-POE-2.1.38RC-merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

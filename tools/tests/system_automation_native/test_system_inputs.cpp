@@ -9,10 +9,12 @@
 static uint32_t now_ms = 1000;
 uint32_t millis() { return now_ms; }
 enum { CAP_JBC_BUS=1, CAP_JBC_USB=1<<24, CAP_JBC_ACTIVITY=CAP_JBC_BUS|CAP_JBC_USB,
+  CAP_INPUT_KEYS=1<<11, CAP_ENTITY_CONTROL=1<<16,
   CAP_DISPLAY=1<<10, CAP_DISPLAY_AUTOMATION=1<<29, FAST_FLAG_CONNECTED=1, MODULE_FAN_IO_PRO=3,
   MODULE_WELLER_ZERO_SMOG=5, MODULE_UNIVERSAL_RS232=7, MODULE_MODBUS_RTU=8 };
 struct Entity { uint8_t id=1, len=1, data[1]={0}; };
 struct ModuleRecord {
+  uint16_t io_input_mask=0;
   uint8_t addr=0, type=0, jbc_link_flags=0, station_addr=0, jbc_stand_mask=0, jbc_work_mask=0;
   bool online=true, telemetry_valid=false, universal_entities_valid=false, fanio_filter_runtime_valid=false;
   uint32_t caps=0, telemetry_last_ms=0, universal_entities_last_ms=0;
@@ -26,7 +28,12 @@ struct Registry {
   uint8_t count() const { return uint8_t(records.size()); }
   ModuleRecord& at(uint8_t i) { return records[i]; }
   const ModuleRecord& at(uint8_t i) const { return records[i]; }
+  const ModuleRecord* find(uint8_t addr) const {for(const auto& r:records)if(r.addr==addr)return &r;return nullptr;}
 };
+namespace MasterSettingsStore {
+struct MainInputSettings {uint8_t type,addr,bit;};
+#include "settings_normalize.inc"
+}
 class MasterScheduler {
  public:
 #include "scheduler_enums.inc"
@@ -40,6 +47,7 @@ class MasterScheduler {
   } extractor_;
   struct Settings { uint8_t suction_level=0; uint16_t select_flow=0; } desired_jbc_settings_;
   uint8_t preferred_output_addr_=0, active_output_addr_=0;
+  uint8_t main_input_source_type_=0,main_input_source_addr_=0,main_input_source_bit_=0;
   bool power_save_active_=false;
   mutable uint32_t system_alarm_sample_ms_=0, system_alarm_mask_=0;
   mutable bool system_alarm_sample_valid_=false;
@@ -50,6 +58,19 @@ class MasterScheduler {
   void buildDisplayAlarmSnapshot(bool, DisplayAlarmSnapshot& snapshot) const { snapshot=alarms; ++alarm_samples; }
   uint32_t systemInputMask(uint8_t addr=0) const;
   bool systemInputActive(uint8_t state, uint8_t addr=0) const;
+  bool mainInputSelected(unsigned,unsigned,unsigned) const;
+  bool mainInputSourceAvailable() const;
+  bool mainInputSourceActive() const;
+  bool inputRuleSourceActive(const InputActionRule&) const;
+  uint8_t onlineJbcModuleCount() const;
+  bool universalEntityBoolActive(const ModuleRecord& rec,uint8_t id) const {
+    return rec.online&&rec.universal_entities_valid&&rec.universal_entities[0].id==id&&
+      rec.universal_entities[0].len&&rec.universal_entities[0].data[0]&&rec.universal_entities[0].data[0]!='0';
+  }
+  bool automationMarker(uint8_t bit) const {return bit>=1&&bit<=8&&(logic_system_requests_.markers&(1U<<(bit-1)));}
+  bool setMainInputSource(uint8_t type,uint8_t addr,uint8_t bit,bool) {
+    main_input_source_type_=type;main_input_source_addr_=addr;main_input_source_bit_=bit;return true;
+  }
   void setLogicSystemOutput(uint8_t action, uint8_t addr, bool active);
   void requestDisplayWake(uint8_t addr);
   void setLogicMarker(uint8_t bit, bool active) { logic_system_requests_.setMarker(bit,active); }
@@ -66,9 +87,65 @@ class MasterScheduler {
 static MasterScheduler scheduler;
 static bool logic_rt_last_main_output = false;
 #include "logic_methods.inc"
+#include "logic_selected_input.inc"
 
 int main() {
   using S=MasterScheduler;
+  S selection;
+  assert(selection.mainInputSelected(0,0,0));
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_SELECTED));
+  ModuleRecord input;input.addr=0x10;input.caps=CAP_JBC_BUS;input.jbc_work_mask=1;
+  selection.registry_.records.push_back(input);
+  input.addr=0x11;input.caps=CAP_JBC_USB;input.jbc_work_mask=0;
+  selection.registry_.records.push_back(input);
+  selection.main_input_source_type_=S::INPUT_SRC_JBC_WORK;
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_SELECTED));
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_AVAILABLE));
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  selection.main_input_source_addr_=0x11;
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  selection.main_input_source_addr_=0x10;selection.registry_.records[0].online=false;
+  assert(selection.mainInputSelected(1,0x10,0));
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_AVAILABLE));
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  input={};input.addr=0x20;input.caps=CAP_INPUT_KEYS;input.io_input_mask=2;
+  selection.registry_.records.push_back(input);
+  selection.setMainInputSource(2,0x20,1,false);
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  assert(!selection.mainInputSelected(2,0x20,0));
+  selection.registry_.records[2].online=false;
+  assert(selection.mainInputSelected(2,0x20,1));
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  input={};input.addr=0x50;input.caps=CAP_ENTITY_CONTROL;input.universal_entities_valid=true;
+  input.universal_entities[0].id=254;input.universal_entities[0].data[0]='1';
+  selection.registry_.records.push_back(input);selection.setMainInputSource(3,0x50,254,false);
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_AVAILABLE));
+  assert(selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  selection.registry_.records[3].universal_entities[0].id=20;
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_AVAILABLE));
+  assert(!selection.systemInputActive(S::INPUT_STATE_MAIN_INPUT_ACTIVE));
+  for(unsigned type=0;type<4;++type){
+    const unsigned addr=type?32:0,bit=type==2?7:type==3?254:0;
+    selection.setMainInputSource(type,addr,bit,false);
+    S::InputActionRule rule;rule.enabled=true;rule.source_type=S::INPUT_SRC_MAIN_INPUT_NONE+type;
+    rule.source_addr=addr;rule.source_bit=bit;
+    assert(selection.inputRuleSourceActive(rule));
+    assert(!selection.mainInputSelected(type,addr,255));
+    if(type>=2){++rule.source_bit;assert(!selection.inputRuleSourceActive(rule));}
+    const uint32_t mask=selection.systemInputMask();
+    for(uint8_t state=21;state<=23;++state){
+      assert(bool(mask&(1UL<<state))==selection.systemInputActive(state));
+      assert(!selection.systemInputActive(state,0x20));
+    }
+  }
+  assert(!ofe_automation_inputs::validMainInputSelection(4,32,0));
+  assert(!ofe_automation_inputs::validMainInputSelection(2,32,16));
+  assert(!ofe_automation_inputs::validMainInputSelection(3,256,20));
+  ::scheduler.setMainInputSource(3,32,27,false);
+  assert(logic_signal_active("state:input:selected:3:32:27"));
+  assert(!logic_signal_active("state:input:selected:3:32:20"));
+  assert(!logic_signal_active("state:input:selected:3:288:27"));
+  assert(!logic_signal_active("state:input:selected:3:32:27junk"));
   S scheduler;
   scheduler.power_save_active_=true;
   scheduler.alarms={20, 10, 10};

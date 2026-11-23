@@ -7,6 +7,7 @@ $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $targets = @(
   @{ Name='MCU-S3'; Path='OpenFumeExtractorMaster\OpenFumeExtractorMCU_S3\src\MasterBuildConfig.h'; Prefix='MASTER_FW'; Target='MASTER'; Address='0x01'; Board='ESP32-S3, 16 MB Flash, 8 MB OPI-PSRAM, 16 modules'; Suffix='RC' },
   @{ Name='MCU-P4'; Path='OpenFumeExtractorMaster\OpenFumeExtractorMCU_P4\src\MasterBuildConfig.h'; Prefix='MASTER_FW'; Target='MASTER'; Address='0x01'; Board='Waveshare ESP32-P4 PRE-V3, 16 MB Flash, 32 MB PSRAM, 32 modules'; Suffix='RC' },
+  @{ Name='MCU-P4 PoE'; Path='OpenFumeExtractorMaster\OpenFumeExtractorMCU_P4_POE\src\MasterBuildConfig.h'; Prefix='MASTER_FW'; Target='MASTER'; Address='0x01'; Board='Waveshare ESP32-P4-WIFI6-POE-ETH V3.1+, 32 MB Flash, 32 MB PSRAM, 32 modules'; Suffix='RC' },
   @{ Name='JBC FAE Bus'; Path='Module\JbcBusModule\JbcBusModule.ino'; Prefix='OFE_MODULE_FW'; Target='JBC_BUS'; Address='0x10'; Board='ESP32 DevKit V1' },
   @{ Name='JBC USB'; Path='Module\JbcUsbModule\JbcUsbModule.ino'; Prefix='OFE_MODULE_FW'; Target='JBC_USB'; Address='0x10'; Board='ESP32-S3, USB Host' },
   @{ Name='Fan/IO'; Path='Module\FanIoModule\FanIoModule.ino'; Prefix='OFE_MODULE_FW'; Target='FAN_IO'; Address='0x20'; Board='ESP32 DevKit V1' },

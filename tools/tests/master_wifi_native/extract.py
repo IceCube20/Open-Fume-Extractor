@@ -17,4 +17,4 @@ def function(name):
 
 
 Path(sys.argv[1]).write_text("\n\n".join(function(name) for name in (
-    "wifi_start_setup_ap", "wifi_start_sta_connect", "wifi_on_sta_connected", "wifi_service_tick")), encoding="utf-8")
+    "master_time_service_tick", "wifi_start_setup_ap", "wifi_start_sta_connect", "wifi_pause_connection_for_scan", "wifi_on_sta_connected", "wifi_service_tick")), encoding="utf-8")

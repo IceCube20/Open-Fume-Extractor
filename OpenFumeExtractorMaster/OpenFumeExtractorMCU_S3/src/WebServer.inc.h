@@ -4,6 +4,15 @@
 // Included from the master sketch so route lambdas can call sketch-local handlers.
 #include "WebHomeAssistant.inc.h"
 
+static void master_time_service_tick(uint32_t now) {
+  const bool blocked=master_update_active || scheduler.firmwareUpdateActive() || master_display_ble.active() || hosted_c6_busy();
+  if (!master_time_sync.poll(now,master_network_ready(),uint32_t(master_network_ip()),
+                            master_ethernet_ready(),time(nullptr)>1700000000,blocked)) return;
+  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.cloudflare.com", "time.google.com");
+  Serial.printf("[Time] NTP start via %s; DNS %s / %s\n",master_network_transport(),
+                master_network_dns(0).toString().c_str(),master_network_dns(1).toString().c_str());
+}
+
 static void wifi_start_setup_ap() {
   // A fallback portal must not permanently disable reconnection to saved WiFi.
   WiFi.mode(wifi_ssid[0] ? WIFI_AP_STA : WIFI_AP);
@@ -45,6 +54,15 @@ static void wifi_start_sta_connect() {
   Serial.println("Web STA connecting...");
 }
 
+static void wifi_pause_connection_for_scan() {
+  if (!wifi_sta_pending || WiFi.status()==WL_CONNECTED) return;
+  WiFi.setAutoReconnect(false);
+  const bool stopped=WiFi.disconnect(false,false);
+  wifi_sta_pending=false;
+  wifi_next_retry_ms=millis()+30000UL;
+  Serial.printf("[WiFi scan] association paused; disconnect=%u\n",unsigned(stopped));
+}
+
 static void wifi_on_sta_connected() {
   if (captive_active) {
     dns.stop();
@@ -53,10 +71,6 @@ static void wifi_on_sta_connected() {
   wifi_sta_pending = false;
   wifi_sta_was_connected = true;
   captive_active = false;
-  if (!wifi_time_configured) {
-    configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.cloudflare.com", "time.google.com");
-    wifi_time_configured = true;
-  }
   Serial.print("Web STA IP ");
   Serial.println(WiFi.localIP());
   start_mdns_service();
@@ -69,11 +83,13 @@ static void wifi_service_tick() {
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
   hosted_c6().tick(now,master_ethernet_ready());
   if (hosted_c6_radio_owned()) return;
+  const bool scanning=WiFi.scanComplete()==WIFI_SCAN_RUNNING;
+  hosted_c6().pollVersion(now,master_display_ble.active() || master_update_active || scheduler.firmwareUpdateActive() || scanning || wifi_sta_pending);
   const bool ethernet=master_ethernet_ready();
   if (ethernet && captive_active) { dns.stop(); captive_active=false; }
   const bool busy=hosted_c6_busy() || master_display_ble.active() || master_update_active || scheduler.firmwareUpdateActive();
   // The policy owns radio transitions. Avoid a hosted getMode RPC every HTTP tick.
-  const auto action=master_lan_wifi_policy.tick(now,ethernet,busy,!master_lan_wifi_policy.suspended(),WiFi.scanComplete()==WIFI_SCAN_RUNNING);
+  const auto action=master_lan_wifi_policy.tick(now,ethernet,busy,!master_lan_wifi_policy.suspended(),scanning);
   if (action==MasterLanWifiPolicy::SuspendWifi) {
     // Stop only WiFi; do not power down/reset the shared C6 or its BLE owner.
     WiFi.setAutoReconnect(false);
@@ -90,15 +106,14 @@ static void wifi_service_tick() {
   if (master_network_changed()) {
     mqtt_network_reconnect_requested.store(true);
     if (master_network_ready()) {
-    if (!wifi_time_configured) {
-      configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.cloudflare.com", "time.google.com");
-      wifi_time_configured = true;
-    }
     start_mdns_service();
     mqtt_next_connect_ms = now + 1000UL;
     Serial.printf("[Network] %s IP %s\n", master_network_transport(), master_network_ip().toString().c_str());
     }
   }
+#endif
+  master_time_service_tick(now);
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
   if (ethernet) return;
 #endif
   if (!wifi_ssid[0]) return;
@@ -172,6 +187,7 @@ static void web_begin() {
   web.on("/diagnostics/events", HTTP_GET, [](){ if (web_require_auth()) web_handle_diagnostics_events(); });
   web.on("/diagnostics/control", HTTP_POST, [](){ if (web_require_auth()) web_handle_diagnostics_control(); });
   web.on("/module/label", HTTP_POST, [](){ if (web_require_auth()) web_handle_module_label(); });
+  web.on("/module/connection_warnings", HTTP_POST, [](){ if (web_require_auth()) web_handle_connection_warnings(); });
   web.on("/module/io_alias", HTTP_POST, [](){ if (web_require_auth()) web_handle_io_alias(); });
   web.on("/jbc-usb/station-name", HTTP_POST, [](){ if (web_require_auth()) web_handle_jbc_usb_station_name(); });
   web.on("/jbc-usb/config", HTTP_POST, [](){ if (web_require_auth()) web_handle_jbc_usb_config(); });

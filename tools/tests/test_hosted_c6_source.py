@@ -70,6 +70,28 @@ class HostedC6SourceTests(unittest.TestCase):
         self.assertIn('if(result.committed && self.restart_)',updater)
         self.assertIn('if (!result.recovery && io.owned) hostedDeinitWiFi()',updater)
 
+    def test_version_probe_is_deferred_read_only_and_keeps_sdk_cache(self):
+        updater=self.source('HostedC6Updater.h')
+        getter=updater.split('uint32_t slaveVersion() const {',1)[1].split('bool versionProbing()',1)[0]
+        self.assertNotIn('esp_hosted_get_coprocessor_fwversion',getter)
+        probe=updater.split('void pollVersion(',1)[1].split('uint32_t hostVersion()',1)[0]
+        self.assertIn('busy() || blocked',probe)
+        self.assertIn('!hostedIsWiFiActive() && !hostedIsBLEActive()',probe)
+        self.assertIn('30000U',probe)
+        self.assertIn('xTaskCreate(versionWorker',probe)
+        worker=updater.split('static void versionWorker(',1)[1].split('struct IO {',1)[0]
+        self.assertIn('hostedHasUpdate()',worker)
+        self.assertIn('self.slave_=value',worker)
+        self.assertLess(worker.index('self.version_last_attempt_=millis();'),worker.index('self.version_probing_=false;'))
+        self.assertNotIn('hostedInitWiFi',worker)
+        self.assertNotIn('ota_',worker)
+        server=self.source('WebServer.inc.h')
+        self.assertIn('hosted_c6().pollVersion(now,master_display_ble.active() || master_update_active || scheduler.firmwareUpdateActive() || scanning || wifi_sta_pending)',server)
+        self.assertIn('c.versionError()',self.source('WebHostedC6.inc.h'))
+        self.assertIn('esp_wifi_get_mode(&mode)',updater)
+        self.assertIn('c.controlError()',self.source('WebHostedC6.inc.h'))
+        self.assertIn('ofe_c6::RECOVERY_URL',self.source('WebHostedC6.inc.h'))
+
 
 if __name__=='__main__':
     unittest.main()

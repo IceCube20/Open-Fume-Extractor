@@ -40,7 +40,7 @@ const c=vm.createContext({uiLang:'de',logicDescriptorCache:{},universalDescripto
   fetch:async url=>({ok:url==='/state'?!stateFailure:!descriptorFailure,status:stateFailure?503:200,json:async()=>clone(url==='/state'?apiState:apiDescriptors)}),
 });
 vm.runInContext(shared,c);
-for(const name of ['escHtml','escAttr','routingSignals','dec','optionHas','ruleLabel','sourceOptions','targetOptions'])vm.runInContext(getFunction(status,name),c);
+for(const name of ['escHtml','escAttr','routingSignals','dec','optionHas','ruleLabel','ruleAvailable','sourceOptions','targetOptions'])vm.runInContext(getFunction(status,name),c);
 for(const name of ['logicHydrateSignalMetadata','logicBuildSignals','loadSignals','logicSignalOption','renderLogicSignalOptions','liveModule','liveSignalInfo'])vm.runInContext(getFunction(logic,name),c);
 const routeKey=(item,side)=>side==='inputs'?[item.source_type,item.source_addr,item.source_bit].join(','):[item.target_type,item.target_addr,item.target_bit].join(',');
 const names=list=>list.map(x=>[x.id,x.name,x.group||'']);
@@ -56,10 +56,50 @@ async function run(){
     const source=c.sourceOptions(apiState,'0,0,0'),target=c.targetOptions(apiState,'0,0,0');
     for(const [side,html] of [['inputs',source],['outputs',target]])for(const item of routing[side])assert(html.includes(`value="${routeKey(item,side)}">${c.ofeSignalEscape(item.name)}</option>`),item.id);
     assert(routing.inputs.some(x=>x.id==='jbc:0'),'All JBC input must not be missing');
+    const selections=routing.outputs.filter(x=>x.id.startsWith('extractor:select_input:'));
+    assert.equal(selections.length,1+routing.inputs.filter(x=>x.mainInput).length);
+    assert(selections.some(x=>x.id==='extractor:select_input:0:0:0'&&x.target_type===9));
+    for(const item of routing.inputs.filter(x=>x.mainInput)){
+      const action=selections.find(x=>x.id===`extractor:select_input:${item.source_type}:${item.source_addr}:${item.source_bit}`);
+      assert(action,item.id);assert.equal(action.name,item.name);
+      assert.equal(action.target_type,9+item.source_type);
+      assert.equal(action.target_addr,item.source_addr);assert.equal(action.target_bit,item.source_bit);
+      assert.equal(action.group,lang==='de'?'Haupteingang w\u00e4hlen':'Select main input');
+      assert(c.ruleAvailable(apiState,{enabled:true,source_type:1,source_addr:0,source_bit:0,...action}));
+    }
+    c.liveState={...c.liveState,main_input_source_type:3,main_input_source_addr:32,main_input_source_bit:27};
+    assert(c.liveSignalInfo('extractor:select_input:3:32:27').on);
+    assert(!c.liveSignalInfo('extractor:select_input:3:32:20').on);
+    assert(!c.ofeMainInputSelectionInfo({},'extractor:select_input:0:0:0').known);
+    assert(c.liveSignalInfo('state:input:selected:3:32:27').on);
+    assert(!c.liveSignalInfo('state:input:selected:3:32:20').on);
+    for(const bit of [21,22,23]){
+      c.liveState.system_inputs_mask=1<<bit;
+      assert(c.liveSignalInfo(`state:system:${bit}:0`).known);
+      assert(c.liveSignalInfo(`state:system:${bit}:0`).on);
+      assert(!c.liveSignalInfo(`state:system:${bit}:32`).known);
+    }
+    const inputStates=routing.inputs.filter(item=>item.source_type>=6);
+    assert.equal(inputStates.length,selections.length);
+    for(const item of inputStates)assert(c.ruleAvailable(apiState,{enabled:true,...item,target_type:1,target_addr:0,target_bit:0}));
+    const offlineState={...apiState,main_input_source_type:3,main_input_source_addr:34,main_input_source_bit:27};
+    assert(c.routingSignals(offlineState).inputs.some(item=>item.id==='state:input:selected:3:34:27'&&item.name.includes('Offline Fan')));
+    assert(!c.routingSignals(offlineState).outputs.some(item=>item.id==='extractor:select_input:3:34:27'));
+    for(const side of ['inputs','outputs']){
+      const groups=[...new Set(routing[side].map(item=>item.group||''))];
+      const expected=side==='inputs'?(lang==='de'?['Absaugung - Zustand','Haupteingang - Zustand','Haupteingang - Gew\u00e4hlt','Hauptausgang - Gew\u00e4hlt','Hauptausgang - Aktiv','System - ECO und Alarme','Module - Verbindungen','Filter - Zustand','JBC - Work / Stand']:['Extractor - State','Main input - State','Main input - Selected','Main output - Selected','Main output - Active','System - Power saving and alarms','Modules - Connections','Filter - State','JBC - Work / Stand']):
+        (lang==='de'?['','Absaugung schalten','Absaugstufe','Benutzerleistung','Haupteingang w\u00e4hlen','Hauptausgang w\u00e4hlen']:['','Switch extractor','Suction level','Custom power','Select main input','Select main output']);
+      assert.deepEqual(groups.slice(0,expected.length),expected,'Predictable group order in both languages');
+      assert.equal(groups.at(-1),lang==='de'?'Virtuelle Merker':'Virtual markers');
+    }
+    assert.deepEqual(clone(routing.outputs.filter(item=>item.target_type===4&&item.target_bit<=6).map(item=>item.target_bit)),[3,4,5,6,1,2],'Direct levels before relative actions, unchanged action IDs');
     const noJbc={...apiState,jbc_inputs_count:0,modules:apiState.modules.filter(m=>![1,9].includes(m.type))};
     const freshMainInput=c.sourceOptions(noJbc,'0,0,0',false);
     assert(freshMainInput.includes('value="0,0,0" selected'),'A fresh MCU selects no input');
     assert(!freshMainInput.includes('value="1,0,0"'),'No All JBC choice without JBC modules');
+    assert(!c.routingSignals(noJbc).outputs.some(x=>x.id==='extractor:select_input:1:0:0'));
+    assert(!selections.some(x=>x.target_addr===34),'No offline main input action');
+    assert(!selections.some(x=>x.id==='extractor:select_input:3:32:21'),'Only configured main inputs, not arbitrary booleans');
     const savedMainInput=c.sourceOptions(noJbc,'1,0,0',false);
     assert(savedMainInput.includes('value="1,0,0" selected disabled'),'Preserve explicitly saved unavailable input');
     assert(!c.sourceOptions(noJbc,'0,0,0',false).includes('value="1,0,0"'),'Choosing None removes the unavailable selection');
@@ -136,11 +176,11 @@ async function run(){
       const page=await browser.newPage({viewport:{width,height:900}});
       await page.setContent('<style>body{margin:20px;background:#171a1f;color:#eee;font:14px Arial,sans-serif}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:24px}section{min-width:0}select{width:100%;height:44px;padding:8px;color:inherit;background:#101318;border:1px solid #4b5665;border-radius:4px;margin:8px 0 20px;font:inherit}label{display:block}</style><main><section><h2>Routing</h2><label>Input<select id="ri"></select></label><label>Output<select id="ro"></select></label></section><section><h2>Designer</h2><label>Input<select id="di"></select></label><label>Output<select id="do"></select></label></section></main>');
       await page.addScriptTag({content:shared+'\n'+getFunction(logic,'logicSignalOption')+'\n'+getFunction(logic,'renderLogicSignalOptions')+'\nwindow.t=(a,b)=>a;'});
-      const inputHtml=c.sourceOptions(apiState,'3,32,27'),outputHtml=c.targetOptions(apiState,'3,80,22');
+      const inputHtml=c.sourceOptions(apiState,'9,32,27'),outputHtml=c.targetOptions(apiState,'12,32,27');
       await page.evaluate(({inputHtml,outputHtml,inputs,outputs})=>{
         document.querySelector('#ri').innerHTML=inputHtml;document.querySelector('#ro').innerHTML=outputHtml;
-        renderLogicSignalOptions(document.querySelector('#di'),inputs,'io:32:in:7');
-        renderLogicSignalOptions(document.querySelector('#do'),outputs,'uni:80:switch:22');
+        renderLogicSignalOptions(document.querySelector('#di'),inputs,'state:input:selected:3:32:27');
+        renderLogicSignalOptions(document.querySelector('#do'),outputs,'extractor:select_input:3:32:27');
       },{inputHtml,outputHtml,inputs:clone(c.signals.inputs),outputs:clone(c.signals.outputs)});
       const actual=await page.evaluate(()=>Object.fromEntries(['ri','ro','di','do'].map(id=>[id,[...document.querySelector('#'+id).options].map(o=>({value:o.value,name:o.textContent,group:o.parentElement.tagName==='OPTGROUP'?o.parentElement.label:''}))])));
       for(const [side,routeId,designerId] of [['inputs','ri','di'],['outputs','ro','do']]){
@@ -151,6 +191,10 @@ async function run(){
         assert.equal(expected.length,routes.length);
       }
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      assert.equal(await page.locator('#ri').inputValue(),'9,32,27');
+      assert.equal(await page.locator('#di').inputValue(),'state:input:selected:3:32:27');
+      assert.equal(await page.locator('#ro').inputValue(),'12,32,27');
+      assert.equal(await page.locator('#do').inputValue(),'extractor:select_input:3:32:27');
       assert.equal(await page.locator('img').count(),0,'Module names must remain text');
       await page.screenshot({path:path.join(output,`${lang}-${width}.png`),fullPage:true});
       await page.close();

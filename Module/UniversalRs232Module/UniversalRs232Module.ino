@@ -15,6 +15,7 @@
 #endif
 
 #include "src/Rs485PeripheralBus.h"
+#include "src/OfeRs485Task.h"
 #ifndef OFE_STATUS_LED_MASTER_TIMEOUT_MS
 #define OFE_STATUS_LED_MASTER_TIMEOUT_MS 8000UL
 #endif
@@ -64,7 +65,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 74
+#define OFE_MODULE_FW_PATCH 75
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -88,6 +89,7 @@ static const uint16_t FAULT_LOCAL_UART_INACTIVE = 0x0001;
 static HardwareSerial RS485(1);
 static HardwareSerial LOCAL(2);
 static Link bus(RS485);
+static OfeRs485Task rs485_worker;
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
 static bool module_eco_mode = false;
@@ -3083,10 +3085,19 @@ static void poll_rs485() {
   Frame req;
   uint8_t frames = 0;
   while (frames < 8 && bus.poll(req)) {
-    handle_frame(req);
+    { OfeRs485Task::StateGuard guard(rs485_worker); handle_frame(req); }
     ++frames;
   }
   if (frames >= 8) yield();
+}
+
+// Only the RS485 task may poll/send on the OFE bus. This also keeps the
+// discovery/announce and firmware watchdog path independent of local IO.
+static void rs485_housekeeping() {
+  OfeRs485Task::StateGuard guard(rs485_worker);
+  poll_pending_discover_response();
+  poll_join_announce();
+  fw_update_check_timeout();
 }
 
 void setup() {
@@ -3110,32 +3121,38 @@ void setup() {
   }
   LOCAL.begin(local_baud, local_serial_config, LOCAL_RX_PIN, LOCAL_TX_PIN);
   next_join_announce_ms = millis() + join_delay_ms(0);
+  // All buses, handlers, NVS and initial state are ready before the worker starts.
+  // Failed task creation automatically falls back to the original Arduino loop.
+  rs485_worker.start(poll_rs485, rs485_housekeeping);
 }
 
 void loop() {
-  const uint32_t led_now = millis();
-  update_local_fault_state(led_now);
-  const bool bus_online = last_master_ms && (uint32_t)(led_now - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS;
-  const bool local_online = local_device_online_now(led_now);
-  const bool output_active = profile_output_enabled_active();
-  ofe_status_leds.setBusOnline(bus_online);
-  ofe_status_leds.setFirmwareUpdate(fw_update_active);
-  const bool critical_fault = (fault_mask & (uint16_t)~FAULT_LOCAL_UART_INACTIVE) != 0;
-  ofe_status_leds.setModuleEvent(fault_mask ? (critical_fault ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (output_active ? OFE_LED_EVENT_EXTRACTOR_ON : (local_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
-  ofe_status_leds.tick();
   const uint32_t loop_start = micros();
-  fw_update_check_timeout();
-  poll_rs485();
-  poll_pending_discover_response();
-  poll_join_announce();
-  if (!fw_update_active) {
-    localBusPoll();
-    profile_poll_tick();
-    profile_repeat_tick();
-    check_output_failsafe();
-  } else {
-    check_output_failsafe();
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    const uint32_t led_now = millis();
+    update_local_fault_state(led_now);
+    const bool bus_online = last_master_ms && (uint32_t)(led_now - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS;
+    const bool local_online = local_device_online_now(led_now);
+    const bool output_active = profile_output_enabled_active();
+    ofe_status_leds.setBusOnline(bus_online);
+    ofe_status_leds.setFirmwareUpdate(fw_update_active);
+    const bool critical_fault = (fault_mask & (uint16_t)~FAULT_LOCAL_UART_INACTIVE) != 0;
+    ofe_status_leds.setModuleEvent(fault_mask ? (critical_fault ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (output_active ? OFE_LED_EVENT_EXTRACTOR_ON : (local_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
+    ofe_status_leds.tick();
   }
-  record_loop_time((uint32_t)(micros() - loop_start));
+  if (!rs485_worker.active()) { poll_rs485(); rs485_housekeeping(); }
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    if (!fw_update_active) {
+      localBusPoll();
+      profile_poll_tick();
+      profile_repeat_tick();
+      check_output_failsafe();
+    } else {
+      check_output_failsafe();
+    }
+    record_loop_time((uint32_t)(micros() - loop_start));
+  }
   delay(1);
 }

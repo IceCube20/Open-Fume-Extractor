@@ -16,6 +16,7 @@
 #endif
 
 #include "src/Rs485PeripheralBus.h"
+#include "src/OfeRs485Task.h"
 #ifndef OFE_STATUS_LED_MASTER_TIMEOUT_MS
 #define OFE_STATUS_LED_MASTER_TIMEOUT_MS 8000UL
 #endif
@@ -132,7 +133,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 76
+#define OFE_MODULE_FW_PATCH 77
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -154,6 +155,7 @@ static const uint16_t FAULT_LOW_RPM = 0x0400;
 
 static HardwareSerial RS485(1);
 static Link bus(RS485);
+static OfeRs485Task rs485_worker;
 static Preferences prefs;
 static OfeStatusLed ofe_status_leds;
 static bool module_eco_mode = false;
@@ -1718,10 +1720,19 @@ static void poll_rs485() {
   Frame req;
   uint8_t frames = 0;
   while (frames < 8 && bus.poll(req)) {
-    handle_frame(req);
+    { OfeRs485Task::StateGuard guard(rs485_worker); handle_frame(req); }
     ++frames;
   }
   if (frames >= 8) yield();
+}
+
+// Only the RS485 task may poll/send on the OFE bus. This also keeps the
+// discovery/announce and firmware watchdog path independent of local IO.
+static void rs485_housekeeping() {
+  OfeRs485Task::StateGuard guard(rs485_worker);
+  poll_pending_discover_response();
+  poll_join_announce();
+  fw_update_check_timeout();
 }
 
 void setup() {
@@ -1773,28 +1784,36 @@ void setup() {
   Serial.println(module_addr, HEX);
   join_announce_left = 8;
   next_join_announce_ms = millis() + join_delay_ms(join_announce_left);
+  // All buses, handlers, NVS and initial state are ready before the worker starts.
+  // Failed task creation automatically falls back to the original Arduino loop.
+  rs485_worker.start(poll_rs485, rs485_housekeeping);
 }
 
 void loop() {
-  if (io_config_transaction_active &&
-      (uint32_t)(millis() - io_config_transaction_last_ms) > IO_CONFIG_TRANSACTION_TIMEOUT_MS) {
-    io_config_transaction_active = false;
-  }
-  ofe_status_leds.setBusOnline(last_master_ms && (uint32_t)(millis() - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS);
-  ofe_status_leds.setFirmwareUpdate(fw_update_active);
-  ofe_status_leds.setModuleEvent(fault_mask ? OFE_LED_EVENT_CRITICAL : (output_enabled ? OFE_LED_EVENT_EXTRACTOR_ON : OFE_LED_EVENT_OFF));
-  ofe_status_leds.tick();
   const uint32_t loop_start_us = micros();
-  update_rpm();
-  update_generic_inputs();
-  poll_rs485();
-  poll_pending_discover_response();
-  poll_join_announce();
-  fw_update_check_timeout();
-  check_output_failsafe();
-  poll_output_power_save();
-  record_loop_time((uint32_t)(micros() - loop_start_us));
-  // Prevent the Arduino loop task from busy-spinning on one CPU core.
-  // Placed after runtime measurement so loop_max_ms reports only real work.
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    if (io_config_transaction_active &&
+        (uint32_t)(millis() - io_config_transaction_last_ms) > IO_CONFIG_TRANSACTION_TIMEOUT_MS) {
+      io_config_transaction_active = false;
+    }
+    ofe_status_leds.setBusOnline(last_master_ms && (uint32_t)(millis() - last_master_ms) <= OFE_STATUS_LED_MASTER_TIMEOUT_MS);
+    ofe_status_leds.setFirmwareUpdate(fw_update_active);
+    ofe_status_leds.setModuleEvent(fault_mask ? OFE_LED_EVENT_CRITICAL : (output_enabled ? OFE_LED_EVENT_EXTRACTOR_ON : OFE_LED_EVENT_OFF));
+    ofe_status_leds.tick();
+    update_rpm();
+    update_generic_inputs();
+  }
+  // Preserve the original single-core behavior if task creation fails.
+  if (!rs485_worker.active()) { poll_rs485(); rs485_housekeeping(); }
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    check_output_failsafe();
+  }
+  {
+    OfeRs485Task::StateGuard guard(rs485_worker);
+    poll_output_power_save();
+    record_loop_time((uint32_t)(micros() - loop_start_us));
+  }
   delay(1);
 }

@@ -56,6 +56,11 @@ try{for(const lang of ['de','en'])for(const width of [320,390,768,1440]){
   catalogValue=catalog;await page.locator('#c6_catalog_check').click();
   state.current=0;
   await page.waitForFunction(()=>document.getElementById('c6_catalog_state').textContent.includes(window.OFE_C6.de?'noch nicht bestätigt':'not yet confirmed'));
+  state.phase=6;state.error='C6_VERSION_UNAVAILABLE';
+  await page.waitForFunction(()=>document.getElementById('c6_state').textContent.includes(window.OFE_C6.de?'keine Firmwaredaten geschrieben':'no firmware data written'));
+  assert(!(await page.locator('#c6_state').textContent()).includes(lang==='de'?'nicht erreichbar':'unavailable'));
+  assert.equal(posts.length,0);
+  state.phase=0;state.error='OK';
   state.current=expected-1;
   await page.waitForFunction(()=>document.getElementById('c6_catalog_state').textContent.includes(window.OFE_C6.de?'Update verfügbar':'update available'));
  }

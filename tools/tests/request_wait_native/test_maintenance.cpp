@@ -19,6 +19,7 @@ struct ModuleRecord {
   uint8_t display_cache_pending_mask = 0;
   uint32_t display_cache_next_ms = 0, display_alarm_signature = 0, display_alarm_last_ms = 0;
   bool eco_mode = false, light_sleep = false;
+  bool eco_state_known = false;
   uint32_t eco_since_ms = 0;
 };
 struct ModuleRegistry {

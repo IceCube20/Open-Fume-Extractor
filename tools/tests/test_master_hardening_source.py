@@ -206,7 +206,7 @@ class MasterHardeningSourceTest(unittest.TestCase):
         power_save = scheduler.split("void MasterScheduler::updatePowerSave", 1)[1].split(
             "void MasterScheduler::broadcastLedSync", 1
         )[0]
-        self.assertIn("|| rec.eco_mode) continue;", power_save)
+        self.assertIn("|| (rec.eco_state_known && rec.eco_mode)) continue;", power_save)
         self.assertIn("last_power_save_apply_ms_", power_save)
         self.assertIn("setModulePowerSave(rec, true);", power_save)
         self.assertNotIn("allow_light_sleep", power_save)
