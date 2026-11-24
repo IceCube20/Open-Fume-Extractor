@@ -3,7 +3,10 @@
 ## Unterstützte Arduino-Umgebung
 
 Die zuletzt gespeicherten Buildoptionen verwenden Arduino ESP32 Core 3.x und
-folgende Zielkonfigurationen.
+folgende Zielkonfigurationen. Stand dieser Anleitung: MCU 2.1.52RC.
+Die [Versionsmatrix](Firmwarestaende.md) und der [Downloadkatalog](FIRMWARE.md)
+ordnen jede Datei ihrer Zielhardware zu; gleiche ESP32-Familie bedeutet nicht
+identische Pinbelegung oder austauschbare Firmware.
 
 ## Bibliotheken
 
@@ -11,8 +14,8 @@ Der zuletzt geprüfte lokale Stand verwendet:
 
 | Bibliothek | Version | Verwendung |
 |---|---:|---|
-| GFX Library for Arduino | 1.6.7 | beide Displaycontroller |
-| LVGL | 9.5.0 | Displayoberfläche |
+| GFX Library for Arduino | 1.6.9 | Displaycontroller |
+| LVGL | 9.6.0 | Displayoberflaeche |
 | Adafruit NeoPixel | 1.15.5 | SK6812-GRBW-Status-LEDs |
 | PubSubClient3 | 3.3.0 | MQTT im Master |
 | NimBLE-Arduino | 2.5.1 | temporäre Master-/Display-Kopplung über Bluetooth LE |
@@ -21,7 +24,7 @@ WiFi, WebServer, Preferences, LittleFS, Update, USB Host und FreeRTOS stammen
 aus dem installierten ESP32-Core. Bei einem reproduzierbaren Release die
 Bibliotheksversionen zusammen mit der verwendeten Core-Version notieren.
 
-### Master
+### MCU-S3
 
 - Board: **ESP32S3 Dev Module**
 - CPU: 240 MHz
@@ -29,11 +32,29 @@ Bibliotheksversionen zusammen mit der verwendeten Core-Version notieren.
 - PSRAM: OPI
 - Partition Scheme: **Custom**
 - USB: Hardware CDC
-- Partitionsdatei: `OpenFumeExtractorMaster/partitions.csv`
+- Sketch: `OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/OpenFumeExtractorMCU_S3.ino`
+- Partitionsdatei: `OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/partitions.csv`
 
 Das Custom-Layout enthält zwei OTA-Slots mit je `0x330000`, 256 KB NVS, etwa
 9,25 MB LittleFS und 64 KB Coredump. In Arduino IDE muss **Custom** gewählt sein,
 damit die lokale `partitions.csv` verwendet wird.
+
+### MCU-P4: zwei getrennte Builds
+
+Die P4-MCUs verwenden Arduino-ESP32 **3.3.12**, ESP-IDF **5.5.5** und
+ESP-Hosted im MCU **2.12.13**. Die SDIO-Pins und Chiprevisionsgrenzen werden
+boardbezogen vorbereitet, nicht zwischen den Boards vertauscht.
+
+| Ziel | Sketchordner | Chiprevision | Kapazitaet |
+|---|---|---|---|
+| Waveshare Module DEV KIT PRE-V3 | `OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4` | PRE-V3, Headerbereich 1..199 | 16 MB Flash / 32 MB PSRAM, 32 Module |
+| Waveshare WIFI6-POE-ETH V3.1+ | `OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4_POE` | 3.1 bis 3.99 | getestetes Board: 32 MB Flash / 32 MB PSRAM, 32 Module |
+
+Die erlaubten Revisionswerte im Image-Header sind 1..199 bzw. 301..399;
+das PRE-V3-Profil ist fuer die unterstuetzte aeltere P4-Hardware vorgesehen.
+Die P4-Partitionsdateien im jeweiligen Sketch vor dem Erstflash verwenden.
+Ein App-OTA ersetzt weder Bootloader noch Partitionslayout.
+Boarddetails: [PoE V3](MCU-P4-PoE-V3.md).
 
 ### ESP32-Standardmodule
 
@@ -86,6 +107,18 @@ Kompilieren die erzeugte `.bin` anhand der OFE-Signatur prüfen. Die Firmwarever
 wird nur an einer Makro-Stelle im jeweiligen Sketch beziehungsweise beim Master
 in `src/MasterBuildConfig.h` gepflegt.
 
+Oeffentliche MCU-Builds werden aus isolierten Community-Snapshots erzeugt:
+
+```powershell
+.\tools\build_community_release.ps1 -Jobs 4
+.\tools\prepare_github_release.ps1 -ValidateOnly
+```
+
+Das baut die drei MCU-Ziele, prueft die Exporte und flasht keine Hardware.
+Die anschliessende Freigabepaketierung mit `prepare_github_release.ps1` benoetigt
+den privaten Signaturschluessel des Herausgebers; dieser ist nicht im Repository.
+Lokale Developer-Builds nicht als Community-Dateien veroeffentlichen.
+
 Die aktuelle Versionsmatrix wird mit folgendem Befehl neu erzeugt:
 
 ```powershell
@@ -103,10 +136,14 @@ abgelegt werden. Der Master enthält nur den öffentlichen Verifikationsschlüss
 
 ## Update über den Master
 
-1. **Updates** öffnen.
-2. Bei Master-OTA die Master-BIN auswählen oder bei Modul-OTA zuerst das Zielmodul.
+1. **Updates** oeffnen.
+2. Bei MCU-OTA die passende signierte App-BIN auswaehlen oder bei Modul-OTA zuerst das Zielmodul.
 3. Prüfen, ob erkannte Version und Zieltyp stimmen.
 4. Update starten und bis zur Fertigmeldung warten.
+
+Fuer OTA die App-Datei verwenden, nicht die fuer den Erstflash zusammengefuegte
+`merged.bin`. MCU-Chip und Revisionsbereich muessen passen; auch der
+Entwicklermodus kann diese Hardwarepruefung nicht abschalten.
 
 Der Master zeigt bei der Modulauswahl die aktuell installierte Firmware und nach
 der Dateiprüfung die neue Firmwareversion. Display-Updates können über RS485 oder
@@ -115,6 +152,27 @@ bei gekoppelten Displays über WLAN erfolgen.
 Wird ein Modulupdate abgebrochen, sendet der Master einen Abbruch an das Ziel,
 damit es den Zustand **FW busy** verlässt. Bei einem Stromausfall während des
 Schreibens das Modul lokal per USB wiederherstellen.
+
+## USB und C6 getrennt aktualisieren
+
+Beim P4 waehlt **Von USB installieren** die Datei aus einem Stickordner.
+Das startet noch kein Update: Version und Ziel kontrollieren und den jeweiligen
+Installationsknopf gesondert bestaetigen. S3 besitzt diesen USB-Host-Pfad nicht.
+Siehe [USB-Browser](USB.md).
+
+Der C6 ist ein eigener Funkprozessor, nicht die MCU-P4-App. Unter
+**ESP32-C6 / WLAN / Bluetooth** zuerst Freigaben pruefen, dann die Datei laden und
+pruefen, zuletzt installieren. C6-Updates nur ueber LAN starten; WLAN und Bluetooth
+werden unterbrochen. Passend zum MCU-Treiber ist 2.12.13 die Basisfreigabe.
+Die Freigabe von C6 2.13.1 gilt fuer das exakt getestete PoE-V3.2-/32-MB-Profil,
+nicht pauschal fuer alle P4-Boards. Katalog, Hash und Boardauswahl sind verbindlich.
+
+Private Developer-Builds bieten fuer beide P4-Profile eine Auswahl numerischer
+Espressif-Versionen zum Testen und fuer ausdruecklich bestaetigte Rueckgaenge.
+Ein gefundenes Upstream-Image ist noch keine OFE-Freigabe. Vor Tests den
+boardgenauen UART-Wiederherstellungsweg pruefen. Eine unbekannte installierte
+C6-Version berechtigt nicht automatisch zum Flashen.
+Details: [C6-Katalog und Wiederherstellung](Hosted-C6-Catalog.md).
 
 ## Entwicklermodus
 

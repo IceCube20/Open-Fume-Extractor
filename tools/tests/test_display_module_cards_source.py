@@ -10,6 +10,26 @@ NAMES = ('DisplayModule_320x480', 'DisplayModule_800x480',
 
 
 class DisplayModuleCardTests(unittest.TestCase):
+    def test_alarm_list_has_same_bounds_as_module_list(self):
+        import re
+        for name in NAMES:
+            sketch = (ROOT / 'Module' / name / (name + '.ino')).read_text(encoding='utf-8-sig')
+            for setter in ('pos', 'size'):
+                module = re.search(r'lv_obj_set_' + setter + r'\(ui_module_list, ([\d, ]+)\)', sketch).group(1)
+                alarm = re.search(r'lv_obj_set_' + setter + r'\(ui_alarm_list, ([\d, ]+)\)', sketch).group(1)
+                self.assertEqual(module, alarm, name)
+
+    def test_local_connection_fault_is_decoded_by_module_type(self):
+        for name in NAMES:
+            with self.subTest(display=name):
+                sketch = (ROOT / 'Module' / name / (name + '.ino')).read_text(encoding='utf-8-sig')
+                decoder = function(sketch, 'fault_name')
+                self.assertIn('module_type == MODULE_UNIVERSAL_RS232 || module_type == MODULE_MODBUS_RTU', decoder)
+                self.assertIn('add_tr("Local connection disconnected", "Lokale Verbindung getrennt")', decoder)
+                self.assertIn('if (value & 0x0100) add_tr("No speed feedback"', decoder)
+                self.assertIn('case DISPLAY_ALARM_OUTPUT_FAULT: return fault_name(value, type);', sketch)
+                self.assertIn('fault_name(m.output_fault | m.io_faults, m.type)', sketch)
+
     def test_health_and_bar_helpers_are_shared_without_transport_side_effects(self):
         helpers = [(ROOT / 'Module' / name / 'src/OfeDisplayModuleCardsUi.inc.h').read_bytes() for name in NAMES]
         self.assertTrue(all(helper == helpers[0] for helper in helpers))

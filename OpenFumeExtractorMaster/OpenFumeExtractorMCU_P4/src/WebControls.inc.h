@@ -904,6 +904,26 @@ static void web_handle_io_config() {
       const uint8_t c = (uint8_t)name[i];
       if (c >= 32 && c != 127 && c != '"' && c != '\'' && c != '<' && c != '>') payload[len++] = c;
     }
+  } else if (kind == "led_strip" || kind == "led_channel") {
+    auto number=[&](const char* key,long minimum,long maximum,long& value)->bool{
+      if(!web.hasArg(key))return false;const String text=web.arg(key);char* end=nullptr;
+      value=strtol(text.c_str(),&end,10);return text.length()&&end&&!*end&&value>=minimum&&value<=maximum;
+    };
+    long v[10]={0};
+    if(kind=="led_strip"){
+      if(!number("pin",-1,33,v[0])||!number("model",0,3,v[1])||!number("brightness",0,100,v[2])||!number("count",1,128,v[3])){
+        web.send(400,"text/plain; charset=utf-8","invalid LED strip");return;
+      }
+      payload[0]=8;payload[1]=v[0]<0?255:v[0];payload[2]=v[1];payload[3]=v[2];put_u16_le(payload+4,v[3]);len=6;
+    }else{
+      const char* keys[]={"index","enabled","first","count","r","g","b","w","effect","period_ms"};
+      const long low[]={0,0,0,0,0,0,0,0,0,100},high[]={31,1,127,128,255,255,255,255,2,10000};
+      for(uint8_t i=0;i<10;++i)if(!number(keys[i],low[i],high[i],v[i])){web.send(400,"text/plain; charset=utf-8","invalid LED channel");return;}
+      payload[0]=9;payload[1]=v[0];payload[2]=v[1];put_u16_le(payload+3,v[2]);put_u16_le(payload+5,v[3]);
+      for(uint8_t i=0;i<5;++i)payload[7+i]=v[4+i];put_u16_le(payload+12,v[9]);len=14;
+      const String name=web.arg("name");
+      for(uint8_t i=0;i<name.length()&&len<32;++i){const uint8_t c=name[i];if(c>=32&&c!=127&&c!='|'&&c!='"'&&c!=39&&c!='<'&&c!='>')payload[len++]=c;}
+    }
   } else if (kind == "fan") {
     payload[0] = IO_CONFIG_FAN;
     payload[1] = (uint8_t)(web.arg("enable_pin").toInt() < 0 ? 0xFF : web.arg("enable_pin").toInt());

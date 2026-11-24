@@ -7,6 +7,14 @@ MCU = ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 
 
 class ConnectionWarningTests(unittest.TestCase):
+    def test_bridges_report_missing_device_before_first_response(self):
+        for name in ('UniversalRs232Module', 'ModbusRtuModule'):
+            source = (ROOT / 'Module' / name / (name + '.ino')).read_text(encoding='utf-8')
+            with self.subTest(module=name):
+                self.assertIn('if (!local_device_online_now(now)) fault_mask |= FAULT_LOCAL_UART_INACTIVE;', source)
+                self.assertNotIn('if (last_local_rx_ms && !local_device_online_now(now))', source)
+                self.assertIn('append_entity_bool_safe(resp.payload, o, 1, local_device_online_now(), age)', source)
+
     def test_single_policy_for_web_and_display_alarms(self):
         web = (MCU / 'WebStatus.inc.h').read_text(encoding='utf-8')
         scheduler = (MCU / 'MasterScheduler.cpp').read_text(encoding='utf-8')
@@ -56,6 +64,14 @@ class ConnectionWarningTests(unittest.TestCase):
         web = (MCU / 'WebStatus.inc.h').read_text(encoding='utf-8')
         self.assertIn('data-i18n="connection_monitoring"', web)
         self.assertIn('colspan="15"', web)
+
+    def test_compact_monitor_checkbox_without_redundant_state_text(self):
+        web = (MCU / 'WebStatus.inc.h').read_text(encoding='utf-8')
+        row = next(line for line in web.splitlines() if line.startswith("let rows='';(d.modules"))
+        self.assertIn('class="connection-monitor-control"', row)
+        self.assertIn('class="connection-monitor-toggle"', row)
+        self.assertNotIn("connection_warnings_enabled!==false?t('on'):t('off')", row)
+        self.assertIn('width:18px;height:18px;min-height:18px;margin:0;padding:0', web)
 
 
 if __name__ == '__main__':

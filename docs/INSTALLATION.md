@@ -2,7 +2,9 @@
 
 ## Required hardware
 
-- ESP32-S3 master with 16 MB flash and 8 MB OPI PSRAM
+- one supported MCU: ESP32-S3 (16 MB flash / 8 MB OPI PSRAM), Waveshare
+  MCU-P4 PRE-V3 (16 MB release profile / 32 MB PSRAM), or Waveshare
+  MCU-P4 WIFI6-PoE-ETH V3.1+ (32 MB flash / 32 MB PSRAM)
 - at least one compatible OFE module
 - automatic-direction TTL-to-RS485 transceiver for each OFE node
 - stable 5 V supply with adequate current reserve
@@ -41,12 +43,20 @@ new repository.
 
 Expected flash sizes:
 
-- Master, JBC USB and both displays: **16 MB** targets
+- MCU-S3, MCU-P4 PRE-V3, JBC USB and all four displays: **16 MB** release profiles
+- MCU-P4 WIFI6-PoE-ETH V3.1+: **32 MB** release profile
 - JBC FAE Bus, Fan/IO, Fan/IO Pro, Weller, Universal RS232 and Modbus RTU:
   **4 MB** ESP32 targets
 
 Writing a 16 MB merged image to a 4 MB ESP32, or the reverse, is the wrong target
 selection and must be avoided.
+
+P4 PRE-V3 and PoE V3 must also match their image silicon-revision range;
+a large enough flash chip alone is not sufficient. Do not force a mismatched
+image. Back up an existing installation before changing partition layouts.
+
+After commissioning, continue with the [current web guide](WEB-INTERFACE.md),
+[module configuration](MODULES.md) and, on P4, [USB storage](USB.md).
 
 ## OFE RS485 bus
 

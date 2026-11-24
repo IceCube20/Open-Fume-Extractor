@@ -1,6 +1,6 @@
-# Master Guide
+# MCU Guide
 
-The Open Fume Extractor Master is the central controller for the OFE RS485 bus.
+The Open Fume Extractor MCU (Main Control Unit) is the central controller for the OFE RS485 bus.
 It discovers modules, assigns addresses, evaluates extraction and Boolean logic,
 publishes Home Assistant entities, forwards alarms to displays and distributes
 signed firmware updates.
@@ -19,11 +19,15 @@ signed firmware updates.
 
 For a new controller, use the
 [browser-based USB flasher](https://icecube20.github.io/Open-Fume-Extractor/)
-and select **Open Fume Extractor Master**. The `-merged.bin` image is a complete
+and select the exact **MCU-S3**, **MCU-P4 PRE-V3** or **MCU-P4 PoE V3** target. The `-merged.bin` image is a complete
 first-install image and is written at address `0x0`.
 
 Use the normal signed `.bin` file only on the master's **Updates** page. Never
 upload a merged image through OTA.
+
+MCU-S3 supports 16 modules; both P4 profiles support 32. The PRE-V3 P4 and
+PoE V3 images have different silicon/board/flash profiles and are not interchangeable.
+See [Installation](INSTALLATION.md) and the [PoE board guide](MCU-P4-PoE-V3.md).
 
 ## First-time setup
 
@@ -47,6 +51,13 @@ After a first flash or `network reset`, the master starts a setup access point.
 If the login is lost, connect the serial console at 115200 baud and run
 `webauth reset`. The default credentials are setup credentials and must be
 changed again after the next login.
+
+## Appearance and Everyday Use
+
+The header offers Auto/Light/Dark appearance, saved per browser and MCU address.
+Status, module inventory and Logic Designer use responsive layouts for desktop
+and phone. See the [web interface guide](WEB-INTERFACE.md) for current controls,
+selection gestures, graph limits, module monitoring and file workflows.
 
 ## Discover and address modules
 
@@ -72,9 +83,18 @@ an available compatible output and can fail over when it disappears. A manually
 selected output remains explicit; if that module is offline, the system reports
 that no main extraction output is available.
 
+A fresh installation starts with no main input selected. All-JBC Work and Stand
+are explicit signal selections, not a replacement for assigning the intended
+inputs. Additional rules can be configured independently of a main input.
+
 After selecting both sides, verify the complete path shown on the Status page.
 The system is not ready while a required input/output is missing or a critical
 remembered module is offline.
+
+Optional downstream-disconnection warnings can be muted with the module-list
+Connection monitoring checkbox. This is not removal of the module and never
+suppresses an offline OFE node or a required disconnected output. See
+[alarms and indicators](OPERATION.md).
 
 ## Extraction settings
 
@@ -158,6 +178,29 @@ Ed25519 signature must be valid.
   leave firmware-busy state.
 - Use the developer update path only on private development builds.
 
+### Hosted C6 on MCU-P4
+
+Use the C6 section on Updates only for the P4's WLAN/Bluetooth coprocessor.
+Check the installed C6 version separately from the MCU's Hosted driver version.
+The regular updater uses the exact board-specific approved image. C6 2.13.1 is
+approved with driver 2.12.13 only for the owner-tested PoE silicon 3.2 / 32 MiB
+combination; PRE-V3 and other profiles retain their own approvals.
+
+Keep Ethernet connected, back up settings, confirm a recovery path, download
+and verify the image, then start installation explicitly. A version check or
+file selection does not start flashing. Do not assume an MCU can recover an
+unresponsive C6 over SDIO. See [C6 approvals/recovery](Hosted-C6-Catalog.md)
+for unknown/legacy versions and the separate private-developer version selector.
+
+### USB Files on P4
+
+Open the dedicated USB page or use the connected-stick header icon. Install/Load
+from USB opens a contextual picker; Save to USB chooses a folder and filename.
+Profiles, backups, traces and firmware keep their existing validators and
+separate confirmation steps. Up to four compatible mass-storage devices can
+be connected, with one selected filesystem at a time. See [USB storage](USB.md).
+MCU-S3 does not expose this file manager.
+
 ## Backup and restore
 
 The JSON backup includes WiFi, web login, MQTT credentials and CA certificate,
@@ -171,7 +214,10 @@ main routing, extraction settings, rules, MQTT and display pairing.
 
 The master is the authoritative alarm source for web UI, displays and MQTT.
 Yellow indicates a warning, while red indicates a critical fault. Status LED
-brightness can be changed under **Network Setup > Status LEDs**.
+brightness can be changed under **Network/System > Status LEDs**.
+Physical and virtual MCU EVT indications use the same alarm policy from
+2.1.52. Muted optional links do not create a hidden yellow warning; real faults
+and required disconnected outputs remain visible.
 
 See [OPERATION.md](OPERATION.md) for LED effects and alarm behavior.
 

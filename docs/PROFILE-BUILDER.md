@@ -22,6 +22,15 @@ Designer consume the same resulting descriptor.
    `profile_active=yes`.
 6. Test read and write operations before assigning an extraction role.
 
+### P4 USB Import/Export
+
+Load from USB selects a profile into the editor, not directly into the module.
+Validate and transfer it explicitly. Save to USB chooses the destination folder
+and filename for the expert profile, Protocol Builder or Register Map export.
+The dedicated [USB file manager](USB.md) handles folders and drive selection.
+On a phone, use the editor's header close control and scroll inside the editor;
+file import/export is kept separate from the form's commit action.
+
 ## Common profile header
 
 ```text
@@ -95,6 +104,18 @@ Typical functions are `read_discrete`, `read_coil`, `write_coil`, `read_input`,
 `read_holding` and `write_holding`. Use the actual zero-based protocol register,
 not a manual's display notation such as 30001 or 40001 unless the device manual
 explicitly states otherwise.
+
+## Local Link and Timeout Diagnostics
+
+OFE-online confirms communication with the bridge, not with the serial/Modbus
+device. A never-connected or expired local link is shown as local device-bus
+loss. Repeated answer timeouts are separate from the absence of a device;
+transient/trailing counters can remain as history after recovery.
+
+Connection monitoring controls only optional link warnings in the MCU alarm
+centre. It does not stop profile polling or make old values current. A selected
+required output must still report device-bus failure even when warnings are
+muted. Do not use stale feedback as evidence of safe operation.
 
 ## Testing
 

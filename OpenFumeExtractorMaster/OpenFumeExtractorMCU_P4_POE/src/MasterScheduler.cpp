@@ -566,6 +566,16 @@ static bool universal_merge_entity_response(ModuleRecord& rec, const Frame& resp
     const uint8_t len = response.payload[o++];
     const uint16_t age = get_u16_le(response.payload + o); o += 2;
     if (o + len > response.len) break;
+    // Fan/IO LED bank: one compact TLV instead of 32 individual polls.
+    if ((rec.type == MODULE_FAN_IO || rec.type == MODULE_FAN_IO_PRO) && id == 99 && len == 8) {
+      const uint32_t states=get_u32_le(response.payload+o),enabled=get_u32_le(response.payload+o+4);
+      for(uint8_t bit=0;bit<32;++bit)if(enabled&(uint32_t(1)<<bit)){
+        const uint8_t entity=100+bit,value=(states>>bit)&1U;
+        remember_universal_entity_state(rec,entity,&value,1);
+        if(seen_profile)seen_profile[entity>>3]|=(uint8_t)(1U<<(entity&7U));
+      }
+      o+=len;continue;
+    }
 
     bool may_store = true;
     if (id < 20 && !find_universal_entity_state(rec, id)) {
@@ -629,6 +639,11 @@ static const char* schedulerFaultText(uint16_t faults, uint8_t module_type = MOD
   if (!faults) return "OK";
   if ((faults & 0x0001U) && module_type == MODULE_WELLER_ZERO_SMOG) return "Weller device bus error";
   if ((faults & 0x0001U) && (module_type == MODULE_UNIVERSAL_RS232 || module_type == MODULE_MODBUS_RTU)) return "Local device bus inactive";
+  if (module_type == MODULE_UNIVERSAL_RS232 || module_type == MODULE_MODBUS_RTU) {
+    if (faults & ofe_local_diag::RESPONSE_TIMEOUT) return "Repeated response timeouts";
+    if (faults & ofe_local_diag::CHECKSUM_ERRORS) return "Repeated checksum errors";
+    if (faults & ofe_local_diag::MODBUS_EXCEPTION) return "Repeated Modbus exceptions";
+  }
   if (faults & 0x0100U) return "No speed feedback";
   if (faults & 0x0400U) return "Low RPM";
   if (faults & 0x0200U) return "MCU timeout";
@@ -3310,6 +3325,8 @@ uint16_t MasterScheduler::systemJbcError() const {
   } else {
     if (output_fault & (FAN_FAULT_NO_TACH | FAN_FAULT_LOW_RPM)) error |= JBC_STOP_BLOWER;
     uint16_t ignored = FAN_FAULT_NO_TACH | FAN_FAULT_LOW_RPM;
+    if (out->type == MODULE_UNIVERSAL_RS232 || out->type == MODULE_MODBUS_RTU)
+      ignored |= ofe_local_diag::WARNING_MASK;
     if (generic_filter_sensor) ignored |= GENERIC_FILTER_WARN | GENERIC_FILTER_FULL;
     if (output_fault & (uint16_t)~ignored) error |= JBC_STOP_SYSTEM;
   }

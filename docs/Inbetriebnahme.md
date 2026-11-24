@@ -1,10 +1,15 @@
 # Inbetriebnahme
 
-Diese Anleitung beschreibt den ersten Start eines vollständigen OFE-Systems.
+Diese Anleitung beschreibt den ersten Start eines vollstaendigen OFE-Systems mit MCU 2.1.52RC.
+Die Bedienoberflaeche nennt den Controller **MCU-S3** oder **MCU-P4**.
+Aktuelle Bedienhinweise stehen in [Bedienung und Diagnose](Bedienung-Diagnose.md).
 
 ## Voraussetzungen
 
-- ESP32-S3-Master mit 16 MB Flash und 8 MB OPI-PSRAM
+- MCU-S3: ESP32-S3 mit 16 MB Flash und 8 MB OPI-PSRAM, bis zu 16 Module
+- oder MCU-P4: unterstuetztes Waveshare PRE-V3-Board mit 16 MB Flash / 32 MB PSRAM
+- oder MCU-P4-PoE: Waveshare ESP32-P4-WIFI6-POE-ETH V3.1+, mit eigenem Buildprofil;
+  das getestete V3.2-Board besitzt 32 MB Flash / 32 MB PSRAM; beide P4-Profile erlauben bis zu 32 Module
 - mindestens ein OFE-Modul
 - RS485-Verkabelung mit gemeinsamer Masse
 - stabile 5-V-Versorgung mit ausreichender Stromreserve
@@ -59,19 +64,26 @@ scan
 ## 3. Master ins Netzwerk bringen
 
 Ohne gültige WLAN-Konfiguration startet der Master seinen Einrichtungszugangspunkt.
-SSID und ein zufälliges AP-Passwort werden dabei auf der seriellen Konsole
-ausgegeben. Beim ersten Start erzeugt der Master außerdem ein eigenes Web-Passwort
-für den Benutzer `admin` und gibt es einmal seriell als `[AUTH] initial web ...`
-aus. Es gibt kein universelles Standardpasswort mehr. Beide Werte werden im NVS
-gespeichert; `webauth reset` erzeugt bei Bedarf ein neues Web-Passwort und zeigt
-es seriell an.
+SSID und AP-Passwort werden dabei auf der seriellen Konsole
+ausgegeben. Beim ersten Start uebernimmt die Community-Firmware fuer den Benutzer
+`admin` das kompilierte Einrichtungskennwort `extractor123` und zeigt es seriell
+als `[AUTH] initial web ...` an. Das AP-Kennwort ist im Community-Standard ebenfalls
+`extractor123`. Eigene Builds koennen andere Bootstrap-Werte enthalten. Bereits im
+NVS gespeicherte Zugangsdaten bleiben erhalten. Das Web-Kennwort bei der Einrichtung
+unbedingt aendern. `webauth reset` stellt den kompilierten Web-Einrichtungszugang
+wieder her und zeigt ihn seriell an; es erzeugt kein neues Zufallskennwort.
 
-Danach unter **Netzwerk Setup** folgende Bereiche konfigurieren:
+Danach unter **Netzwerk/System** folgende Bereiche konfigurieren:
 
 1. WLAN-Zugang und optional feste IP
 2. Web-Login
 3. MQTT und optional TLS-CA-Zertifikat
 4. Status-LEDs
+
+Beim P4 werden LAN und WLAN getrennt konfiguriert. Ethernet wird bei verfuegbarer
+Verbindung bevorzugt; beim Umschalten zeigt das Header-Symbol den aktiven Transport.
+Feste IPs fuer LAN und WLAN eindeutig vergeben. Auch eine parallel laufende alte MCU
+braucht eine andere IP, einen eigenen Hostnamen und einen eigenen MQTT-Basispfad.
 
 Netzwerkänderungen können einen Neustart erfordern. LED- und MQTT-Einstellungen
 werden getrennt gespeichert und angewendet.
@@ -89,6 +101,9 @@ Scan kann nicht mehr vorhandene Module aus dem Ausbau entfernen.
 
 ## 5. Absaugung konfigurieren
 
+Eine frisch eingerichtete MCU startet mit **Kein Eingang**. **Alle JBC-Module**
+nur bewusst waehlen, wenn diese Sammelfunktion gewuenscht ist.
+
 Auf der Statusseite:
 
 1. **Haupteingang Absaugung** wählen, beispielsweise alle JBC-Module oder einen
@@ -103,10 +118,14 @@ Ohne gültigen Haupteingang oder Hauptausgang meldet das System **Nicht bereit**
 
 ## 6. Backup anlegen
 
-Unter **Netzwerk Setup > Backup / Restore** ein JSON-Backup herunterladen. Es
+Unter **Netzwerk/System > Backup / Restore** ein JSON-Backup herunterladen. Es
 enthält sensible Daten wie WLAN-, Web- und MQTT-Zugangsdaten sowie Zertifikate.
 Das Backup wird nur bei einem ausdrücklichen Restore eingespielt und nicht bei
 jedem Neustart.
+
+Auf dem P4 laesst sich das Backup auch in einem ausgewaehlten Ordner auf einem
+USB-Stick speichern. Die Dateiauswahl allein fuehrt keinen Restore aus; den Import
+gesondert bestaetigen. Siehe [USB-Browser](USB.md).
 
 Zusätzlich separat sichern:
 
@@ -125,3 +144,6 @@ Zusätzlich separat sichern:
 - MQTT-Entities sind in Home Assistant verfügbar
 - Einstellungen bleiben nach einem Master-Neustart erhalten
 - Backup exportieren, testweise wiederherstellen und erneut prüfen
+- beim P4 LAN/WLAN-Wechsel und getrennte IP-Konfiguration pruefen
+- optionale lokale Verbindungswarnung und Fehler eines benoetigten Hauptausgangs getrennt testen
+- virtuelle LED-Ausgaenge nur als Anzeige verwenden, nicht als Sicherheitsfunktion

@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'updates/hosted-c6.json'
+      - 'updates/hosted-c6*.json'
       - 'tools/maintenance/check_c6_upstream.cjs'
       - 'tools/tests/test_c6_upstream.cjs'
       - '.github/workflows/c6-upstream.yml'

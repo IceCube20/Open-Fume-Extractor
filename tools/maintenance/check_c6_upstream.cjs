@@ -23,8 +23,8 @@ function approvedBaseline(catalog) {
   if (!approved.length) throw Error('No approved baseline');
   for (const r of approved) {
     if (!r.host || !r.coprocessor || r.transport !== 'sdio' || r.coprocessor.chip !== 'esp32c6' ||
-        typeof r.board !== 'string' || !/^[a-z0-9-]{1,96}$/.test(r.board) ||
-        version(r.host.esp_hosted) !== version(r.coprocessor.version)) throw Error('Invalid approved combination');
+        typeof r.board !== 'string' || !/^[a-z0-9.-]{1,96}$/.test(r.board)) throw Error('Invalid approved combination');
+    version(r.host.esp_hosted); version(r.coprocessor.version);
     version(r.host.arduino_esp32); version(r.host.esp_idf);
   }
   return approved.reduce((a, b) => version(a.coprocessor.version) > version(b.coprocessor.version) ? a : b).coprocessor.version;
@@ -152,7 +152,7 @@ async function main() {
   if (args.some(a => a !== '--publish')) throw Error('Usage: node check_c6_upstream.cjs [--publish]');
   const notify = args.includes('--publish');
   if (notify && process.env.GITHUB_ACTIONS !== 'true') throw Error('--publish is restricted to GitHub Actions');
-  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../../updates/hosted-c6.json'), 'utf8'));
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../../updates/hosted-c6-v2.json'), 'utf8'));
   const token = process.env.GITHUB_TOKEN || '';
   const report = await discover(catalog, fetch, token);
   const notices = notify ? await publish(report, catalog, {repo: process.env.GITHUB_REPOSITORY, token,

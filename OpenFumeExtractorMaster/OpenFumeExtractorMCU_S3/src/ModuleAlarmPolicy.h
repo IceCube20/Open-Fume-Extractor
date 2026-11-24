@@ -1,13 +1,15 @@
 #pragma once
 #include "ModuleRegistry.h"
 #include "DisplayModuleHealth.h"
+#include "LocalBusDiagnostics.h"
 
 namespace ofe_module_alarm {
 struct State {
   uint16_t faults = 0;
+  uint16_t warning_faults = 0;
   bool offline = false, connection_warning = false, connection_error = false;
-  bool warning() const { return connection_warning || (faults & 0x0002U); }
-  bool error() const { return offline || connection_error || (faults & 0xFFFDU); }
+  bool warning() const { return connection_warning || (faults & (0x0002U | warning_faults)); }
+  bool error() const { return offline || connection_error || (faults & (uint16_t)~(0x0002U | warning_faults)); }
 };
 
 inline bool supportsConnectionWarning(const ModuleRecord& rec) {
@@ -24,11 +26,16 @@ inline State evaluate(const ModuleRecord& rec, uint8_t active_output, uint8_t pr
   const bool local_link_fault = (rec.type == MODULE_WELLER_ZERO_SMOG ||
     rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU) && (state.faults & 1U);
   const bool required = rec.addr == active_output || rec.addr == preferred_output;
+  const bool bridge = rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU;
+  if (bridge && (local_link_fault || rec.connection_warnings_muted))
+    state.faults &= (uint16_t)~ofe_local_diag::RESPONSE_TIMEOUT;
   // These modules use bit 0 for a missing device connection, not a hardware fault.
   // An old output role or enabled flag must not promote an optional link to an error.
   if (local_link_fault && !required) state.faults &= 0xFFFEU;
   if (!required && !rec.role_output && !rec.output_enabled)
     state.faults &= 0xF8E0U;
+  if (rec.type == MODULE_UNIVERSAL_RS232 || rec.type == MODULE_MODBUS_RTU)
+    state.warning_faults = state.faults & ofe_local_diag::WARNING_MASK;
   const bool disconnected =
     ((rec.caps & CAP_JBC_BUS) && (!(rec.jbc_link_flags & FAST_FLAG_CONNECTED) || !rec.station_addr)) ||
     ((rec.caps & CAP_JBC_USB) && !(rec.jbc_link_flags & FAST_FLAG_CONNECTED)) ||

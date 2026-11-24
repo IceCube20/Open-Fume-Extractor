@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "src/LocalBusDiagnostics.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <Preferences.h>
@@ -65,7 +66,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 62
+#define OFE_MODULE_FW_PATCH 65
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -85,6 +86,7 @@ static const uint8_t DEFAULT_MODULE_ADDR = 0x60;
 static const uint32_t FW_UPDATE_TIMEOUT_MS = 30000UL;
 static const uint32_t OUTPUT_FAILSAFE_TIMEOUT_MS = 8000UL;
 static const uint16_t FAULT_LOCAL_UART_INACTIVE = 0x0001;
+static ofe_local_diag::State local_diagnostics;
 
 static HardwareSerial RS485(1);
 static HardwareSerial LOCAL(2);
@@ -156,6 +158,7 @@ static uint32_t last_local_activity_ms = 0;
 static char last_local_rx_text[32] = "-";
 static char last_local_tx_text[32] = "-";
 static char last_local_rx_status[20] = "-";
+static uint8_t last_modbus_exception = 0;
 static uint32_t last_master_ms = 0;
 static uint16_t fault_mask = 0;
 static bool output_failsafe_active = false;
@@ -331,7 +334,10 @@ static bool modbus_recovering = false;
 static uint32_t modbus_recovery_ms = 0;
 
 static const char fault_map_text[] =
-  "0x0001,warn,Local UART inactive,Lokaler UART inaktiv,0\n";
+  "0x0001,warn,Local UART inactive,Lokaler UART inaktiv,0\n"
+  "0x0800,warn,Repeated response timeouts,Wiederholte Antwort-Timeouts,0\n"
+  "0x1000,warn,Repeated checksum errors,Gehaeufte Pruefsummenfehler,0\n"
+  "0x2000,warn,Repeated Modbus exceptions,Wiederholte Modbus-Exceptions,0\n";
 
 
 
@@ -615,6 +621,7 @@ static void save_profile_config() {
 }
 
 static void restart_local_uart() {
+  local_diagnostics.reset();
   LOCAL.end();
   delay(10);
   LOCAL.begin(local_baud, local_serial_config, LOCAL_RX_PIN, LOCAL_TX_PIN);
@@ -762,6 +769,7 @@ static void local_flush_rx_packet() {
   uint8_t meta2 = 0;
   const bool checksum_ok = validate_active_rx_checksum(rx_packet, rx_packet_len, meta1, meta2);
   if (checksum_ok) {
+    local_diagnostics.checksum.good();
     ++local_rx_ok_count;
     const bool profile_match_ok = process_profile_rx(rx_packet, rx_packet_len);
     if (!profile_match_ok) {
@@ -770,11 +778,13 @@ static void local_flush_rx_packet() {
       trace_log(1, meta1 ? meta1 : 0x52, 0xEF, rx_packet, rx_packet_len);
     } else {
       last_local_rx_ms = last_local_activity_ms;
-      clean_copy(last_local_rx_status, sizeof(last_local_rx_status), "OK");
+      if (last_modbus_exception) snprintf(last_local_rx_status, sizeof(last_local_rx_status), "EXCEPTION 0x%02X", last_modbus_exception);
+      else clean_copy(last_local_rx_status, sizeof(last_local_rx_status), "OK");
       trace_log(1, meta1 ? meta1 : 0x52, 0, rx_packet, rx_packet_len);
     }
   } else {
     if (meta2 == 0xEE) {
+      local_diagnostics.checksum.fail(last_local_activity_ms);
       ++local_rx_checksum_errors;
       clean_copy(last_local_rx_status, sizeof(last_local_rx_status), "BAD-CS");
     } else {
@@ -1153,7 +1163,7 @@ static void handle_entity_get(const Frame& req) {
   uint16_t rx_any_age = entity_age_ms(last_local_rx_any_ms);
   uint16_t tx_age = entity_age_ms(last_local_tx_ms);
 
-  if (!wanted || wanted == 1) { if (append_entity_bool_safe(resp.payload, o, 1, last_local_rx_ms && age < 5000, age)) ++count; }
+  if (!wanted || wanted == 1) { if (append_entity_bool_safe(resp.payload, o, 1, local_device_online_now(), age)) ++count; }
   if (!wanted || wanted == 5) { if (append_entity_text_safe(resp.payload, o, 5, checksum_type_label(), 0)) ++count; }
   if (!wanted || wanted == 7) { if (append_entity_u32_safe(resp.payload, o, 7, local_rx_ok_count, 0)) ++count; }
   if (!wanted || wanted == 8) { if (append_entity_u32_safe(resp.payload, o, 8, local_rx_checksum_errors, 0)) ++count; }
@@ -1980,12 +1990,16 @@ static ProfileEntity* profile_find_entity(uint8_t id) {
 }
 
 static bool process_profile_rx(const uint8_t* data, uint8_t len) {
+  last_modbus_exception = 0;
   if (!data || len < 5 || !pending_modbus_entity_id || modbus_recovering) return false;
   const uint8_t slave = data[0];
   uint8_t fc = data[1];
   if (slave != pending_modbus_slave || (fc & 0x7F) != pending_modbus_func) return false;
   if (fc & 0x80) {
     if (len != 5) return false;
+    if (!data[2]) return false;
+    last_modbus_exception = data[2];
+    local_diagnostics.response(millis(), data[2]);
     pending_modbus_entity_id = 0;
     return true;
   }
@@ -2007,6 +2021,7 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
       e->last_poll_ms = 0;
     }
     pending_modbus_entity_id = 0;
+    local_diagnostics.response(millis());
     return true;
   }
 
@@ -2023,6 +2038,7 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
       profile_store_read_value(*e, raw);
     }
     e->last_update_ms = millis();
+    local_diagnostics.response(millis());
     pending_modbus_entity_id = 0;
     return true;
   }
@@ -2198,8 +2214,12 @@ static bool local_device_online_now(uint32_t now) {
 }
 
 static void update_local_fault_state(uint32_t now) {
-  if (last_local_rx_ms && !local_device_online_now(now)) fault_mask |= FAULT_LOCAL_UART_INACTIVE;
+  // A device that has never answered is disconnected too.
+  if (!local_device_online_now(now)) fault_mask |= FAULT_LOCAL_UART_INACTIVE;
   else fault_mask &= (uint16_t)~FAULT_LOCAL_UART_INACTIVE;
+  // No response-time warning for an absent/never-seen device: report its link instead.
+  if (!local_device_online_now(now)) local_diagnostics.timeout.reset();
+  fault_mask = (fault_mask & (uint16_t)~ofe_local_diag::WARNING_MASK) | local_diagnostics.faults(now);
 }
 
 static void output_off() {
@@ -2235,6 +2255,7 @@ static void profile_poll_tick() {
   const uint32_t now = millis();
   if (pending_modbus_entity_id && (uint32_t)(now - pending_modbus_ms) < modbus_response_timeout_ms()) return;
   if (pending_modbus_entity_id) {
+    local_diagnostics.timeout.fail(now);
     pending_modbus_entity_id = 0;
     modbus_recovering = true;
     modbus_recovery_ms = now;
@@ -2610,7 +2631,7 @@ void loop() {
     const bool output_active = profile_output_enabled_active();
     ofe_status_leds.setBusOnline(bus_online);
     ofe_status_leds.setFirmwareUpdate(fw_update_active);
-    const bool critical_fault = (fault_mask & (uint16_t)~FAULT_LOCAL_UART_INACTIVE) != 0;
+    const bool critical_fault = (fault_mask & (uint16_t)~(FAULT_LOCAL_UART_INACTIVE | ofe_local_diag::WARNING_MASK)) != 0;
     ofe_status_leds.setModuleEvent(fault_mask ? (critical_fault ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (output_active ? OFE_LED_EVENT_EXTRACTOR_ON : (local_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
     ofe_status_leds.tick();
   }

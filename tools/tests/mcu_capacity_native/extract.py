@@ -27,3 +27,15 @@ header = (root / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/MasterSche
 (out / 'alarm_types.inc').write_text(re.search(r'  struct DisplayAlarmItem \{.*?\n  };\n  struct DisplayAlarmSnapshot \{.*?\n  };', header, re.S).group())
 (out / 'alarm_snapshot.inc').write_text(re.search(r'void MasterScheduler::buildDisplayAlarmSnapshot\(.*?\n}\n', source, re.S).group())
 (out / 'home_metrics.inc').write_text(re.search(r'static ofe_home_metrics::State display_home_metrics\(.*?\n}\n', source, re.S).group())
+
+bridges = []
+for folder in ('UniversalRs232Module', 'ModbusRtuModule'):
+    source = (root / 'Module' / folder / (folder + '.ino')).read_text(encoding='utf-8')
+    functions = [re.search(r'^static (?:bool|void) ' + name + r'\(uint32_t now\) \{.*?^}',
+                           source, re.M | re.S).group()
+                 for name in ('local_device_online_now', 'update_local_fault_state')]
+    fault = re.search(r'^static const uint16_t FAULT_LOCAL_UART_INACTIVE = [^;]+;', source, re.M).group()
+    bridges.append('namespace ' + folder + ' {\n' + fault +
+                   '\nstatic uint32_t last_local_rx_ms = 0;\nstatic uint16_t fault_mask = 0;\nstatic ofe_local_diag::State local_diagnostics;\n' +
+                   '\n'.join(functions) + '\n}\n')
+(out / 'bridge_links.inc').write_text('\n'.join(bridges), encoding='utf-8')

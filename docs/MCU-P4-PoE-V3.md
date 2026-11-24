@@ -1,6 +1,6 @@
 # MCU-P4: Waveshare WIFI6-PoE-ETH V3.2
 
-Release profile: MCU 2.1.38RC, or 2.1.38RC-Developer with private developer
+Release profile: MCU 2.1.52RC, or 2.1.52RC-Developer with private developer
 configuration. The owner has reported operation on V3.2 hardware, including
 C6 recovery with the standalone helper. Automated build/protocol tests do not
 replace validation of every peripheral on a particular carrier.
@@ -61,19 +61,24 @@ merged image in OTA. The MCU image-header check now verifies actual chip
 revision ranges as well as S3/P4 chip IDs before allowing an update, including
 developer override paths. It does not identify arbitrary carrier-board wiring.
 
-The C6 compatibility catalog includes a separate approval for this board ID,
-Arduino-ESP32 3.3.12 / ESP-IDF 5.5.5 / ESP-Hosted 2.12.13 and the exact pinned
-C6 image size and SHA-256. The owner reported a successful C6 recovery and
-2.12.13 operation. This does not validate every older C6 recovery state or all
-network, pairing and USB configurations. Online metadata never starts flashing.
+The C6 catalog distinguishes the generic PoE V3 profile from the exact tested
+silicon 3.2 / 32 MiB combination. With Arduino-ESP32 3.3.12 / IDF 5.5.5 /
+Hosted driver 2.12.13, generic PoE V3 retains C6 2.12.13; the exact V3.2 profile
+approves C6 2.13.1. The owner reported WiFi, Bluetooth and return installation
+on that board. This is not an approval for other carriers/revisions or every
+legacy recovery state. Online checks never start flashing. See the
+[C6 guide](Hosted-C6-Catalog.md) for exact pins and private developer trials.
 The software ECC/RNG backport retains its pinned Arduino 3.3.12 / IDF 5.5.5 ABI.
 
 No device is flashed by these scripts. Preparing a profile does not publish it.
-The 2.1.38RC firmware catalog provides a separate PoE-board installation target.
+The 2.1.52RC firmware catalog provides a separate PoE-board installation target.
 See the [standalone C6 recovery instructions](../OpenFumeExtractorMaster/C6_Update_P4_Waveshare_LAN/README.md)
 when a sufficiently old hosted firmware cannot be updated through the MCU UI.
 
-## Verified Local Build
+## Historical Local Build (2.1.25)
+
+The figures below describe an earlier bring-up, not the current release's
+binary size or checksum. Use [FIRMWARE.md](FIRMWARE.md) for current artifacts.
 
 - `2.1.25RC-Developer`, image chip ID 18, 3,566,800-byte application.
 - App and bootloader headers both specify 301..399 and 32 MiB flash.
@@ -86,7 +91,8 @@ when a sufficiently old hosted firmware cannot be updated through the MCU UI.
 - The actual ELF/map uses the pinned software BLE ECC objects and P4 RNG;
   the SDK's replaced ECC objects and accelerator calls are absent.
 - Both generated MCU source profiles pass their manifest checks. The public
-  GitHub checkout is unchanged. No board was flashed or hardware-tested.
+  GitHub checkout was unchanged at that historical check; no device was flashed
+  by those build checks. The separate owner hardware reports are noted above.
 
 Repeat artifact verification after compiling:
 

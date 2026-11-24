@@ -161,7 +161,41 @@ Home-Assistant-Discovery entfernt. Falls ein alter Wert sichtbar bleibt:
 3. MQTT-Verbindung und Discovery-Aufräumen kontrollieren.
 4. Erst danach Modul oder Display neu starten.
 
+## Diagnosewarnungen
+
+Universal 1.0.77beta und Modbus 1.0.64beta melden zusaetzlich zur lokalen
+Verbindungswarnung (0x0001) entprellte Diagnosewarnungen:
+
+- 0x0800: wiederholte Antwort-Timeouts.
+- 0x1000: gehaeufte Pruefsummen-/CRC-Fehler.
+- 0x2000: wiederholte Exception-Antworten, nur Modbus.
+
+Drei Vorfaelle innerhalb von zehn Sekunden aktivieren die jeweilige Warnung.
+Drei gesunde Antworten/Pruefsummen loeschen sie; nach 30 Sekunden ohne neuen
+Vorfall verfaellt sie ebenfalls. Einzelne Fehler sind weiter in den Zaehlern
+und im Trace sichtbar. Modbus-Exceptions gelten als erreichbares Geraet, aber
+nicht als erfolgreicher Registerwert; der letzte Empfangsstatus zeigt den Code.
+
+Universal verfolgt nur gesendete Profilabfragen mit Antwortmuster. Passive
+Empfangsprofile und reine Sendeprofile erhalten keinen kuenstlichen Timeout.
+Der Universal-Timeout betraegt mindestens eine Sekunde und beruecksichtigt
+langsame Baudraten. Eine Profil-/UART-Aenderung setzt die Diagnose zurueck.
+
+Die neuen Bits sind Warnungen, keine Filter-/Drehzahlfehler. Ab MCU 2.1.41
+werden sie typabhaengig ausgewertet; die aktualisierten Display-Firmwares
+zeigen die passenden Klartexte. Alte MCU-/Displaystaende koennen unbekannte
+Bits noch als Fehler/Hexwert anzeigen. Die Pflichtueberwachung eines gewaehlten
+Hauptausgangs bleibt aktiv, auch bei abgeschalteten Verbindungswarnungen.
+
 ## Testablauf Modbus
+
+Ab MCU 2.1.42 unterdrueckt ausgeschaltete Verbindungsueberwachung auch die
+optionale Timeoutwarnung. Bei bereits getrennter lokaler Verbindung wird nur
+die Verbindungswarnung statt eines zusaetzlichen Timeouts angezeigt. Universal
+1.0.78beta und Modbus 1.0.65beta loeschen die Timeoutserie, solange kein gueltiger
+lokaler Empfang vorliegt bzw. dieser aelter als 15 Sekunden ist. CRC- und
+Exception-Warnungen bleiben echte Protokolldiagnosen. Ein nicht erreichbarer
+gewaehlter Hauptausgang bleibt unabhaengig vom Schalter ein Fehler.
 
 1. Einen Modbus-Slave oder PC-Simulator auf die konfigurierte Slave-Adresse setzen.
 2. Discrete Inputs, Coils, Input- und Holding-Register mit bekannten Werten füllen.

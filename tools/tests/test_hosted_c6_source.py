@@ -1,6 +1,7 @@
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -8,6 +9,18 @@ SRC=ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 
 
 class HostedC6SourceTests(unittest.TestCase):
+    def test_developer_upstream_selection_and_image_binding(self):
+        subprocess.run(['node',str(ROOT / 'tools/tests/test_hosted_c6_upstream.cjs')],check=True)
+        web=self.source('WebHostedC6.inc.h')
+        self.assertIn('selected?&selection:nullptr',web)
+        self.assertIn('web.arg("risk")!="1"',web)
+        self.assertIn('commit.length()!=40 || blob.length()!=40',web)
+        updater=self.source('HostedC6Updater.h')
+        self.assertIn('memcmp(blob,selected_.blob,20)',updater)
+        self.assertIn('memcmp(image_+48,version,strlen(version)+1)',updater)
+        self.assertIn('memcmp(image_+80,"network_adapter",16)',updater)
+        self.assertIn('self.developerImage()?&self.selected_:nullptr',updater)
+
     def source(self,name):
         return (SRC / name).read_text(encoding='utf-8-sig')
 
@@ -37,8 +50,26 @@ class HostedC6SourceTests(unittest.TestCase):
         updater=self.source('HostedC6Updater.h')
         self.assertIn('MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT',updater)
         self.assertIn('mbedtls_sha256(image_,received_,digest,0)',updater)
-        self.assertIn('diff|=digest[i]^ofe_c6::SHA256[i]',updater)
-        self.assertNotIn('developer_override',source+updater)
+        self.assertIn('test_image_?ofe_c6::TEST_SHA256:ofe_c6::SHA256',updater)
+        self.assertIn('diff|=digest[i]^expected[i]',updater)
+        self.assertNotIn('developer_override',updater)
+        self.assertIn('developer_override_active()',source)
+        self.assertIn('web_c6_trial_allowed()',source)
+
+    def test_trial_is_supported_board_and_server_authorized_at_begin_and_install(self):
+        web=self.source('WebHostedC6.inc.h')
+        self.assertIn('#if OFE_DEVELOPER_MODE_ENABLE',web)
+        self.assertIn('developerBoardEligible(poe,developer_override_active(),ESP.getChipRevision(),ESP.getFlashChipSize())',web)
+        begin=web.split('static void web_handle_c6_begin()',1)[1].split('static void web_handle_c6_chunk_upload',1)[0]
+        self.assertIn('trial && !web_c6_trial_allowed()',begin)
+        self.assertIn('!trial && web.hasArg("target")',begin)
+        install=web.split('static void web_handle_c6_install()',1)[1].split('static void append_hosted_c6_ui',1)[0]
+        self.assertIn('!web_c6_trial_allowed()',install)
+        self.assertIn('web.arg("risk")!="1"',install)
+        self.assertIn('web.arg("trial")!="1"',install)
+        ui=self.source('HostedC6WebUi.h')
+        self.assertIn('s.host!==hostExpected',ui)
+        self.assertIn('!!s.trial!==trial',ui)
 
     def test_auth_csrf_and_exclusive_guards(self):
         server=self.source('WebServer.inc.h')

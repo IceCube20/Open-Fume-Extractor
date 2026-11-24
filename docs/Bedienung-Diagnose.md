@@ -1,5 +1,18 @@
 # Bedienung und Diagnose
 
+Stand: MCU 2.1.52RC. Ergaenzende Schrittfolgen:
+[Weboberflaeche](WEB-INTERFACE.md), [USB](USB.md),
+[LED-Ausgaenge](FANIO_LED_OUTPUTS.md) und [Logikdesigner](System-Automation.md).
+
+## Darstellung und Mobilgeraete
+
+Auto, Hell und Dunkel werden pro Browser gespeichert. Auto folgt dem Betriebssystem.
+Die Statusseite nutzt auf breiten Bildschirmen bis zu fuenf Modulkarten pro Reihe;
+die Modulliste bleibt breit und auf dem Handy bedienbar. Die Spaltenwahl der
+HA-Uebersichtskarte ist davon unabhaengig und erlaubt eine bis vier Spalten.
+Editoren haben einen erreichbaren Kopfbereich zum Schliessen; die USB-Dateiauswahl
+erscheint als Dialog, der eigenstaendige Dateimanager unter **USB**.
+
 ## Statusseite
 
 Die Statusseite ist die zentrale Betriebsansicht. Sie zeigt Bereitschaft,
@@ -31,6 +44,13 @@ Absaugungsaktion. Für umfangreichere Verknüpfungen dient der grafische
 **Logik Designer**. Dort stehen unter anderem UND, ODER, NICHT, RS-Latch, Toggle,
 TON, TOFF, Puls und Taktgeber zur Verfügung. Bis zu 32 Definitionen können in
 LittleFS gespeichert und unabhängig aktiviert werden.
+Pro Definition sind 64 Bausteine, 128 Verbindungen und 24000 UTF-8-Bytes erlaubt.
+Zur Laufzeit stehen insgesamt 32 unterschiedliche boolesche Ausgangsziele zur
+Verfuegung. Die Oberflaeche meldet ueberschrittene Grenzen.
+Mehrere Bausteine per Auswahlrahmen markieren und gemeinsam verschieben.
+Verbindungen lassen sich mit Strg/Umschalt-Klick oder dem Auswahlwerkzeug auf
+Touchgeraeten gemeinsam markieren. Segmentgriffe erlauben manuelle Leitungswege;
+manuell gesperrte Wege vor erneutem automatischem Routing entsperren.
 
 Bei Fan/IO und Fan/IO Pro werden im Designer die im Modul gespeicherten Ein-/
 Ausgangsaliase verwendet. Simulationseingänge testen die Logik, ohne reale
@@ -57,7 +77,24 @@ Typische kritische Alarme:
 - Filter voll, sofern das Modul dies als Fehler meldet
 
 Gelb kennzeichnet Warnungen, Rot kritische Zustände. Ein Offline-Modul ist daher
-rot; ein nur getrennter Stations-/Weller-Link bleibt gelb.
+rot. Ein optionaler getrennter Stations-/Weller-Link ist eine Warnung, wenn seine
+Verbindungsueberwachung aktiv ist. Wird der lokale Link fuer den gewaehlten
+Hauptausgang benoetigt, bleibt sein Fehler auch bei abgeschalteter optionaler
+Ueberwachung bestehen.
+
+### Verbindungsueberwachung
+
+Die Checkbox je unterstuetztem Modul in der Modulliste steuert optionale lokale
+Verbindungswarnungen. Sie stoppt weder die Busabfragen noch versteckt sie ein
+OFE-Offline-Modul, einen echten Hardwarefehler oder einen benoetigten Hauptausgang.
+Bei Universal/Modbus ist ein fehlendes lokales Geraet von einem aktiven
+Antwort-Timeout zu unterscheiden; der Text darf nicht als fehlende
+Drehzahlrueckmeldung eines Luefters dargestellt werden.
+
+Seit 2.1.52RC ignorieren die physische und die virtuelle MCU-EVT-Anzeige dieselben
+stummgeschalteten optionalen Links. Aktive erforderliche Fehler bleiben sichtbar.
+Auf Displays zeigen Karten und Modulliste Warnungen und Fehler mit verschiedenen
+Schweregraden; laufende Updates erhalten einen Fortschrittsbalken.
 
 ## Status-LEDs
 
@@ -67,7 +104,7 @@ Modul-/Anlagenzustand. Der Master synchronisiert Phase und globale Helligkeit.
 | Effekt | Bedeutung |
 |---|---|
 | Grün/weiß atmend | OFE-Bus online |
-| kurzes grünes Blitzen | Busaktivität |
+| kurzes grünes Blitzen | Busaktivitaet, soweit im jeweiligen Modul aktiviert; an der MCU deaktiviert |
 | Rot atmend | Bus oder lokales Gerät offline |
 | Orange blinkend | nicht gekoppelt oder ungültige Adresse |
 | Blau/weiß atmend | Firmwareupdate |
@@ -80,7 +117,7 @@ Modul-/Anlagenzustand. Der Master synchronisiert Phase und globale Helligkeit.
 | Rot doppelt blinkend | kritischer Alarm |
 
 Die globale Helligkeit und das vollständige Abschalten werden unter
-**Netzwerk Setup > Status LEDs** eingestellt. Bei USB-Versorgung kann 100 % je
+**Netzwerk/System > Status-LEDs** eingestellt. Bei USB-Versorgung kann 100 % je
 nach DevKit, Schutzdiode, Kabel und Netzteil zu sichtbaren Spannungseinbrüchen
 führen; 80 % ist ein sinnvoller Ausgangspunkt.
 
@@ -100,6 +137,15 @@ Historische Zähler sind nach einem absichtlichen Abziehen nicht automatisch ein
 aktueller Fehler. Entscheidend sind Onlinezustand, Live-Misses und weiter steigende
 Zähler. Der Trace sollte nur während einer gezielten Analyse laufen.
 
+## Virtuelle LED-Ausgaenge
+
+Fan/IO ab 1.1.78 und Fan/IO Pro ab 1.1.73 koennen einen adressierbaren LED-Strang
+mit bis zu 128 Pixeln und 32 benannten Kanaelen betreiben. Im GPIO-Editor einen
+freien Pin aus der Pinliste, LED-Typ und Stromversorgung passend zur Hardware
+waehlen, dann Pixelbereiche/Farben/Effekte konfigurieren und speichern.
+Die Kanaele erscheinen als Ausgaenge in Zusatzregeln und Logikdesigner.
+Details und ein Beispiel: [Fan/IO LED Outputs](FANIO_LED_OUTPUTS.md).
+
 ## MQTT und Home Assistant
 
 Der Master veröffentlicht sein eigenes Gerät sowie je ein Gerät pro Modul. Namen,
@@ -111,10 +157,31 @@ damit alte Werte in Home Assistant nicht fälschlich als aktuell erscheinen. Nac
 Profil-, Stationsklassen- oder Ausbauänderungen räumt der Discovery-Abgleich nicht
 mehr gültige Entities auf.
 
+Die native Integration fragt die MCU ohne MQTT ab; ein Intervall ab 0,5 Sekunden
+ist einstellbar. Das automatische Dashboard und die Uebersichtskarte im eigenen
+Dashboard bieten eine bis vier Spalten. Die native Integration und MQTT koennen
+unabhaengig voneinander verwendet werden.
+
+Wenn LED-Farben in HA stimmen, aber nur am PC die Effekte stillstehen, zuerst die
+Betriebssystem-/Browseroption fuer reduzierte Bewegung pruefen. Diese
+Barrierefreiheitseinstellung wird von den Karten respektiert; ein stiller Effekt
+ist deshalb nicht automatisch ein Kommunikationsfehler.
+
+## USB und Exporte
+
+Nur MCU-P4 unterstuetzt den USB-Host-Dateimanager. Sicherungen, Profile und
+Diagnoseexporte koennen in einem ausgewaehlten Zielordner gespeichert werden.
+CSV und JSON enthalten dekodierte Busdaten, sofern der Decoder den Befehl kennt;
+Raw-Daten bleiben fuer die Analyse erhalten. **Von USB laden/installieren**
+waehlt eine Datei, startet aber noch keinen Import oder Flashvorgang.
+Firmware, Zielhardware und Bestaetigung werden separat geprueft. Auf MCU-S3
+weiterhin den Browser-Download/-Upload verwenden.
+
 ## Entwicklermodus
 
 Der Entwicklermodus blendet Heap-, Loop-, Miss- und OTA-Chunkdetails ein und kann
-Firmwaretypprüfungen für Tests übergehen. Er ist kein Benutzerbetriebsmodus. Das
+Modul-Firmwaretyppruefungen fuer Tests uebergehen. MCU-Chip- und
+Siliziumrevisionspruefungen bleiben wirksam. Er ist kein Benutzerbetriebsmodus. Das
 Passwort schützt die Oberfläche vor versehentlicher Bedienung, ersetzt aber keine
 vollständige kryptografische Gerätezugangskontrolle.
 

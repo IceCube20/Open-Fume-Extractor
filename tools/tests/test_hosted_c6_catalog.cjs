@@ -4,13 +4,21 @@ const header=fs.readFileSync(path.join(src,'HostedC6Firmware.h'),'utf8');
 const boardBranches=header.match(/#if defined\(OFE_MASTER_P4_WAVESHARE_POE\)\r?\n([\s\S]*?)#else\r?\n([\s\S]*?)#endif/);
 const constant=name=>(name==='BOARD'&&boardBranches?boardBranches[2]:header).match(new RegExp(`char ${name}\\[\\]="([^"]+)"`))[1];
 const cfg=Object.freeze({expected:parseInt(header.match(/VERSION=0x([\da-f]+)/i)[1],16),size:Number(header.match(/IMAGE_SIZE=(\d+)/)[1]),board:constant('BOARD'),arduino:constant('ARDUINO_VERSION_TEXT'),idf:constant('IDF_VERSION_TEXT'),sha256:constant('SHA256_TEXT'),url:constant('URL')});
-const catalog=JSON.parse(fs.readFileSync(path.join(root,'updates/hosted-c6.json'),'utf8'));
+const catalog=JSON.parse(fs.readFileSync(path.join(root,'updates/hosted-c6-v2.json'),'utf8'));
 const clone=value=>JSON.parse(JSON.stringify(value));
+const legacy=JSON.parse(fs.readFileSync(path.join(root,'updates/hosted-c6.json'),'utf8'));
+assert.equal(legacy.releases.length,2);
+assert(legacy.releases.every(r=>r.host.esp_hosted==='2.12.13'&&r.coprocessor.version==='2.12.13'));
+const approved=catalog.releases.find(r=>r.board==='waveshare-p4-wifi6-poe-eth-v3.2');
+assert.equal(approved.coprocessor.version,'2.13.1');assert.equal(approved.host.esp_hosted,'2.12.13');
 let response,calls=[];
 const context={window:{},TextDecoder,AbortSignal,fetch:async(url,options)=>{calls.push({url,options});if(response instanceof Error)throw response;return response;}};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(src,'HostedC6CatalogUi.h'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1],context);
 const {inspect,load}=context.window.OFE_C6_CATALOG;
+const approvedCfg={...cfg,board:approved.board,expected:0x020d01,...approved.coprocessor};
+assert.equal(inspect(catalog,approvedCfg,cfg.expected).kind,'approved');
+assert.equal(inspect(catalog,approvedCfg,cfg.expected).newerSdk,false);
 const check=data=>inspect(data,cfg,cfg.expected);
 assert.equal(check(catalog).kind,'approved');
 assert.equal(check(catalog).version,cfg.expected);
@@ -55,7 +63,6 @@ for(const mutate of [
  data=>{data.releases[0].coprocessor.size=2097153},
  data=>{data.releases[0].coprocessor.sha256='not-a-hash'},
  data=>{data.releases[0].coprocessor.url='https://example.invalid/payload.bin'},
- data=>{data.releases[0].host.esp_hosted='2.12.14'},
  data=>{data.releases[0].host.esp_idf='5.999.0'},
  data=>{data.releases[0].host.arduino_esp32='3.3'},
 ]){const data=clone(catalog);mutate(data);assert.throws(()=>check(data),/CATALOG_INVALID/);}

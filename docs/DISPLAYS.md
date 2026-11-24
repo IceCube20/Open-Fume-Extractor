@@ -82,17 +82,31 @@ the dedicated `Display-800x480` release files. The released firmware is built wi
 the verified high-performance SDK configuration, 16 MHz PCLK, a 64-byte data-cache
 line, PSRAM XIP and the tested VSYNC/cache synchronization.
 
-## Display P4 800x480 (Experimental)
+## Display P4 800x480 (PRE-V3)
 
 The new `Display-P4-800x480` target is for the ELECROW CrowPanel Advanced
 5-inch 800x480 RGB/ST7262 + GT911 board, using the **PRE-V3** chip/SDK profile.
 Networking and Bluetooth use its ESP-Hosted C6 co-processor. The current
 owner-tested profile uses 24 MHz PCLK and a dedicated GUI task.
 
-This image is **1.0.7alpha-P4Prep**, not an S3 image or a generic P4 firmware.
+The released image is **1.0.21RC**. It is not an S3 image, an MCU-P4 image or
+a generic P4 firmware. Use the firmware index for the current exact target.
 It requires a current P4-aware master. Do not flash it on an incompatible board
 or chip revision. The high-performance SDK remains separate from this repository;
 see [Building](BUILDING.md) for the pinned preparation tools.
+
+## Alarm Lists and Module Cards
+
+The MCU is the alarm authority. Optional downstream-link warning preferences
+are configured on the MCU, not by dismissing a display card. Yellow represents
+warnings, red represents errors, and blue identifies an update. A required
+selected output must still report a disconnected device even when optional
+warnings are muted. Keep the MCU and display firmware current when comparing
+alarm severity and module-list/update indicators.
+
+The alarm list uses compact spacing matching the module list. A module may be
+online on OFE while its downstream JBC/Weller/serial device is disconnected.
+Do not interpret OFE-online alone as a working extraction path.
 
 ## Performance Measurements
 

@@ -12,6 +12,94 @@ The routing and boolean-designer menus use one complete signal catalogue,
 including module/channel aliases and descriptor-defined Universal/Modbus entities.
 Existing signal IDs are preserved; the designer additionally has its simulation input.
 
+## Boolean Designer Capacity
+
+MCU-S3, MCU-P4 and MCU-P4-PoE support up to **64 blocks and 128 connections per
+definition**, with **32 stored definitions**. Inputs and outputs count as blocks.
+The runtime's existing limit of 32 distinct output targets shared by active
+definitions is unchanged; a single definition exceeding that limit is rejected
+with a clear message too. The serialized graph remains limited to 24,000 UTF-8 bytes.
+
+The editor reads the MCU's limits from `/logic/list` and displays live usage.
+Adding, duplicating and connecting blocks stops at the corresponding limit with
+a clear message. An oversized loaded graph remains editable, but cannot be saved
+until it fits; it is never silently truncated. Save requests are also validated
+on the MCU before storage or runtime-cache replacement. Existing plans remain
+compatible, and runtime allocation now follows the actual block/connection count
+instead of reserving the maximum for every definition.
+
+## Designer Connections
+
+Connections snap to the nearest compatible port within a screen-space catch
+radius, including when zoomed. The chosen port and the snapped preview are
+highlighted. Dragging works in either direction; tapping a source and then a
+target is also supported. Escape, pointer cancellation and losing focus cancel
+the gesture. Reconnecting an existing wire only replaces it after a valid drop;
+cancelling or rejecting the replacement preserves the original wire.
+
+The orthogonal router uses the pinned libavoid-js 0.4.5 WebAssembly library to
+plan the graph together, with measured block dimensions and an 18-pixel preferred
+lane separation. Assets are served locally from authenticated flash-backed gzip
+endpoints, not a CDN. Routing executes in the browser, not on the MCU. See
+`assets/vendor/libavoid/README.md` for provenance, licensing and regeneration.
+A small existing router remains available if WebAssembly cannot load; the
+toolbar reports the limited routing state. Crossings have a small visual gap;
+only actual shared branches have junction dots. Blocked routes have a dashed
+warning style instead of silently changing the logical connection.
+
+Dragging a block now carries its existing orthogonal routes along, using stable
+retained bend anchors. Existing valid lanes are kept rather
+than choosing a new shortest path at every pointer position. Unrelated wires are
+preserved first; a route is replaced when an obstacle/overlap makes it invalid or
+its detour becomes excessive. The grid toggle snaps block/segment moves to the
+18-pixel grid; holding Alt bypasses snapping without moving existing blocks.
+Loading a definition, clearing it or applying Auto Layout resets this visual route
+history. Automatic anchors are browser-only and are not saved in the graph.
+
+Selecting a connection exposes segment handles. Dragging a handle perpendicular
+to its segment fixes that path; Escape, pointer cancellation or loss of focus
+keeps the previous path. Invalid moves through blocks or over unrelated wires
+are rejected. The Properties connection list also exposes the route editor on
+mobile. Unlock releases the selected manual path; Reroute recomputes automatic
+wires without clearing manual paths. Locked segments participate in global
+routing so other connections can route around them.
+
+Only explicit manual routes are saved, as optional link metadata
+`route: {p:[[x,y],...],s:[x,y],t:[x,y]}` (2-16 finite bounded orthogonal points).
+The runtime ignores this metadata and the graph schema remains 1. Loading strips
+invalid metadata without dropping the logical link. Manual paths remain fixed
+in the diagram while their terminal segments follow moved blocks; collisions
+are shown instead of discarding the stored path. The existing 24,000 UTF-8-byte
+graph limit includes manual routes; a rejected save leaves the stored graph
+unchanged. Older editor versions do not preserve this optional route metadata.
+
+### Multiple Block Selection
+
+Drag on an empty part of the diagram to select blocks with a marquee. Ctrl,
+Command or Shift-click toggles individual blocks; modifier-dragging a marquee
+adds to the selection. Dragging any selected block moves the selected group with
+one shared displacement, preserving spacing, including at canvas boundaries.
+Internal manual wire paths move with the group; external wires stay attached.
+Escape, pointer cancellation and loss of focus restore the group's previous
+positions and manual routes. The selection itself is never saved in the graph.
+
+The selection toolbar toggle supports touch: enable it to tap several blocks or
+draw a marquee, then disable it to drag the group. Normal touch scrolling remains
+available outside selection mode. Ctrl/Command+A selects all blocks; Escape or
+the clear-selection button clears the selection. Text fields retain their usual
+keyboard behavior. Delete removes selected blocks and their incident links;
+Duplicate copies selected blocks together with internal links, subject to the
+existing node/link limits. Single-block property fields are disabled for groups.
+
+### Multiple Connection Selection
+
+Ctrl/Command or Shift-click toggles individual wires without replacing the current
+selection. On touch screens, enable the selection tool and tap the required wires;
+the enlarged hit areas make thin connections easier to target. Use the connection
+list in Properties when wires are close together. Selected wires can be deleted
+or their manual paths unlocked together. Selecting wires alone does not move
+blocks or change the logical source/target of a connection.
+
 ## Main Output Selection and Activity
 
 **Main output selected** means the module is the configured manual preference.

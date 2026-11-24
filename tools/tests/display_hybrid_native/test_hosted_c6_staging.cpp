@@ -32,6 +32,12 @@ static uint32_t version=0x020C0C;
 static void* heap_caps_malloc(size_t n,int flags){assert(flags==3);if(!allocation_ok)return nullptr;++allocations;return malloc(n);}
 static void heap_caps_free(void* ptr){++freed;free(ptr);}
 static int mbedtls_sha256(const uint8_t* data,size_t len,uint8_t* out,int){return BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,const_cast<PUCHAR>(data),ULONG(len),out,32)<0?-1:0;}
+struct mbedtls_sha1_context {std::vector<uint8_t> data;};
+static void mbedtls_sha1_init(mbedtls_sha1_context*){}
+static int mbedtls_sha1_starts(mbedtls_sha1_context* ctx){ctx->data.clear();return 0;}
+static int mbedtls_sha1_update(mbedtls_sha1_context* ctx,const uint8_t* data,size_t len){ctx->data.insert(ctx->data.end(),data,data+len);return 0;}
+static int mbedtls_sha1_finish(mbedtls_sha1_context* ctx,uint8_t* out){return BCryptHash(BCRYPT_SHA1_ALG_HANDLE,nullptr,0,ctx->data.data(),ULONG(ctx->data.size()),out,20)<0?-1:0;}
+static void mbedtls_sha1_free(mbedtls_sha1_context*){}
 static void(*task_fn)(void*)=nullptr;static void* task_arg=nullptr;
 static int xTaskCreate(decltype(task_fn) fn,const char*,unsigned,void* arg,unsigned,void*){if(!task_ok)return 0;++tasks_created;task_fn=fn;task_arg=arg;return pdPASS;}
 static void vTaskDelay(int){++time_ms;}static void vTaskDelete(void*){}
@@ -96,6 +102,8 @@ static void testVersionProbe(){
 int main(int argc,char**argv){
   testVersionProbe();
   HostedC6Updater u;
+  assert(u.begin(ofe_c6::TEST_SIZE,3,0,false,true,true)==ofe_c6::TrialDenied);
+  assert(u.begin(ofe_c6::TEST_SIZE,3,0,true,true,false)==ofe_c6::TrialDenied);
   assert(u.begin(1,3,0)==ofe_c6::Size&&allocations==0);
   allocation_ok=false;assert(u.begin(ofe_c6::IMAGE_SIZE,3,0)==ofe_c6::NoPsram);allocation_ok=true;
   std::vector<uint8_t> bad(ofe_c6::IMAGE_SIZE);assert(u.begin(ofe_c6::IMAGE_SIZE,3,0)==ofe_c6::Ok);
@@ -113,6 +121,46 @@ int main(int argc,char**argv){
     task_fn(task_arg);assert(u.phase()==HostedC6Updater::Restarting&&writes==image.size()&&begins==1&&ends==1&&activations==1&&restarts==1);
     version=ofe_c6::VERSION;HostedC6Updater after_boot;after_boot.verifyBoot();assert(after_boot.verification()==1);
     std::cout<<"PASS: actual pinned vendor image SHA256, staging/token/memory lifecycle, worker, NVS commit and post-reboot version verification\n";
+    if(argc>2){
+      std::ifstream trial_file(argv[2],std::ios::binary);std::vector<uint8_t> trial_image((std::istreambuf_iterator<char>(trial_file)),{});
+      assert(trial_image.size()==ofe_c6::TEST_SIZE);
+      ofe_c6::DeveloperImage selected;selected.version=ofe_c6::TEST_VERSION;selected.size=uint32_t(trial_image.size());
+      memcpy(selected.commit,"0c2733048bd001c87b0d6912843de5f259b2a13e",40);
+      mbedtls_sha1_context hash;mbedtls_sha1_starts(&hash);char prefix[32];int n=snprintf(prefix,sizeof(prefix),"blob %u",selected.size);
+      mbedtls_sha1_update(&hash,reinterpret_cast<uint8_t*>(prefix),n+1);mbedtls_sha1_update(&hash,trial_image.data(),trial_image.size());mbedtls_sha1_finish(&hash,selected.blob);
+      HostedC6Updater arbitrary;
+      assert(arbitrary.begin(selected.size,30,0,true,false,false,false,&selected)==ofe_c6::TrialDenied);
+      auto stage_selected=[&](){assert(arbitrary.begin(selected.size,30,0,true,false,true,false,&selected)==ofe_c6::Ok);assert(arbitrary.append(30,trial_image.data(),trial_image.size(),0)==ofe_c6::Ok);return arbitrary.seal(30,0);};
+      assert(stage_selected()==ofe_c6::Ok);assert(strlen(arbitrary.imageHash())==64 && arbitrary.developerImage());
+      assert(!arbitrary.start(30,restart,false,false));assert(arbitrary.cancel(30));
+      selected.blob[0]^=1;assert(stage_selected()==ofe_c6::Hash);selected.blob[0]^=1;
+      selected.version++;assert(stage_selected()==ofe_c6::Header);selected.version--;
+      assert(stage_selected()==ofe_c6::Ok);
+      version=0x020D02;assert(arbitrary.start(30,restart,false,true));task_fn(task_arg);
+      assert(arbitrary.phase()==HostedC6Updater::Restarting);
+      version=ofe_c6::VERSION;
+      HostedC6Updater approved;
+      assert(approved.begin(ofe_c6::TEST_SIZE,12,0,false,true,false,true)==ofe_c6::Ok);
+      approved.append(12,trial_image.data(),trial_image.size(),0);assert(approved.seal(12,0)==ofe_c6::Ok);
+      assert(!approved.start(12,restart,false,false,false));
+      assert(approved.start(12,restart,false,false,true));task_fn(task_arg);
+      assert(approved.phase()==HostedC6Updater::Restarting&&!approved.trial());
+      version=ofe_c6::VERSION;
+      HostedC6Updater trial;
+      assert(trial.begin(ofe_c6::TEST_SIZE,10,0,true,true,true)==ofe_c6::Ok&&trial.targetVersion()==ofe_c6::TEST_VERSION);
+      assert(trial.append(10,trial_image.data(),trial_image.size(),0)==ofe_c6::Ok&&trial.seal(10,0)==ofe_c6::Ok);
+      assert(!trial.start(10,restart,false,false)&&!trial.start(10,restart,true,true));
+      const auto before=writes;
+      assert(trial.start(10,restart,false,true));task_fn(task_arg);
+      assert(trial.phase()==HostedC6Updater::Restarting&&writes-before==ofe_c6::TEST_SIZE);
+      version=ofe_c6::TEST_VERSION;HostedC6Updater confirmed;confirmed.verifyBoot();assert(confirmed.verification()==1);
+      HostedC6Updater restore;
+      assert(restore.begin(ofe_c6::IMAGE_SIZE,11,0,true,false,true)==ofe_c6::Ok);
+      restore.append(11,image.data(),image.size(),0);assert(restore.seal(11,0)==ofe_c6::Ok);
+      assert(restore.start(11,restart,false,true));task_fn(task_arg);assert(restore.phase()==HostedC6Updater::Restarting);
+      version=ofe_c6::VERSION;HostedC6Updater restored;restored.verifyBoot();assert(restored.verification()==1);
+      std::cout<<"PASS: both actual vendor images, developer trial, explicit restore, no legacy mixing, frozen target and per-target boot journal\n";
+    }
   }else std::cout<<"SKIP: positive vendor-image fixture unavailable (negative staging tests passed)\n";
   assert(allocations==freed);
 }

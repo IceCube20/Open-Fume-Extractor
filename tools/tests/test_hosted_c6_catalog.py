@@ -23,7 +23,8 @@ class HostedC6CatalogTests(unittest.TestCase):
         self.assertIn('checkCatalog();setInterval(refresh,1000)', ui)
         self.assertNotIn('setInterval(checkCatalog', ui)
         updater = (src / 'HostedC6Updater.h').read_text(encoding='utf-8-sig')
-        self.assertIn('diff|=digest[i]^ofe_c6::SHA256[i]', updater)
+        self.assertIn('test_image_?ofe_c6::TEST_SHA256:ofe_c6::SHA256', updater)
+        self.assertIn('diff|=digest[i]^expected[i]', updater)
         self.assertNotIn('CATALOG_URL', updater)
 
 

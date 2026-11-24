@@ -5,10 +5,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const watch = require('../maintenance/check_c6_upstream.cjs');
 const root = path.resolve(__dirname, '../..');
-const catalogPath = path.join(root, 'updates/hosted-c6.json');
+const catalogPath = path.join(root, 'updates/hosted-c6-v2.json');
 const pinsPath = path.join(root, 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6Firmware.h');
 const beforeCatalog = fs.readFileSync(catalogPath), beforePins = fs.readFileSync(pinsPath);
-const catalog = JSON.parse(beforeCatalog);
+const actualCatalog = JSON.parse(beforeCatalog);
+const catalog = {...actualCatalog,releases:actualCatalog.releases.filter(r=>r.coprocessor.version==='2.12.13')};
 const clone = value => JSON.parse(JSON.stringify(value));
 const commit = 'a'.repeat(40), token = 'test-only-api-token';
 function image(value = 0x55) { const b = Buffer.alloc(64, value); b[0] = 0xe9; b.writeUInt16LE(13, 12); return b; }
@@ -56,6 +57,7 @@ function issueApi(pages = [[]], error = false) {
   for (const bad of ['2.256.0', '2.13', '2.13.1-rc1', '02.13.1', '2.13.1\n', null])
     assert.throws(() => watch.version(bad));
   assert.equal(watch.approvedBaseline(catalog), '2.12.13');
+  assert.equal(watch.approvedBaseline(actualCatalog), '2.13.1');
   assert.throws(() => watch.approvedBaseline({schema: 1, releases: []}));
   const noApproval = clone(catalog); noApproval.releases.forEach(r => {r.status = 'withdrawn';});
   assert.throws(() => watch.approvedBaseline(noApproval));

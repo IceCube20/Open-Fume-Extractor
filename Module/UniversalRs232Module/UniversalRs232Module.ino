@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "src/LocalBusDiagnostics.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <Preferences.h>
@@ -65,7 +66,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 75
+#define OFE_MODULE_FW_PATCH 78
 #define OFE_MODULE_FW_SUFFIX "beta"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -85,6 +86,7 @@ static const uint8_t DEFAULT_MODULE_ADDR = 0x50;
 static const uint32_t FW_UPDATE_TIMEOUT_MS = 30000UL;
 static const uint32_t OUTPUT_FAILSAFE_TIMEOUT_MS = 8000UL;
 static const uint16_t FAULT_LOCAL_UART_INACTIVE = 0x0001;
+static ofe_local_diag::State local_diagnostics;
 
 static HardwareSerial RS485(1);
 static HardwareSerial LOCAL(2);
@@ -284,6 +286,8 @@ struct ProfileEntity {
   char text_value[32] = "-";
   uint32_t last_update_ms = 0;
   uint32_t last_poll_ms = 0;
+  uint32_t response_started_ms = 0;
+  bool response_pending = false;
   uint16_t poll_ms = 1000;
   uint16_t repeat_on_ms = 0;
   uint16_t repeat_off_ms = 0;
@@ -334,7 +338,9 @@ static uint8_t profile_poll_cursor = 0;
 static uint8_t profile_readback_entity_id = 0;
 
 static const char fault_map_text[] =
-  "0x0001,warn,Local UART inactive,Lokaler UART inaktiv,0\n";
+  "0x0001,warn,Local UART inactive,Lokaler UART inaktiv,0\n"
+  "0x0800,warn,Repeated response timeouts,Wiederholte Antwort-Timeouts,0\n"
+  "0x1000,warn,Repeated checksum errors,Gehaeufte Pruefsummenfehler,0\n";
 
 
 
@@ -1054,6 +1060,8 @@ static void save_profile_config() {
 }
 
 static void restart_local_uart() {
+  local_diagnostics.reset();
+  for (uint8_t i = 0; i < profile_entity_count; ++i) profile_entities[i].response_pending = false;
   LOCAL.end();
   delay(10);
   LOCAL.begin(local_baud, local_serial_config, LOCAL_RX_PIN, LOCAL_TX_PIN);
@@ -1208,6 +1216,7 @@ static void local_flush_rx_packet() {
   uint8_t meta2 = 0;
   const bool checksum_ok = validate_active_rx_checksum(rx_packet, rx_packet_len, meta1, meta2);
   if (checksum_ok) {
+    local_diagnostics.checksum.good();
     ++local_rx_ok_count;
     const bool profile_match_ok = process_profile_rx(rx_packet, rx_packet_len);
     if (!profile_match_ok) {
@@ -1216,11 +1225,13 @@ static void local_flush_rx_packet() {
       trace_log(1, meta1 ? meta1 : 0x52, 0xEF, rx_packet, rx_packet_len);
     } else {
       last_local_rx_ms = last_local_activity_ms;
+      local_diagnostics.response(last_local_activity_ms);
       clean_copy(last_local_rx_status, sizeof(last_local_rx_status), "OK");
       trace_log(1, meta1 ? meta1 : 0x52, 0, rx_packet, rx_packet_len);
     }
   } else {
     if (meta2 == 0xEE) {
+      local_diagnostics.checksum.fail(last_local_activity_ms);
       ++local_rx_checksum_errors;
       clean_copy(last_local_rx_status, sizeof(last_local_rx_status), "BAD-CS");
     } else {
@@ -1666,7 +1677,7 @@ static void handle_entity_get(const Frame& req) {
   uint16_t rx_any_age = entity_age_ms(last_local_rx_any_ms);
   uint16_t tx_age = entity_age_ms(last_local_tx_ms);
 
-  if (!wanted || wanted == 1) { if (append_entity_bool_safe(resp.payload, o, 1, last_local_rx_ms && age < 5000, age)) ++count; }
+  if (!wanted || wanted == 1) { if (append_entity_bool_safe(resp.payload, o, 1, local_device_online_now(), age)) ++count; }
   if (!wanted || wanted == 5) { if (append_entity_text_safe(resp.payload, o, 5, line_end_name, 0)) ++count; }
   if (!wanted || wanted == 6) { if (append_entity_text_safe(resp.payload, o, 6, checksum_type_label(), 0)) ++count; }
   if (!wanted || wanted == 7) { if (append_entity_u32_safe(resp.payload, o, 7, local_rx_ok_count, 0)) ++count; }
@@ -2506,6 +2517,7 @@ static bool process_profile_rx(const uint8_t* data, uint8_t len) {
     if (!ok) continue;
     matched = true;
     profile_store_read_value(e, v, text);
+    e.response_pending = false;
     e.last_update_ms = millis();
   }
   return matched;
@@ -2729,8 +2741,12 @@ static bool local_device_online_now(uint32_t now) {
 }
 
 static void update_local_fault_state(uint32_t now) {
-  if (last_local_rx_ms && !local_device_online_now(now)) fault_mask |= FAULT_LOCAL_UART_INACTIVE;
+  // A device that has never answered is disconnected too.
+  if (!local_device_online_now(now)) fault_mask |= FAULT_LOCAL_UART_INACTIVE;
   else fault_mask &= (uint16_t)~FAULT_LOCAL_UART_INACTIVE;
+  // No response-time warning for an absent/never-seen device: report its link instead.
+  if (!local_device_online_now(now)) local_diagnostics.timeout.reset();
+  fault_mask = (fault_mask & (uint16_t)~ofe_local_diag::WARNING_MASK) | local_diagnostics.faults(now);
 }
 
 static void output_off() {
@@ -2783,9 +2799,32 @@ static void profile_repeat_tick() {
     break;
   }
 }
+static uint32_t local_response_timeout_ms() {
+  const uint32_t baud = local_baud >= 300UL ? local_baud : 300UL;
+  const uint32_t wire_ms = (2UL * 96UL * 12UL * 1000UL + baud - 1UL) / baud + 200UL;
+  return wire_ms > 1000UL ? wire_ms : 1000UL;
+}
+
+static void profile_send_poll(ProfileEntity& e, uint32_t now) {
+  if (is_binary_protocol()) {
+    uint8_t binary_poll[96]; uint8_t binary_len = 0;
+    if (!binary_build_template(e.poll, 0, binary_poll, sizeof(binary_poll), binary_len)) return;
+    local_send_line(binary_poll, binary_len);
+  } else local_send_line((const uint8_t*)e.poll, (uint8_t)strlen(e.poll));
+  // Repeated polls must not postpone a response deadline indefinitely.
+  if (e.match[0] && !e.response_pending) {e.response_started_ms = now; e.response_pending = true;}
+}
+
 static void profile_poll_tick() {
   if (!profile_entity_count) return;
   const uint32_t now = millis();
+  for (uint8_t i = 0; i < profile_entity_count; ++i) {
+    ProfileEntity& e = profile_entities[i];
+    if (e.response_pending && uint32_t(now - e.response_started_ms) >= local_response_timeout_ms()) {
+      e.response_pending = false;
+      local_diagnostics.timeout.fail(now);
+    }
+  }
   if (profile_poll_pause_until_ms && (int32_t)(now - profile_poll_pause_until_ms) < 0) return;
   if ((uint32_t)(now - last_profile_poll_ms) < 80UL) return;
   last_profile_poll_ms = now;
@@ -2794,10 +2833,7 @@ static void profile_poll_tick() {
     profile_readback_entity_id = 0;
     if (pending && pending->used && profile_entity_readable(*pending) && pending->poll[0]) {
       pending->last_poll_ms = now;
-      if (is_binary_protocol()) {
-        uint8_t binary_poll[96]; uint8_t binary_len = 0;
-        if (binary_build_template(pending->poll, 0, binary_poll, sizeof(binary_poll), binary_len)) local_send_line(binary_poll, binary_len);
-      } else local_send_line((const uint8_t*)pending->poll, (uint8_t)strlen(pending->poll));
+      profile_send_poll(*pending, now);
       return;
     }
   }
@@ -2807,10 +2843,7 @@ static void profile_poll_tick() {
     if (!e.used || !profile_entity_readable(e) || !e.poll[0]) continue;
     if (e.last_poll_ms && (uint32_t)(now - e.last_poll_ms) < e.poll_ms) continue;
     e.last_poll_ms = now;
-    if (is_binary_protocol()) {
-      uint8_t binary_poll[96]; uint8_t binary_len = 0;
-      if (binary_build_template(e.poll, 0, binary_poll, sizeof(binary_poll), binary_len)) local_send_line(binary_poll, binary_len);
-    } else local_send_line((const uint8_t*)e.poll, (uint8_t)strlen(e.poll));
+    profile_send_poll(e, now);
     break;
   }
 }
@@ -3137,7 +3170,7 @@ void loop() {
     const bool output_active = profile_output_enabled_active();
     ofe_status_leds.setBusOnline(bus_online);
     ofe_status_leds.setFirmwareUpdate(fw_update_active);
-    const bool critical_fault = (fault_mask & (uint16_t)~FAULT_LOCAL_UART_INACTIVE) != 0;
+    const bool critical_fault = (fault_mask & (uint16_t)~(FAULT_LOCAL_UART_INACTIVE | ofe_local_diag::WARNING_MASK)) != 0;
     ofe_status_leds.setModuleEvent(fault_mask ? (critical_fault ? OFE_LED_EVENT_CRITICAL : OFE_LED_EVENT_WARNING) : (output_active ? OFE_LED_EVENT_EXTRACTOR_ON : (local_online ? OFE_LED_EVENT_DEVICE_ONLINE : OFE_LED_EVENT_WARNING)));
     ofe_status_leds.tick();
   }

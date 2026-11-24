@@ -6,6 +6,15 @@ SRC = ROOT / 'OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'
 
 
 class MasterLedServiceTests(unittest.TestCase):
+    def test_evt_uses_the_same_module_alarm_policy_as_the_alarm_centre(self):
+        source = (SRC / 'MasterStatusLed.inc.h').read_text()
+        self.assertIn('scheduler.moduleAlarmState(m)', source)
+        self.assertIn('!scheduler.mainInputSourceAvailable() || scheduler.outputAddr() == 0', source)
+        self.assertIn('alarm.warning()', source)
+        self.assertIn('alarm.error()', source)
+        self.assertNotIn('m.jbc_link_flags', source)
+        self.assertNotIn('m.weller_uart_age_sec', source)
+
     def test_one_pixel_owner_and_safe_fallback(self):
         service = (SRC / 'MasterStatusLedService.h').read_text()
         self.assertIn('std::atomic<uint32_t>', service)

@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 #include "../../../Module/ModbusRtuModule/src/OfeStateTransaction.h"
+#include "../../../Module/ModbusRtuModule/src/LocalBusDiagnostics.h"
+static ofe_local_diag::State local_diagnostics;
+static uint8_t last_modbus_exception;
 
 constexpr unsigned PROFILE_ENTITY_MAX = 32;
 struct ProfileEntity {
@@ -58,6 +61,7 @@ static void web_security_headers() {}
 static bool web_post_origin_ok() {return origin_ok;}
 static bool web_csrf_ok() {return csrf_ok;}
 static bool web_password_change_blocked() {return false;}
+static bool hosted_c6_busy() {return false;}
 struct Web {
   bool credentials=false;
   int challenges=0;
@@ -70,6 +74,7 @@ struct Web {
 
 namespace mqtt {
 using String=std::string;
+struct MqttConfigGuard {bool locked() const {return true;}};
 static String mqtt_session_topic_root="old/base/";
 static String mqtt_topic_path(const char*) {return "new/base/";}
 struct Registry {
@@ -224,5 +229,27 @@ int main() {
   assert(modbus_send_request(entity,3,0));
   now_ms=pending_modbus_ms+modbus_response_timeout_ms();profile_poll_tick();
   assert(!pending_modbus_entity_id && modbus_recovering);
-  std::cout << "PASS: captive auth, three display packet boundaries, profile rollback, Modbus ownership/echo validation, queued OFF/buttons and rollover\n";
+  local_diagnostics.reset();local_baud=9600;
+  uint8_t exception[]={1,0x83,2,0,0};
+  const auto original=entity.value;
+  for(unsigned i=0;i<3;++i) {
+    pending_modbus_entity_id=0;modbus_recovering=false;
+    assert(modbus_send_request(entity,3,0));
+    exception[0]=2;assert(!process_profile_rx(exception,5));
+    exception[0]=1;assert(process_profile_rx(exception,5));
+    assert(entity.value==original&&last_modbus_exception==2);
+    assert(bool(local_diagnostics.faults(now_ms)&0x2000)==(i==2));
+    now_ms+=100;
+  }
+  for(unsigned i=0;i<3;++i) {
+    assert(modbus_send_request(entity,3,0));assert(process_profile_rx(reply,7));
+  }
+  assert(!local_diagnostics.faults(now_ms)&&!last_modbus_exception);
+  for(unsigned i=0;i<3;++i) {
+    pending_modbus_entity_id=0;modbus_recovering=false;
+    assert(modbus_send_request(entity,3,0));
+    now_ms=pending_modbus_ms+modbus_response_timeout_ms();profile_poll_tick();
+    assert(bool(local_diagnostics.faults(now_ms)&0x0800)==(i==2));
+  }
+  std::cout << "PASS: captive auth, display boundaries, profile rollback, Modbus ownership/echo/exception/timeout debounce, queued OFF/buttons and rollover\n";
 }

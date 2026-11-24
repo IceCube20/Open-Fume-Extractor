@@ -2,7 +2,7 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),
 const src=path.resolve(__dirname,'../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src');
 const ui=fs.readFileSync(path.join(src,'WebUsbStorageUi.h'),'utf8').match(/R"USBJS\(([\s\S]*?)\)USBJS"/)[1];
 const backupParser=fs.readFileSync(path.join(src,'WebConfig.inc.h'),'utf8').match(/function setBackupStatus[\s\S]*?(?=async function submitBackupImport)/)[0];
-const c6Ui=fs.readFileSync(path.join(src,'HostedC6WebUi.h'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const c6Ui=fs.readFileSync(path.join(src,'HostedC6WebUi.h'),'utf8').replace(/\)C6"\r?\n#define OFE_C6_UI_TAIL R"C6\(/g,'').match(/<script>([\s\S]*?)<\/script>/)[1];
 const largeSize=8*1024*1024+37,maxSize=2147483647;
 const state={detected:true,mounted:true,phase:'idle',message:'Ready',generation:1,token:0,transfer_limit:maxSize,buffered_read:false,directories:[{index:0,path:''}],files:[
  {index:0,name:'large.dat',path:'large.dat',size:largeSize},
@@ -118,7 +118,7 @@ const server=http.createServer((req,res)=>{void (async()=>{
   await mount('config','<input id="backup_json"><div id="backup_status"></div><button id="backup_import_btn" disabled></button>');await page.addScriptTag({content:backupParser});
   await row('backup.json').click();await button('Select backup').click();await page.waitForFunction(()=>!document.getElementById('backup_import_btn').disabled);assert.equal(await page.locator('#backup_json').inputValue().then(s=>s.length),largeSize);
   await page.waitForFunction(()=>!document.querySelector('.usb-actions button').disabled);invalidBackup=true;await button('Select backup').click();await page.waitForFunction(()=>document.getElementById('backup_status').textContent.includes('Backup ungültig'));assert(await page.locator('#backup_import_btn').isDisabled());invalidBackup=false;
-  const c6Fields=['current','state','bar','catalog_state'].map(id=>`<div id="c6_${id}"></div>`).join('')+['download','cancel','install','catalog_check'].map(id=>`<button id="c6_${id}"></button>`).join('')+'<input id="c6_file" type="file"><input id="c6_recovery" type="checkbox">';
+  const c6Fields=['current','state','bar','catalog_state'].map(id=>`<div id="c6_${id}"></div>`).join('')+['download','cancel','install','catalog_check'].map(id=>`<button id="c6_${id}"></button>`).join('')+'<input id="c6_file" type="file"><input id="c6_recovery" type="checkbox"><input id="c6_legacy" type="checkbox">';
   await mount('update',c6Fields);await page.evaluate(()=>{window.OFE_C6={size:4,expected:0x020700,de:false,csrf:'test',catalog:''};window.OFE_C6_CATALOG={load:async()=>{throw Error('offline')}};});await page.addScriptTag({content:c6Ui});
   await page.waitForFunction(()=>!document.getElementById('c6_file').disabled);await row('firmware.bin').click();await page.locator('#usb-target').selectOption('c6');await button('Select firmware').click();await page.waitForFunction(()=>document.getElementById('c6_state').textContent==='Incorrect file size');assert(!calls.includes('/update/c6/begin'));
   await page.waitForFunction(()=>!document.querySelector('.usb-actions button').disabled);c6Lan=false;await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await page.waitForFunction(()=>document.getElementById('c6_file').disabled);await page.locator('#usb-target').dispatchEvent('change');assert(await button('Select firmware').isDisabled());assert(await page.locator('#c6_install').isDisabled());

@@ -225,6 +225,12 @@ static void web_begin() {
   web.on("/update/module/abort", HTTP_POST, [](){ if (web_require_auth()) web_handle_module_chunk_abort(); });
   web.on("/update/module/stats", HTTP_GET, [](){ if (web_require_auth()) web_handle_module_update_stats(); });
   web.on("/logic", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic(); });
+  web.on("/logic/responsive.css", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Cache-Control", "no-store"); web.send_P(200, PSTR("text/css; charset=utf-8"), OFE_WEB_LOGIC_RESPONSIVE_STYLE); });
+  web.on("/logic/responsive.js", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Cache-Control", "no-store"); web.send_P(200, PSTR("application/javascript; charset=utf-8"), OFE_WEB_LOGIC_RESPONSIVE_SCRIPT); });
+  web.on("/logic/connections.js", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Cache-Control", "no-store"); web.send_P(200, PSTR("application/javascript; charset=utf-8"), OFE_WEB_LOGIC_CONNECTION_SCRIPT); });
+  web.on("/logic/router.mjs", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Cache-Control", "no-store"); web.sendHeader("Content-Encoding", "gzip"); web.send_P(200, PSTR("application/javascript; charset=utf-8"), reinterpret_cast<const char*>(OFE_LOGIC_ROUTER_JS), sizeof(OFE_LOGIC_ROUTER_JS)); });
+  web.on("/logic/libavoid.wasm", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Cache-Control", "no-store"); web.sendHeader("Content-Encoding", "gzip"); web.send_P(200, PSTR("application/wasm"), reinterpret_cast<const char*>(OFE_LOGIC_ROUTER_WASM), sizeof(OFE_LOGIC_ROUTER_WASM)); });
+  web.on("/logic/router-license.txt", HTTP_GET, [](){ if (!web_require_auth()) return; web.sendHeader("Content-Encoding", "gzip"); web.send_P(200, PSTR("text/plain; charset=utf-8"), reinterpret_cast<const char*>(OFE_LOGIC_ROUTER_LICENSE), sizeof(OFE_LOGIC_ROUTER_LICENSE)); });
   web.on("/logic/json", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic_json(); });
   web.on("/logic/runtime", HTTP_GET, [](){ if (web_require_auth()) web_handle_logic_runtime(); });
   web.on("/logic/json/save", HTTP_POST, [](){ if (web_require_auth()) web_handle_logic_json(); });

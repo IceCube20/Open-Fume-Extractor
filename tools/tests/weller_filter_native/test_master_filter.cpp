@@ -2,9 +2,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include "../../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/LocalBusDiagnostics.h"
 
 static constexpr uint32_t CAP_JBC_BUS = 1, CAP_FILTER_SENSOR = 2, CAP_WELLER_INTERFACE = 4;
 static constexpr uint8_t ADDR_JBC_MIN = 0x10, ADDR_MODBUS_MAX = 0x6F, MODULE_UNKNOWN = 0;
+static constexpr uint8_t MODULE_UNIVERSAL_RS232 = 7, MODULE_MODBUS_RTU = 8;
 struct ModuleRecord {
   bool online = true;
   uint8_t addr = 0, type = 5, weller_filter_status = 0;
@@ -68,5 +70,13 @@ int main() {
   assert(scheduler.systemJbcError() == 64);
   out.online = false;
   assert(scheduler.systemJbcError() == 2048 && scheduler.systemJbcFilterSaturation() == 0);
+  out.online=true;out.caps=0;
+  for(uint8_t type:{MODULE_UNIVERSAL_RS232,MODULE_MODBUS_RTU}) {
+    out.type=type;
+    for(uint16_t mask:{uint16_t(0x0800),uint16_t(0x1000),uint16_t(0x2000),uint16_t(0x3800)}) {
+      out.io_fault_mask=mask;assert(scheduler.systemJbcError()==0);
+      out.io_fault_mask=mask|1;assert(scheduler.systemJbcError()==2048);
+    }
+  }
   std::puts("PASS: production Master filter policy ignores cached Weller display values, preserves fresh alarms/runtime and non-Weller faults");
 }

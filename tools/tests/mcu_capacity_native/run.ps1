@@ -9,6 +9,11 @@ $source = "$root/OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 $build = "$root/tools/tests/build-checks/mcu-capacity-native"
 python "$PSScriptRoot/extract.py"
 if ($LASTEXITCODE -ne 0) {throw 'Manifest extraction failed'}
+& "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 `
+  "$PSScriptRoot/test_c6_trial.cpp" "/Fo$build/" "/Fe$build/c6_trial.exe"
+if ($LASTEXITCODE -ne 0) {throw 'C6 trial policy compile failed'}
+& "$build/c6_trial.exe"
+if ($LASTEXITCODE -ne 0) {throw 'C6 trial policy test failed'}
 foreach ($variant in @('s3', 'p4')) {
   [string[]]$defines = @()
   if ($variant -eq 'p4') { $defines = @('/DCONFIG_IDF_TARGET_ESP32P4=1') }
@@ -24,6 +29,12 @@ foreach ($variant in @('s3', 'p4')) {
   if ($LASTEXITCODE -ne 0) {throw "Module alarm compile failed: $variant"}
   & "$build/alarms_$variant.exe"
   if ($LASTEXITCODE -ne 0) {throw "Module alarm test failed: $variant"}
+  & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS `
+    @defines "/I$PSScriptRoot/stubs" "/I$source" "/I$build" `
+    "$PSScriptRoot/test_status_led_alarms.cpp" "$source/ModuleRegistry.cpp" "/Fo$build/" "/Fe$build/status_led_$variant.exe"
+  if ($LASTEXITCODE -ne 0) {throw "Status LED alarm compile failed: $variant"}
+  & "$build/status_led_$variant.exe"
+  if ($LASTEXITCODE -ne 0) {throw "Status LED alarm test failed: $variant"}
   & "$vc/bin/Hostx64/x64/cl.exe" /nologo /EHsc /std:c++17 /utf-8 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS `
     @defines "/I$source" "/I$build" "$PSScriptRoot/test_multipart.cpp" "/Fo$build/" "/Fe$build/multipart_$variant.exe"
   if ($LASTEXITCODE -ne 0) {throw "Multipart compile failed: $variant"}

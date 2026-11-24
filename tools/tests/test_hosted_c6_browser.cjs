@@ -3,7 +3,7 @@ const {chromium}=require('playwright');
 const root=path.join(__dirname,'../../OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src'),out=path.join(__dirname,'build-checks/master-p4-native');
 const css=fs.readFileSync(path.join(root,'WebShell.inc.h'),'utf8').match(/<style>([\s\S]*?)<\/style>/)[1];
 const size=1226976,expected=0x020c0d;
-const catalog=JSON.parse(fs.readFileSync(path.join(__dirname,'../../updates/hosted-c6.json'),'utf8'));
+const catalog=JSON.parse(fs.readFileSync(path.join(__dirname,'../../updates/hosted-c6-v2.json'),'utf8'));
 (async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.OFE_BROWSER_EXECUTABLE});
 try{for(const lang of ['de','en'])for(const width of [320,390,768,1440]){
  const page=await browser.newPage({viewport:{width,height:1050}}),errors=[],posts=[];

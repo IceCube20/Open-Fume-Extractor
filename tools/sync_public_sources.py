@@ -14,7 +14,7 @@ HA = ROOT.parent / "Open-Fume-Extractor-Home-Assistant"
 SKIP = {"build", "build-checks", "__pycache__", "node_modules", ".git", ".venv", ".arduino-high-perf", "artifacts", "refactor-backups"}
 EXTENSIONS = {".ino", ".h", ".hpp", ".c", ".cpp", ".inc", ".py", ".ps1", ".sh", ".bat",
               ".js", ".cjs", ".mjs", ".html", ".css", ".json", ".csv", ".md", ".txt", ".yml", ".yaml",
-              ".png", ".jpg", ".jpeg", ".svg", ".ttf", ".ofeprofile", ".toml", ".ini"}
+              ".png", ".jpg", ".jpeg", ".svg", ".ttf", ".ofeprofile", ".toml", ".ini", ".wasm"}
 DROP_TESTS = {"test_led_styles_match_master_web_event_mapping", "test_master_device_constants_match_actual_mqtt_firmware_metadata"}
 
 

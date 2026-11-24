@@ -39,5 +39,8 @@ async function update(){
   }catch(e){window.ofeSetNetworkHeader({network_transport:'unknown'});usbHeader({});document.querySelectorAll('.transport-ble').forEach(e=>e.classList.remove('is-on'));}
 }
 const selector=document.getElementById('lang_sel');if(selector)selector.addEventListener('change',()=>{if(last)window.ofeSetNetworkHeader(last)});
+const dev=document.querySelector('header .brand-dev');if(dev){const label=()=>{dev.title=dev.textContent.trim()};label();new MutationObserver(label).observe(dev,{childList:true,subtree:true,characterData:true})}
+const nav=document.querySelector('header .nav'),active=nav?.querySelector('.active');
+if(nav&&active&&window.matchMedia('(max-width:700px)').matches)nav.scrollLeft=Math.max(0,active.offsetLeft-nav.offsetLeft-6);
 document.addEventListener('visibilitychange',update);update();setInterval(update,5000);
 })();</script>)ICONS"

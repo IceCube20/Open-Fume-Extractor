@@ -1,5 +1,6 @@
 """Exercise actual P4 central code with deterministic NimBLE adapters (not radio emulation)."""
 import os
+import json
 import re
 from pathlib import Path
 import subprocess
@@ -155,11 +156,24 @@ String html_escape(const String& value) {return value;}
 char web_csrf_token[]="0123456789abcdef";
 void web_csrf_init() {}
 bool web_is_german() {return german;}
+bool trialAllowed=false;
+bool web_c6_trial_allowed() {return trialAllowed;}
+bool approved2131=false;
+bool web_c6_approved_2131() {return approved2131;}
 '''+c6_form+'''\nint main(int argc,char** argv)''')
     fixture=fixture.replace('if(!file.good())return 2;', '''if(!file.good())return 2;
     String c6;append_hosted_c6_ui(c6);
     std::ofstream c6file(std::string(argv[1])+(de ? "/c6-de.html" : "/c6-en.html"));
     c6file<<c6.c_str();if(!c6file.good())return 3;
+    approved2131=true;String approved;append_hosted_c6_ui(approved);approved2131=false;
+    std::ofstream approvedfile(std::string(argv[1])+(de ? "/c6-approved-de.html" : "/c6-approved-en.html"));
+    approvedfile<<approved.c_str();
+    approved2131=true;trialAllowed=true;String approvedTrial;append_hosted_c6_ui(approvedTrial);approved2131=false;trialAllowed=false;
+    std::ofstream approvedTrialFile(std::string(argv[1])+(de ? "/c6-approved-trial-de.html" : "/c6-approved-trial-en.html"));
+    approvedTrialFile<<approvedTrial.c_str();
+    trialAllowed=true;String trial;append_hosted_c6_ui(trial);trialAllowed=false;
+    std::ofstream trialfile(std::string(argv[1])+(de ? "/c6-trial-de.html" : "/c6-trial-en.html"));
+    trialfile<<trial.c_str();if(!trialfile.good())return 8;
     String quality;web_append_rs485_quality(quality);quality+=OFE_RS485_QUALITY_SCRIPT;
     std::ofstream qualityfile(std::string(argv[1])+(de ? "/quality-de.html" : "/quality-en.html"));
     qualityfile<<quality.c_str();if(!qualityfile.good())return 4;
@@ -167,7 +181,7 @@ bool web_is_german() {return german;}
     std::ofstream exportfile(std::string(argv[1])+(de ? "/diagnostic-exports-de.html" : "/diagnostic-exports-en.html"));
     exportfile<<exports.c_str();if(!exportfile.good())return 6;
     std::ofstream stylefile(std::string(argv[1])+"/shared-form-style.html");
-    stylefile<<OFE_WEB_TYPOGRAPHY_STYLE;if(!stylefile.good())return 7;
+    // Large CSS literals exceed MSVC limits; Python emits the same source below.
     for(unsigned variant=0;variant<3;++variant) {
       const bool p4=variant!=0,poe=variant==2;
       MasterHardwareInfo info;info.p4=p4;info.model=p4 ? "ESP32-P4" : "ESP32-S3";
@@ -188,6 +202,13 @@ bool web_is_german() {return german;}
                     "/DARDUINO=10819","/I"+str(src),"/I"+str(ROOT / "tools/tests/settings_store_native/stubs"),str(form_cpp),
                     "/Fo"+str(OUT)+"/","/Fe"+str(form_exe)],env=env,check=True)
     subprocess.run([str(form_exe),str(OUT)],check=True)
+    typography=(src / "WebTypography.h").read_text()
+    base=typography.split("#define OFE_WEB_TYPOGRAPHY_STYLE ",1)[1].split(" OFE_WEB_FORM_STYLE",1)[0]
+    styles=json.loads(base)
+    for name in ("WebFormStyles.h","WebHeaderStyles.h","WebTheme.h"):
+        text=(src / name).read_text()
+        styles+=re.search(r'R"([A-Z]+)\(([\s\S]*?)\)\1"',text)[2]
+    (OUT / "shared-form-style.html").write_text(styles,encoding="utf-8")
     activity=(src / "MasterEthernetActivity.h").read_text()
     (OUT / "generated_ethernet_activity.h").write_text(re.sub(r'^#include.*\n','',activity,flags=re.M))
     for variant,defines in (("s3",[]),("p4",["/DCONFIG_IDF_TARGET_ESP32P4=1","/DCONFIG_ESP_NETIF_REPORT_DATA_TRAFFIC=1"]),
@@ -206,7 +227,10 @@ bool web_is_german() {return german;}
                         "/DARDUINO=10819","/I"+str(OUT),"/I"+str(src),"/I"+str(ROOT / "tools/tests/settings_store_native/stubs"),str(TEST / (test+".cpp")),
                         "/Fo"+str(OUT)+"/","/Fe"+str(c6_exe),"bcrypt.lib"],env=env,check=True)
         fixture=ROOT / "tools/tests/build-checks/hosted-c6/esp32c6-v2.12.13.bin"
-        subprocess.run([str(c6_exe)]+([str(fixture)] if test.endswith("staging") and fixture.exists() else []),check=True)
+        args=[str(fixture)] if test.endswith("staging") and fixture.exists() else []
+        trial_fixture=fixture.with_name('esp32c6-v2.13.1.bin')
+        if args and trial_fixture.exists():args.append(str(trial_fixture))
+        subprocess.run([str(c6_exe)]+args,check=True)
 
 
 if __name__ == "__main__":

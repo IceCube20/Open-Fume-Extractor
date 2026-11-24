@@ -1,7 +1,7 @@
 {
-  "firmware_version": "1.0.18RC",
+  "firmware_version": "1.0.21RC",
   "status": "software port; hosted BLE and RS485/WiFi OTA enabled; hardware validation pending",
-  "base_sketch_sha256": "03627dc0ddd8d90f2a71f8d680670fe9340ae4464f47690ce2aa66461aa677c9",
+  "base_sketch_sha256": "f05bb8b563d7ee703d02ceda84dc6b3fff01385e5979f45ddc152601400364d5",
   "vendor_repository": "https://github.com/Elecrow-RD/-CrowPanel-Advanced-5inch-ESP32-P4-HMI-AI-Display-800x480-IPS-Touch-Screen",
   "vendor_blobs": {
     "board_config.h (Lesson07)": "129f7aa1a1d28d2bf4535115220e411b30bf81ff",
@@ -65,7 +65,7 @@
     "src/OfeStatusLed.h": "4bfdbefb0a2112263d9a35ca121749945023f5afc90121fe6923dc26d8f29bdb",
     "src/Rs485PeripheralBus.cpp": "3d52f86323cf896571d447b8547ba23165c0c97744b18c4cbc0e3e5befc1e6f0",
     "src/Rs485PeripheralBus.h": "d02f5d401be42e404edacddb1939a2af4b4da179e188d94b1dfd1aaa95516bc4",
-    "DisplayModule_P4_800x480.ino": "bb7e26395738f1f6b7f5c3d83ae90b59373068ddd73197e68b8242405ad5ba96",
+    "DisplayModule_P4_800x480.ino": "f4232663e47cff9e9b79b3ee76c65e6ab2e1c180f2c76023a1b51cbcbe7070be",
     "src/OfeP4RgbDisplay.h": "f1b4369e7cbb0f18b88eee1ddeeffab3f4d3302582d6e22819a7659e3bcab84b",
     "OfeP4Board.h": "a432271e47877b84cf372ca2278a9bd8067a9971436c807fe2b9cba74baff164",
     "src/OfeP4DisplayBle.h": "e4fd42ae9a1d11290ac8c2aac20e41cd73ebb0e650dca25aa2ee6929ab795bb9",

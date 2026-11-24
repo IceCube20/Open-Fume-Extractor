@@ -41,7 +41,7 @@ class FanIoDynamicSourceTest(unittest.TestCase):
         self.assertIn("FILTER_RUNTIME = 1", header)
         self.assertIn("FILTER_PRESSURE = 2", header)
         self.assertIn("FILTER_BOTH = 3", header)
-        self.assertIn("CONFIG_VERSION = 3", header)
+        self.assertIn("CONFIG_VERSION = 4", header)
         self.assertIn("if (filter_mode_v1 && cfg.filter_mode <= 2) cfg.filter_mode += 1", header)
         self.assertIn("values=0|1|2|3", self.pro)
         self.assertIn("filter_runtime_save_due_ms = now + 900000UL", self.pro)

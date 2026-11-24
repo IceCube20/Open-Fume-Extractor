@@ -43,7 +43,7 @@ function cards(diag, de) {
     fs.mkdirSync(output, {recursive:true});
     for (const diag of [false, true]) for (const de of [true, false]) {
       const css = diag ? diagCss : statusCss;
-      for (const width of [320,390,760,1440]) {
+      for (const width of [320,390,760,1440,1599,1600,1920,2560]) {
         const page = await browser.newPage({viewport:{width,height:1000}});
         const grid = diag ? 'class="diag-module-grid"' : 'id="details" class="grid"';
         await page.setContent(`<style>${css}</style><main><div ${grid}>${cards(diag,de)}</div></main>`);
@@ -67,6 +67,12 @@ function cards(diag, de) {
             card:box.toJSON()};
         }),head);
         const results = await inspect();
+        if(!diag){
+          const columns=await page.locator('#details').evaluate(grid=>getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+          assert.equal(columns,width>=1600?5:width<=620?1:width<=1050?2:4,'Responsive status columns at '+width);
+          const firstRow=results.filter(r=>Math.abs(r.card.top-results[0].card.top)<1);
+          assert.equal(firstRow.length,columns,'Expected number of module cards on the first row');
+        }
         results.forEach((r,i) => {
           assert.equal(r.color,colors[i]);
           assert.equal(r.width,'3px');
@@ -95,12 +101,12 @@ function cards(diag, de) {
         assert.deepEqual(without.map(r=>r.body),expanded.map(r=>r.body));
         await page.addStyleTag({content:`${selector}>${head}::before{content:""!important}.status-pixel-accent{visibility:visible}`});
         await page.locator('.test-body').first().evaluate(body=>body.style.minHeight='130px');
-        if (width===390||width===1440) {
+        if (width===390||width===1440||(!diag&&width===1920)) {
           await page.screenshot({path:path.join(output,`${diag?'diagnostics':'status'}-${width}-${de?'de':'en'}.png`),fullPage:true});
         }
         await page.close();
       }
     }
-    console.log('PASS: Status/diagnostics header-only stripes, six module colors, DE/EN, 320-1440px, expanded cards and unaffected controls/layout');
+    console.log('PASS: Status/diagnostics header-only stripes, six module colors, DE/EN, 320-2560px, five status columns from 1600px, expanded cards and unaffected controls/layout');
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

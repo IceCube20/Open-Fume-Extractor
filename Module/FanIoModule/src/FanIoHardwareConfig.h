@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include "FanIoLedConfig.h"
 
 namespace ofe_fanio {
 
@@ -72,7 +73,7 @@ struct HardwareConfigV2 {
   uint32_t checksum;
 };
 
-struct HardwareConfig {
+struct HardwareConfigV3 {
   uint32_t magic;
   uint16_t version;
   uint16_t size;
@@ -97,8 +98,19 @@ struct HardwareConfig {
   uint32_t checksum;
 };
 
+struct HardwareConfig {
+  uint32_t magic;
+  uint16_t version, size;
+  ChannelConfig inputs[MAX_INPUTS], outputs[MAX_OUTPUTS];
+  uint8_t fan_enable_pin, fan_pwm_pin, fan_tacho_pin, fan_flags, tacho_pulses_per_rev;
+  uint8_t fan_output_mode, fan_enable_flags, fan_pwm_flags, fan_min_power_percent, fan_max_power_percent;
+  uint8_t filter_mode, pressure_type, pressure_pin_a, pressure_pin_b, pressure_i2c_address;
+  uint32_t filter_lifetime_minutes;
+  LedStripConfig leds;
+  uint32_t checksum;
+};
 static const uint32_t CONFIG_MAGIC = 0x4F464943UL; // OFIC
-static const uint16_t CONFIG_VERSION = 3;
+static const uint16_t CONFIG_VERSION = 4;
 
 inline uint32_t checksumBytes(const void* ptr, size_t len) {
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(ptr);
@@ -188,6 +200,7 @@ inline void defaults(HardwareConfig& cfg, bool pro) {
   cfg.pressure_pin_b = PIN_UNUSED;
   cfg.pressure_i2c_address = 0x21;
   cfg.filter_lifetime_minutes = 60000UL;
+  ledDefaults(cfg.leds);
   cfg.checksum = checksum(cfg);
 }
 
@@ -208,6 +221,7 @@ inline bool pinAllowed(uint8_t pin, bool output) {
 inline bool validate(const HardwareConfig& cfg, bool pro) {
   if (cfg.magic != CONFIG_MAGIC || cfg.version != CONFIG_VERSION || cfg.size != sizeof(cfg)) return false;
   if (cfg.checksum != checksum(cfg)) return false;
+  if (!ledValidate(cfg.leds)) return false;
   if (cfg.fan_output_mode > FAN_OUTPUT_RELAY_PWM) return false;
   if (cfg.fan_enable_flags & (uint8_t)~FAN_ENABLE_ACTIVE_LOW) return false;
   if (cfg.fan_pwm_flags & (uint8_t)~(FAN_PWM_ACTIVE_LOW | FAN_PWM_OPEN_DRAIN)) return false;
@@ -224,6 +238,7 @@ inline bool validate(const HardwareConfig& cfg, bool pro) {
   };
   for (uint8_t i = 0; i < MAX_INPUTS; ++i) if ((cfg.inputs[i].flags & CHANNEL_ENABLED) && !take(cfg.inputs[i].pin, false)) return false;
   for (uint8_t i = 0; i < MAX_OUTPUTS; ++i) if ((cfg.outputs[i].flags & CHANNEL_ENABLED) && !take(cfg.outputs[i].pin, true)) return false;
+  if (cfg.leds.pin != PIN_UNUSED && !take(cfg.leds.pin, true)) return false;
 
   if (cfg.fan_flags & CHANNEL_ENABLED) {
     if (fanUsesRelay(cfg)) {
@@ -269,6 +284,7 @@ inline void migrateV2(const HardwareConfigV2& old_cfg, HardwareConfig& cfg, bool
   cfg.pressure_pin_b = old_cfg.pressure_pin_b;
   cfg.pressure_i2c_address = old_cfg.pressure_i2c_address;
   cfg.filter_lifetime_minutes = old_cfg.filter_lifetime_minutes;
+  ledDefaults(cfg.leds);
   cfg.checksum = checksum(cfg);
 }
 
@@ -282,6 +298,14 @@ inline bool load(Preferences& prefs, HardwareConfig& cfg, bool pro) {
     }
   }
 
+  if (stored_len == sizeof(HardwareConfigV3)) {
+    HardwareConfigV3 old;
+    if (prefs.getBytes("hwcfg", &old, sizeof(old)) == sizeof(old) && old.magic == CONFIG_MAGIC && old.version == 3 && old.size == sizeof(old) && old.checksum == checksumBytes(&old, offsetof(HardwareConfigV3, checksum))) {
+      memset(&cfg, 0, sizeof(cfg));memcpy(&cfg, &old, offsetof(HardwareConfigV3, checksum));
+      cfg.version = CONFIG_VERSION;cfg.size = sizeof(cfg);ledDefaults(cfg.leds);cfg.checksum = checksum(cfg);
+      if (validate(cfg, pro)) return true;
+    }
+  }
   if (stored_len == sizeof(HardwareConfigV2)) {
     HardwareConfigV2 stored;
     if (prefs.getBytes("hwcfg", &stored, sizeof(stored)) == sizeof(stored)) {

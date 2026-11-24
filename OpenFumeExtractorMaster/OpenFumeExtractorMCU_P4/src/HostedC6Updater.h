@@ -9,6 +9,7 @@
 #include <esp_wifi.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/sha1.h>
 #include <atomic>
 #include <cstring>
 
@@ -21,6 +22,13 @@ public:
   bool canRestart() const {return phase()==Recovery || phase()==Restarting;}
   uint32_t received() const {return received_;}
   uint32_t written() const {return written_.load();}
+  bool trial() const {return trial_;}
+  bool testImage() const {return test_image_;}
+  bool developerImage() const {return selected_.version!=0;}
+  const char* sourceCommit() const {return selected_.commit;}
+  const char* imageHash() const {return image_hash_;}
+  uint32_t targetVersion() const {return developerImage()?selected_.version:test_image_?ofe_c6::TEST_VERSION:ofe_c6::VERSION;}
+  uint32_t imageSize() const {return developerImage()?selected_.size:test_image_?ofe_c6::TEST_SIZE:ofe_c6::IMAGE_SIZE;}
   uint32_t slaveVersion() const {
     uint32_t v=slave_.load();if(v)return v;
     uint32_t a=0,b=0,c=0;hostedGetSlaveVersion(&a,&b,&c);return a<=255 && b<=255 && c<=255 ? (a<<16)|(b<<8)|c : 0;
@@ -45,10 +53,14 @@ public:
   ofe_c6::Error error() const {return ofe_c6::Error(error_.load());}
   uint8_t verification() const {return verification_.load();}
 
-  ofe_c6::Error begin(uint32_t size,uint32_t token,uint32_t now) {
+  ofe_c6::Error begin(uint32_t size,uint32_t token,uint32_t now,bool trial=false,bool test_image=false,bool trial_authorized=false,bool approved=false,const ofe_c6::DeveloperImage* selected=nullptr) {
     if (busy()) return ofe_c6::Busy;
     clear();
-    if (size!=ofe_c6::IMAGE_SIZE) return fail(ofe_c6::Size);
+    if ((test_image && !trial && !approved) || (trial && !trial_authorized)) return fail(ofe_c6::TrialDenied);
+    if(selected && (!trial || !trial_authorized || !ofe_c6::developerImageValid(*selected)))return fail(ofe_c6::TrialDenied);
+    if(selected)selected_=*selected;
+    trial_=trial;test_image_=test_image;
+    if (size!=imageSize()) return fail(ofe_c6::Size);
     if (hostVersion()!=ofe_c6::VERSION) return fail(ofe_c6::HostMismatch);
     image_=static_cast<uint8_t*>(heap_caps_malloc(size,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     if (!image_) return fail(ofe_c6::NoPsram);
@@ -58,17 +70,31 @@ public:
   bool owns(uint32_t token) const {return token && token==token_;}
   ofe_c6::Error append(uint32_t token,const uint8_t* data,size_t len,uint32_t now) {
     if (!owns(token) || phase()!=Receiving) return ofe_c6::Busy;
-    if (!data || len>ofe_c6::IMAGE_SIZE-received_) return fail(ofe_c6::Size);
+    if (!data || len>imageSize()-received_) return fail(ofe_c6::Size);
     memcpy(image_+received_,data,len);received_+=uint32_t(len);last_activity_=now;return ofe_c6::Ok;
   }
   ofe_c6::Error seal(uint32_t token,uint32_t now) {
     if (!owns(token) || phase()!=Receiving) return ofe_c6::Busy;
-    if (received_!=ofe_c6::IMAGE_SIZE) return fail(ofe_c6::Incomplete);
+    if (received_!=imageSize()) return fail(ofe_c6::Incomplete);
     if (image_[0]!=0xE9 || image_[12]!=13 || image_[13]!=0) return fail(ofe_c6::Header);
     uint8_t digest[32];
     if (mbedtls_sha256(image_,received_,digest,0)!=0) return fail(ofe_c6::Hash);
-    uint8_t diff=0;for(unsigned i=0;i<32;++i)diff|=digest[i]^ofe_c6::SHA256[i];
+    if(developerImage()) {
+      char version[16];snprintf(version,sizeof(version),"%u.%u.%u",unsigned(selected_.version>>16),unsigned((selected_.version>>8)&255),unsigned(selected_.version&255));
+      if(image_[32]!=0x32 || image_[33]!=0x54 || image_[34]!=0xCD || image_[35]!=0xAB ||
+         memcmp(image_+48,version,strlen(version)+1) || memcmp(image_+80,"network_adapter",16))return fail(ofe_c6::Header);
+      // Git blob identity comes from the developer's HTTPS upstream selection, not OFE approval.
+      char prefix[32];const int n=snprintf(prefix,sizeof(prefix),"blob %lu",static_cast<unsigned long>(received_));
+      mbedtls_sha1_context ctx;mbedtls_sha1_init(&ctx);uint8_t blob[20];
+      const int result=mbedtls_sha1_starts(&ctx) || mbedtls_sha1_update(&ctx,reinterpret_cast<const uint8_t*>(prefix),n+1) ||
+        mbedtls_sha1_update(&ctx,image_,received_) || mbedtls_sha1_finish(&ctx,blob);
+      mbedtls_sha1_free(&ctx);
+      if(result || memcmp(blob,selected_.blob,20))return fail(ofe_c6::Hash);
+    }
+    const uint8_t* expected=developerImage()?digest:test_image_?ofe_c6::TEST_SHA256:ofe_c6::SHA256;
+    uint8_t diff=0;for(unsigned i=0;i<32;++i)diff|=digest[i]^expected[i];
     if (diff) return fail(ofe_c6::Hash);
+    for(unsigned i=0;i<32;++i)snprintf(image_hash_+i*2,3,"%02x",digest[i]);
     last_activity_=now;phase_.store(Ready,std::memory_order_release);return ofe_c6::Ok;
   }
   bool cancel(uint32_t token) {
@@ -79,9 +105,12 @@ public:
     if ((phase()==Receiving || phase()==Ready) && (!lan || uint32_t(now-last_activity_)>=120000U))
       fail(lan ? ofe_c6::Expired : ofe_c6::NoLan);
   }
-  bool start(uint32_t token,void(*restart)(),bool legacy=false) {
+  bool start(uint32_t token,void(*restart)(),bool legacy=false,bool trial_authorized=false,bool approved=false) {
     if (!owns(token) || phase()!=Ready) return false;
-    policy_=legacy ? ofe_c6::LegacyConfirmed : ofe_c6::StrictVersion;
+    if (trial_ && (!trial_authorized || legacy)) return false;
+    if (test_image_ && !trial_ && !approved) return false;
+    approved_=approved && test_image_ && !trial_;
+    policy_=trial_?ofe_c6::TrialConfirmed:legacy ? ofe_c6::LegacyConfirmed : ofe_c6::StrictVersion;
     restart_=restart;error_=ofe_c6::Ok;phase_.store(Preparing,std::memory_order_release);
     if (xTaskCreate(worker,"c6-ota",8192,this,1,nullptr)!=pdPASS) {
       error_=ofe_c6::TaskFailed;phase_.store(Ready,std::memory_order_release);return false;
@@ -109,8 +138,12 @@ private:
   uint8_t* image_=nullptr;
   uint32_t received_=0,token_=0,last_activity_=0;
   ofe_c6::UpdatePolicy policy_=ofe_c6::StrictVersion;
+  bool trial_=false,test_image_=false;
+  ofe_c6::DeveloperImage selected_{};
+  char image_hash_[65]{};
+  bool approved_=false;
   void(*restart_)()=nullptr;
-  void clear() {if(image_)heap_caps_free(image_);image_=nullptr;received_=0;token_=0;}
+  void clear() {if(image_)heap_caps_free(image_);image_=nullptr;received_=0;token_=0;trial_=test_image_=approved_=false;selected_={};image_hash_[0]=0;}
   ofe_c6::Error fail(ofe_c6::Error error) {clear();error_=error;phase_.store(Failed,std::memory_order_release);return error;}
   static bool readRecord(uint8_t* record) {
     Preferences p;if(!p.begin("ofe-c6",true))return false;
@@ -178,7 +211,7 @@ private:
     }
     bool controlReady() {return self.probeControl();}
     uint32_t hostVersion() {return self.hostVersion();}
-    bool pending(uint8_t phase) {return mark(phase);}
+    bool pending(uint8_t phase) {return mark(phase,self.targetVersion());}
     bool begin() {return esp_hosted_slave_ota_begin()==ESP_OK;}
     bool write(const uint8_t* data,uint32_t len) {return esp_hosted_slave_ota_write(const_cast<uint8_t*>(data),len)==ESP_OK;}
     bool end() {return esp_hosted_slave_ota_end()==ESP_OK;}
@@ -188,8 +221,10 @@ private:
   };
   static void worker(void* arg) {
     auto& self=*static_cast<HostedC6Updater*>(arg);
-    Serial.printf("[C6] Update policy: %s; target %s\n",self.policy_==ofe_c6::LegacyConfirmed ? "legacy-confirmed" : "strict",ofe_c6::VERSION_TEXT);
-    IO io{self};const auto result=ofe_c6::transfer(io,self.image_,self.received_,self.policy_);
+    Serial.printf("[C6] Update policy: %s\n",self.trial_?"developer-trial":self.policy_==ofe_c6::LegacyConfirmed ? "legacy-confirmed" : "strict");
+    const auto target=self.targetVersion();
+    Serial.printf("[C6] Selected %u.%u.%u; SHA256=%s; upstream=%s\n",unsigned(target>>16),unsigned((target>>8)&255),unsigned(target&255),self.imageHash(),self.sourceCommit());
+    IO io{self};const auto result=ofe_c6::transfer(io,self.image_,self.received_,self.policy_,self.test_image_,self.trial_,self.approved_,self.developerImage()?&self.selected_:nullptr);
     // An uncertain/started OTA keeps Hosted owned until an explicit P4 restart.
     if (!result.recovery && io.owned) hostedDeinitWiFi();
     if(self.image_)heap_caps_free(self.image_);self.image_=nullptr;

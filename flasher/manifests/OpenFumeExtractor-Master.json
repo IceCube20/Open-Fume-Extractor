@@ -1,6 +1,6 @@
 {
   "name": "Open Fume Extractor - Open Fume Extractor MCU-S3",
-  "version": "2.1.38RC",
+  "version": "2.1.52RC",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.1.38RC-merged.bin",
+          "path": "../../firmware/OpenFumeExtractor-Master/OpenFumeExtractor-Master-2.1.52RC-merged.bin",
           "offset": 0
         }
       ]

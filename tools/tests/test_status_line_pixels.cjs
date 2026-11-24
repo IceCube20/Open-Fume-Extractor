@@ -12,7 +12,7 @@ const moduleMeta=i=>renderMeta({addr:16+i,online:true,telemetry_valid:true,modul
   key=>({uptime:'Uptime',offline_events:'Offline',miss_counter:'Miss'}[key]||key),
   ()=>'1h',()=>'120 KiB',()=>'RS485',()=>'on',()=>'OK');
 const start=src.indexOf('<div class="overview-group"><div class="section-title master-section-title">');
-const master=src.slice(start,src.indexOf('\n</div></div>',start))+'</div></div>';
+const master=(src.slice(start,src.indexOf('\n</div></div>',start))+'</div></div>').replace(')HTML" MASTER_MCU_MODEL R"HTML(','MCU-P4');
 const script=src.slice(src.indexOf('function statusPixelLine('),src.indexOf('function t(k){'));
 const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 
@@ -50,8 +50,8 @@ function horizontalPixels(png,x,top,color,dpr){
         const rects=await page.evaluate(()=>({
           stripes:Array.from(document.querySelectorAll('.module-head')).map(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e,'::before');return {x:r.left,y:r.top,width:s.width,left:s.left,inline:e.style.cssText,dpr:devicePixelRatio}}),
           cells:Array.from(document.querySelectorAll('.master-stats>.stat-cell')).filter(e=>e.getBoundingClientRect().width).map(e=>{
-            const r=e.getBoundingClientRect(),style=getComputedStyle(e.querySelector('.status-pixel-divider'));
-            return {x:r.right,y:r.top+32,show:style.display!=='none',width:style.width};
+            const r=e.getBoundingClientRect(),style=getComputedStyle(e.querySelector('.status-pixel-divider')),rule=getComputedStyle(e.querySelector('.status-pixel-rule')),cell=getComputedStyle(e);
+            return {x:r.right,y:r.top+32,show:style.display!=='none',width:style.width,rule:rule.display!=='none',ruleX:r.left+8,ruleY:r.top,borders:[cell.borderTopWidth,cell.borderBottomWidth,cell.borderRightWidth]};
           }),
           moduleCells:Array.from(document.querySelectorAll('#details .module-system>span')).filter(e=>e.getBoundingClientRect().width).map(e=>{
             const r=e.getBoundingClientRect(),style=getComputedStyle(e.querySelector('.status-pixel-divider'));
@@ -70,12 +70,14 @@ function horizontalPixels(png,x,top,color,dpr){
           assert(pixels.every(v=>Math.abs(v-1)<0.04),`No blurred stripe edges at ${width}/${dpr}/dev=${dev}: ${pixels} ${JSON.stringify(b)}`);
         }
         for(const b of rects.cells){
+          assert.deepEqual(b.borders,['0px','0px','0px'],'No old MCU borders behind the pixel rules');
           const pixels=profile(png,b.x-3,b.y,[23,26,31],[41,47,55],dpr);
           if(b.show){
             assert.equal(pixels.length,1,`One-device-pixel Master divider at ${width}/${dpr}/dev=${dev}: ${pixels}`);
             assert(pixels.every(v=>Math.abs(v-1)<0.04),'Uniform divider intensity');
           }
           if(width<=520)assert(!b.show,'No vertical dividers in single-column mobile layout');
+          if(b.rule)assert.equal(horizontalPixels(png,b.ruleX,b.ruleY,[41,47,55],dpr),1,`One-device-pixel MCU row divider at ${width}/${dpr}/dev=${dev}`);
         }
         assert.equal(rects.moduleCells.length,dev?32:16,'Developer mode controls visible CPU/Heap/Loop/transport cells');
         assert.equal(rects.moduleCells.filter(b=>b.show).length,dev?24:0,'No divider at the outer card edge or before a hidden value');

@@ -3,14 +3,14 @@ name: Validate C6 compatibility catalog
 on:
   push:
     paths:
-      - "updates/hosted-c6.json"
+      - "updates/hosted-c6*.json"
       - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6Firmware.h"
       - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6CatalogUi.h"
       - "tools/tests/test_hosted_c6_catalog.cjs"
       - ".github/workflows/c6-catalog.yml"
   pull_request:
     paths:
-      - "updates/hosted-c6.json"
+      - "updates/hosted-c6*.json"
       - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6Firmware.h"
       - "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src/HostedC6CatalogUi.h"
       - "tools/tests/test_hosted_c6_catalog.cjs"

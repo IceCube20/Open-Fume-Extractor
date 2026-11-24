@@ -5,6 +5,8 @@ import sys
 
 root = Path(__file__).resolve().parents[3] / "OpenFumeExtractorMaster/OpenFumeExtractorMCU_S3/src"
 logic = (root / "WebLogic.inc.h").read_text(encoding="utf-8")
+limits = [line for line in logic.splitlines() if re.match(r'static constexpr .* LOGIC_RT_(MAX_NODES|MAX_LINKS|MAX_OUTPUTS|INTERVAL_MS) =', line)]
+Path(sys.argv[1]).with_name('generated_logic_limits.inc.h').write_text('\n'.join(limits), encoding='utf-8')
 
 
 def function(source, name):

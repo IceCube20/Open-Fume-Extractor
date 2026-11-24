@@ -27,3 +27,7 @@ OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4/** -text -eol whitespace=blank-a
 OpenFumeExtractorMaster/OpenFumeExtractorMCU_P4_POE/** -text -eol whitespace=blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
 tools/boards/master_p4_16mb.csv -text -eol whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 
+# Preserve deterministic generated router assets and the unmodified upstream license.
+**/WebLogicRouterAssets.h -text -eol whitespace=-blank-at-eof
+assets/vendor/libavoid/LICENSE -text -eol whitespace=-blank-at-eof
+

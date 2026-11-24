@@ -7,14 +7,13 @@
 #include <random>
 #include <vector>
 
-constexpr uint8_t LOGIC_RT_MAX_NODES = 32, LOGIC_RT_MAX_OUTPUTS = 32;
-constexpr uint32_t LOGIC_RT_INTERVAL_MS = 50;
+#include "generated_logic_limits.inc.h"
 struct LogicCompiledDefinition;
 struct LogicRtInputs;
 struct LogicRtState;
 static LogicRtInputs reference_node_inputs(const LogicCompiledDefinition&, uint8_t);
 static void reference_advance_clock(LogicRtState&, uint32_t, uint32_t, uint32_t);
-static std::array<bool, 32> input_values;
+static std::array<bool, LOGIC_RT_MAX_NODES> input_values;
 static uint32_t input_calls = 0;
 static bool logic_signal_active(const char* signal) {
   ++input_calls;
@@ -112,28 +111,29 @@ static void reference_advance_clock(LogicRtState& state, uint32_t dt, uint32_t o
 }
 
 struct Fixture {
-  std::array<LogicRtNode, 32> nodes;
-  std::array<LogicRtLink, 64> links;
+  std::array<LogicRtNode, LOGIC_RT_MAX_NODES> nodes;
+  std::array<LogicRtLink, LOGIC_RT_MAX_LINKS> links;
   LogicCompiledDefinition def;
   void bind() { def.nodes = nodes.data(); def.links = links.data(); }
-  explicit Fixture(std::mt19937& rng) {
+  explicit Fixture(std::mt19937& rng, uint8_t node_count=32, uint8_t link_count=64) {
     def.used = def.enabled = true;
-    def.node_count = 32;
-    def.link_count = 64;
+    def.node_count = node_count;
+    def.link_count = link_count;
     bind();
-    for (uint8_t i = 0; i < 32; ++i) {
+    for (uint8_t i = 0; i < def.node_count; ++i) {
       nodes[i].type = uint8_t(1 + rng() % 11);
       if (i < 4) nodes[i].type = LOGIC_NODE_INPUT;
-      if (i >= 28) nodes[i].type = LOGIC_NODE_OUTPUT;
+      if (i >= def.node_count-4) nodes[i].type = LOGIC_NODE_OUTPUT;
       nodes[i].signal[0] = char(i);
       nodes[i].signal[1] = 0;
       nodes[i].delay_ms = 75 + rng() % 2000;
       nodes[i].delay2_ms = 75 + rng() % 2000;
       nodes[i].reset_dominant = rng() % 2;
     }
-    for (auto& link : links) {
-      link.from = uint8_t(rng() % 32);
-      link.to = uint8_t(rng() % 32);
+    for (uint8_t i=0;i<def.link_count;++i) {
+      auto& link=links[i];
+      link.from = uint8_t(rng() % def.node_count);
+      link.to = uint8_t(rng() % def.node_count);
       link.port = uint8_t(rng() % 4);
     }
     logic_index_links(def);
@@ -144,7 +144,7 @@ struct Fixture {
 static void test_logic_equivalence() {
   std::mt19937 rng(20261004);
   for (int graph = 0; graph < 250; ++graph) {
-    Fixture optimized(rng), reference(optimized);
+    Fixture optimized(rng,graph%2?LOGIC_RT_MAX_NODES:32,graph%2?LOGIC_RT_MAX_LINKS:64), reference(optimized);
     for (int tick = 0; tick < 200; ++tick) {
       for (auto& value : input_values) value = rng() % 2;
       const uint32_t dt = rng() % 501;
@@ -163,7 +163,7 @@ static void test_logic_equivalence() {
         assert(std::strcmp(actual[i].signal, expected[i].signal) == 0);
         assert(actual[i].active == expected[i].active);
       }
-      for (uint8_t i = 0; i < 32; ++i) {
+      for (uint8_t i = 0; i < optimized.def.node_count; ++i) {
         const auto& a = optimized.nodes[i];
         const auto& b = reference.nodes[i];
         assert(a.value == b.value && a.state.mem == b.state.mem && a.state.last == b.state.last);
@@ -171,7 +171,7 @@ static void test_logic_equivalence() {
       }
     }
   }
-  std::puts("PASS: 50,000 differential logic ticks (32 nodes/64 links, feedback, all block types)");
+  std::puts("PASS: 50,000 differential logic ticks (32/64 and 64/128 nodes/links, feedback, all block types)");
 }
 
 static void test_clock() {

@@ -42,6 +42,14 @@ An OFE module being online does not guarantee that its attached station, serial
 device or Modbus slave is online. The module card and Bus Diagnostics show these
 two transport levels separately.
 
+### Optional Connection Warnings
+
+Use Connection monitoring in the Status module inventory to enable/mute warnings
+for an optional disconnected JBC station, Weller, RS232 device or Modbus slave.
+This does not stop communication or suppress offline OFE modules, unrelated
+faults, or a disconnected required main output. Always test the required-output
+case after commissioning. Details: [web interface](WEB-INTERFACE.md).
+
 ## JBC FAE Bus
 
 The JBC FAE Bus module monitors a compatible station's FAE connection and
@@ -142,6 +150,25 @@ and cannot be used as relay, PWM or other output channels.
 Short input pulses are edge-latched by the module/master path so they can be
 used reliably by Additional Rules and Boolean logic.
 
+### Addressable LED Indicators
+
+Fan/IO 1.1.78RC and Fan/IO Pro 1.1.73RC support an optional LED strip through
+the existing GPIO hardware editor. It is disabled by default. Select a free
+output-capable pin from the module pin list; do not reuse a reserved pin or
+one already assigned to the fan, a sensor or another channel.
+
+Configure RGB/RGBW model/order, brightness and up to 128 pixels, then enable
+and name up to 32 virtual channels. Each channel has its own pixel range,
+color and solid/blink/breathe effect. Save/commit before selecting the named
+channel as a Boolean or Additional Rule output. These are indicators, not
+extractor main-output candidates.
+
+Effects run on the module rather than requiring a bus update per animation
+frame. Overlapping active ranges give higher channel numbers priority.
+Communication loss/OTA resets outputs; this is not a retained alarm lamp or
+safety output. Power the strip appropriately, not from a data GPIO. See the
+[configuration walkthrough and limits](FANIO_LED_OUTPUTS.md).
+
 ### Fan/IO Pro filter monitoring
 
 Fan/IO Pro supports these filter modes:
@@ -184,6 +211,11 @@ Use zero-based protocol addresses unless the device documentation explicitly
 says otherwise. Verify register reads and writes with a known slave or PC
 simulator before connecting real machinery.
 
+Local device-bus loss and repeated response timeouts are distinct diagnostics.
+Check the local trace for valid replies, not just OFE reachability. If no device
+is installed, mute optional connection warnings only when the module is not a
+required output. See [local-device troubleshooting](TROUBLESHOOTING.md).
+
 After transferring a profile, reload the descriptor and polling settings from
 the module and confirm `descriptor_truncated=0` and `profile_active=yes`.
 
@@ -194,7 +226,7 @@ Four separate display targets are included:
 - AXS15231B/QSPI 320x480
 - ST7796/FT63x6 320x480
 - Guition JC8048W550 RGB 800x480
-- ELECROW 5-inch ESP32-P4 RGB 800x480 (experimental, PRE-V3)
+- ELECROW 5-inch ESP32-P4 RGB 800x480 (released RC target, PRE-V3)
 
 Their firmware images are not interchangeable. Displays can communicate by
 RS485 or authenticated WiFi and can automatically fail over between transports.

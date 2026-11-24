@@ -24,6 +24,7 @@
 #include "src/OfeStatusLed.h"
 #include "src/OfeModuleEco.h"
 #include "src/FanIoHardwareConfig.h"
+#include "src/FanIoVirtualLeds.h"
 
 using namespace jbc_rs485;
 
@@ -133,7 +134,7 @@ static const uint16_t HW_VERSION = 0x0100;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 1
-#define OFE_MODULE_FW_PATCH 77
+#define OFE_MODULE_FW_PATCH 78
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -165,6 +166,7 @@ static uint8_t module_addr = 0x20;
 static char module_label[24] = {0};
 static char io_alias[5][19] = {{0}};
 static ofe_fanio::HardwareConfig hw_config;
+static FanIoVirtualLeds virtual_leds;
 // Hardware-editor transaction buffer. While a transaction is active,
 // CHANNEL/FAN/FILTER writes modify only this RAM copy. The live GPIO map and
 // NVS stay untouched until IO_CONFIG_COMMIT succeeds.
@@ -177,7 +179,7 @@ static uint16_t fan_pwm_frequency_hz = FAN_PWM_DEFAULT_FREQUENCY_HZ;
 static int16_t fan_pwm_attached_pin = -1;
 static bool fan_pwm_ready = false;
 static uint8_t fan_pwm_resolution_bits = FAN_PWM_RESOLUTION_BITS;
-static char dynamic_descriptor[3072] = {0};
+static char dynamic_descriptor[12288] = {0};
 static bool dynamic_descriptor_dirty = true;
 static bool fw_update_active = false;
 static uint32_t fw_update_last_ms = 0;
@@ -976,6 +978,7 @@ static void handle_set_address_uid(const Frame& req) {
 }
 
 static bool configure_dynamic_hardware(bool detach_current) {
+  virtual_leds.stop();
   if (detach_current && hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) detachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin));
   if ((hw_config.fan_flags & ofe_fanio::CHANNEL_ENABLED) && fan_uses_relay() && hw_config.fan_enable_pin != ofe_fanio::PIN_UNUSED) {
     pinMode(hw_config.fan_enable_pin, OUTPUT);
@@ -1018,7 +1021,7 @@ static bool configure_dynamic_hardware(bool detach_current) {
     attachInterrupt(digitalPinToInterrupt(hw_config.fan_tacho_pin), tacho_isr, FALLING);
   }
   dynamic_descriptor_dirty = true;
-  return pwm_ok;
+  return virtual_leds.configure(hw_config.leds) && pwm_ok;
 }
 
 static void descriptor_append(const char* fmt, ...) {
@@ -1033,8 +1036,12 @@ static void descriptor_append(const char* fmt, ...) {
 static const char* dynamic_descriptor_text() {
   if (!dynamic_descriptor_dirty && dynamic_descriptor[0]) return dynamic_descriptor;
   dynamic_descriptor[0] = 0;
+  descriptor_append("led_schema=1\nled_pin=%u\nled_model=%u\nled_count=%u\nled_brightness=%u\n", hw_config.leds.pin, hw_config.leds.model, hw_config.leds.count, hw_config.leds.brightness);
+  for (uint8_t i=0;i<ofe_fanio::LED_CHANNELS;++i) {const auto& c=hw_config.leds.channels[i];descriptor_append("led_ch%u=%u|%u|%u|%u|%u|%u|%u|%u|%u|%s\n",i,c.enabled,c.first,c.count,c.r,c.g,c.b,c.w,c.effect,c.period_ms,c.name);}
   const bool fan_configured = fan_output_configured();
   uint8_t count = 0;
+  const uint32_t led_enabled = ofe_fanio::ledEnabledMask(hw_config.leds);
+  for(uint8_t i=0;i<ofe_fanio::LED_CHANNELS;++i)if(led_enabled&(uint32_t(1)<<i))++count;
   for (uint8_t i = 0; i < ofe_fanio::MAX_INPUTS; ++i) if (hw_config.inputs[i].flags & ofe_fanio::CHANNEL_ENABLED) ++count;
   for (uint8_t i = 0; i < ofe_fanio::MAX_OUTPUTS; ++i) if (hw_config.outputs[i].flags & ofe_fanio::CHANNEL_ENABLED) ++count;
   if (fan_configured) {
@@ -1042,7 +1049,7 @@ static const char* dynamic_descriptor_text() {
     if (fan_uses_pwm()) ++count;
     if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED) ++count;
   }
-  descriptor_append("schema=1\nmodule=Fan/IO\nprofile=Hardware I/O\nstation=Local GPIO\nlocal_bus=GPIO\nprofile_entities=%u\nprofile_slots=32\nsystem_entities=master_builtin\nprofile_active=yes\nfan_enabled=%u\nfan_active_low=%u\nfan_output_mode=%u\nfan_enable_active_low=%u\nfan_pwm_active_low=%u\nfan_pwm_open_drain=%u\nfan_min_power=%u\nfan_max_power=%u\nfan_pwm_frequency_hz=%u\nentities:\n",
+  descriptor_append("schema=1\nmodule=Fan/IO\nprofile=Hardware I/O\nstation=Local GPIO\nlocal_bus=GPIO\nprofile_entities=%u\nprofile_slots=64\nsystem_entities=master_builtin\nprofile_active=yes\nfan_enabled=%u\nfan_active_low=%u\nfan_output_mode=%u\nfan_enable_active_low=%u\nfan_pwm_active_low=%u\nfan_pwm_open_drain=%u\nfan_min_power=%u\nfan_max_power=%u\nfan_pwm_frequency_hz=%u\nentities:\n",
     count,
     fan_configured ? 1U : 0U,
     (hw_config.fan_enable_flags & ofe_fanio::FAN_ENABLE_ACTIVE_LOW) ? 1U : 0U,
@@ -1079,6 +1086,7 @@ static const char* dynamic_descriptor_text() {
       descriptor_append("62 sensor rpm ro source=profile access=ro en=Drehzahl unit=rpm gpio=%u ppr=%u\n", hw_config.fan_tacho_pin, hw_config.tacho_pulses_per_rev);
     }
   }
+  for(uint8_t i=0;i<ofe_fanio::LED_CHANNELS;++i)if(led_enabled&(uint32_t(1)<<i))descriptor_append("%u switch led%u rw source=profile access=rw role=indicator en=%s value_on=1 value_off=0\n",ofe_fanio::LED_ENTITY_FIRST+i,i+1,hw_config.leds.channels[i].name);
   dynamic_descriptor_dirty = false;
   return dynamic_descriptor;
 }
@@ -1136,6 +1144,16 @@ static void handle_entity_get(const Frame& req) {
     if (fan_uses_pwm() && (!wanted || wanted == 61)) count += entity_append(resp.payload, o, 61, output_power / 10U);
     if (hw_config.fan_tacho_pin != ofe_fanio::PIN_UNUSED && (!wanted || wanted == 62)) count += entity_append(resp.payload, o, 62, fan_rpm);
   }
+  const uint32_t led_enabled=ofe_fanio::ledEnabledMask(hw_config.leds);
+  if(!wanted||wanted==ofe_fanio::LED_ENTITY_BANK){
+    if(led_enabled&&(uint16_t)o+12U<=MAX_PAYLOAD){
+      resp.payload[o++]=ofe_fanio::LED_ENTITY_BANK;resp.payload[o++]=8;put_u16_le(resp.payload+o,0);o+=2;
+      put_u32_le(resp.payload+o,virtual_leds.mask()&led_enabled);o+=4;put_u32_le(resp.payload+o,led_enabled);o+=4;++count;
+    }
+  }else if(wanted>=ofe_fanio::LED_ENTITY_FIRST&&wanted<ofe_fanio::LED_ENTITY_FIRST+ofe_fanio::LED_CHANNELS){
+    const uint32_t bit=uint32_t(1)<<(wanted-ofe_fanio::LED_ENTITY_FIRST);
+    if(led_enabled&bit)count+=entity_append_bool(resp.payload,o,wanted,(virtual_leds.mask()&bit)!=0);
+  }
   resp.payload[cp] = count; resp.len = o; bus.send(resp);
 }
 
@@ -1161,6 +1179,11 @@ static void handle_entity_set(const Frame& req) {
   if (req.len < 2 || req.len != (uint8_t)(req.payload[1] + 2U)) { send_status_response(req, STATUS_BAD_LEN); return; }
   const uint8_t id = req.payload[0];
   const long value = entity_value(req);
+  if(id>=ofe_fanio::LED_ENTITY_FIRST&&id<ofe_fanio::LED_ENTITY_FIRST+ofe_fanio::LED_CHANNELS) {
+    const uint8_t index=id-ofe_fanio::LED_ENTITY_FIRST;
+    if(!(ofe_fanio::ledEnabledMask(hw_config.leds)&(uint32_t(1)<<index))){send_status_response(req,STATUS_NOT_SUPPORTED);return;}
+    virtual_leds.setChannel(index,value!=0);send_status_response(req,STATUS_OK);return;
+  }
   if (id >= 40 && id < 40 + ofe_fanio::MAX_OUTPUTS && (hw_config.outputs[id - 40].flags & ofe_fanio::CHANNEL_ENABLED)) {
     const uint16_t bit = (uint16_t)(1U << (id - 40));
     io_output_mask = value ? (io_output_mask | bit) : (io_output_mask & ~bit);
@@ -1186,13 +1209,16 @@ static void handle_entity_set(const Frame& req) {
 
 static Status commit_io_config_candidate(const ofe_fanio::HardwareConfig& candidate, uint16_t candidate_pwm_frequency_hz) {
   const bool pro_module = false;
-  ofe_fanio::HardwareConfig next = candidate;
+  static ofe_fanio::HardwareConfig next;
+  next = candidate;
   next.checksum = ofe_fanio::checksum(next);
   if (!fan_pwm_frequency_valid(candidate_pwm_frequency_hz) || !ofe_fanio::validate(next, pro_module)) return STATUS_BAD_VALUE;
 
   // Preserve the complete live state so a failed LEDC attach or NVS write can
   // roll back without leaving a half-applied hardware map behind.
-  const ofe_fanio::HardwareConfig old_config = hw_config;
+  static ofe_fanio::HardwareConfig old_config;
+  old_config = hw_config;
+  const uint32_t old_led_mask = virtual_leds.mask();
   const uint16_t old_pwm_frequency_hz = fan_pwm_frequency_hz;
   const bool old_output_enabled = output_enabled;
   const uint16_t old_output_power = output_power;
@@ -1218,19 +1244,22 @@ static Status commit_io_config_candidate(const ofe_fanio::HardwareConfig& candid
     io_output_mask = old_io_output_mask;
     output_enabled = old_output_enabled;
     configure_dynamic_hardware(false);
+    virtual_leds.setMask(old_led_mask);
     apply_generic_outputs();
     apply_output();
     return STATUS_BAD_VALUE;
   }
 
-  ofe_fanio::HardwareConfig stored = hw_config;
+  static ofe_fanio::HardwareConfig stored;
+  stored = hw_config;
   const bool config_saved = ofe_fanio::save(prefs, stored, pro_module);
   const bool frequency_saved = config_saved && prefs.putUInt("pwm_freq", fan_pwm_frequency_hz) == sizeof(uint32_t);
   if (!frequency_saved) {
     // NVS is not transactional across keys. Restore both old values best-effort
     // before returning an error, while the active RAM/hardware state is also
     // rolled back below.
-    ofe_fanio::HardwareConfig rollback_store = old_config;
+    static ofe_fanio::HardwareConfig rollback_store;
+    rollback_store = old_config;
     ofe_fanio::save(prefs, rollback_store, pro_module);
     prefs.putUInt("pwm_freq", old_pwm_frequency_hz);
 
@@ -1243,6 +1272,7 @@ static Status commit_io_config_candidate(const ofe_fanio::HardwareConfig& candid
     io_output_mask = old_io_output_mask;
     output_enabled = old_output_enabled;
     configure_dynamic_hardware(false);
+    virtual_leds.setMask(old_led_mask);
     apply_generic_outputs();
     apply_output();
     return STATUS_BUSY;
@@ -1289,10 +1319,18 @@ static void handle_io_config(const Frame& req) {
     return;
   }
 
-  ofe_fanio::HardwareConfig next = io_config_transaction_active ? io_config_pending : hw_config;
+  static ofe_fanio::HardwareConfig next;
+  next = io_config_transaction_active ? io_config_pending : hw_config;
   uint16_t next_pwm_frequency_hz = io_config_transaction_active ? io_config_pending_pwm_frequency_hz : fan_pwm_frequency_hz;
 
-  if (action == IO_CONFIG_CHANNEL) {
+  if (action == 0x08) {
+    if(req.len!=6){send_status_response(req,STATUS_BAD_LEN);return;}
+    next.leds.pin=req.payload[1];next.leds.model=req.payload[2];next.leds.brightness=req.payload[3];next.leds.count=get_u16_le(req.payload+4);
+  } else if (action == 0x09) {
+    if(req.len<14||req.len>32||req.payload[1]>=ofe_fanio::LED_CHANNELS){send_status_response(req,STATUS_BAD_LEN);return;}
+    auto& c=next.leds.channels[req.payload[1]];c.enabled=req.payload[2];c.first=get_u16_le(req.payload+3);c.count=get_u16_le(req.payload+5);c.r=req.payload[7];c.g=req.payload[8];c.b=req.payload[9];c.w=req.payload[10];c.effect=req.payload[11];c.period_ms=get_u16_le(req.payload+12);
+    char name[19]={0};memcpy(name,req.payload+14,req.len-14);ofe_fanio::copyName(c.name,name);
+  } else if (action == IO_CONFIG_CHANNEL) {
     if (req.len < 7) { send_status_response(req, STATUS_BAD_LEN); return; }
     const bool output = req.payload[1] != 0;
     const uint8_t index = req.payload[2];
@@ -1776,6 +1814,7 @@ void setup() {
     ? (uint16_t)stored_pwm_frequency_hz
     : (uint16_t)FAN_PWM_DEFAULT_FREQUENCY_HZ;
   if (stored_pwm_frequency_hz != fan_pwm_frequency_hz) prefs.putUInt("pwm_freq", fan_pwm_frequency_hz);
+  virtual_leds.begin();
   configure_dynamic_hardware(false);
 
   Serial.println("Fan Output RS485 module");
@@ -1801,6 +1840,7 @@ void loop() {
     ofe_status_leds.setFirmwareUpdate(fw_update_active);
     ofe_status_leds.setModuleEvent(fault_mask ? OFE_LED_EVENT_CRITICAL : (output_enabled ? OFE_LED_EVENT_EXTRACTOR_ON : OFE_LED_EVENT_OFF));
     ofe_status_leds.tick();
+    virtual_leds.allow(!fw_update_active && last_master_ms && (uint32_t)(millis()-last_master_ms)<=OUTPUT_FAILSAFE_TIMEOUT_MS);
     update_rpm();
     update_generic_inputs();
   }

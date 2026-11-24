@@ -23,8 +23,70 @@ public:
 };
 #include "alarm_snapshot.inc"
 #include "home_metrics.inc"
+#include "bridge_links.inc"
+
+static void check_bridge_link(uint8_t type, uint32_t& last_rx, uint16_t& faults,
+                              bool (*online)(uint32_t), void (*update)(uint32_t),
+                              ofe_local_diag::State& diagnostics) {
+  last_rx=0;
+  for(uint32_t now:{100U,200U,300U})diagnostics.timeout.fail(now);
+  update(300);assert((faults&0x0800)==0 && (faults&1));
+  last_rx=100;
+  for(uint32_t now:{400U,500U,600U})diagnostics.timeout.fail(now);
+  update(600);assert(faults&0x0800);
+  update(15101);assert((faults&0x0800)==0 && (faults&1));
+  diagnostics.reset();
+  ModuleRecord rec;
+  rec.addr = 0x50; rec.online = true; rec.type = type;
+  auto check = [&](unsigned warning, unsigned error) {
+    rec.output_fault_mask = faults;
+    auto alarm = ofe_module_alarm::evaluate(rec, 0x20, 0);
+    assert(alarm.warning() == bool(warning) && alarm.error() == bool(error));
+  };
+  for (uint32_t now : {0U, 1000U, 20000U}) {
+    last_rx = 0; faults = 0; update(now); // Never answered, including first boot.
+    assert(!online(now)); check(1, 0);
+    rec.connection_warnings_muted = true; check(0, 0);
+    auto required = ofe_module_alarm::evaluate(rec, rec.addr, 0);
+    assert(required.error() && required.connection_error);
+    required = ofe_module_alarm::evaluate(rec, 0, rec.addr);
+    assert(required.error() && required.connection_error);
+    rec.connection_warnings_muted = false;
+  }
+  last_rx = 100; update(100); assert(online(100)); check(0, 0);
+  update(15100); assert(online(15100)); check(0, 0);
+  update(15101); assert(!online(15101)); check(1, 0);
+  last_rx = 16000; update(16000); assert(online(16000)); check(0, 0);
+  faults = 4; last_rx = 0; update(17000); assert(faults == 5);
+  last_rx = 17000; update(17000); assert(faults == 4); // Other faults survive recovery.
+  faults = 0; last_rx = 0xFFFFF000U;
+  update(0x00002A98U); assert(online(0x00002A98U)); check(0, 0);
+  update(0x00002A99U); assert(!online(0x00002A99U)); check(1, 0);
+}
 
 int main() {
+  for(uint8_t type:{MODULE_UNIVERSAL_RS232,MODULE_MODBUS_RTU}) {
+    ModuleRecord diag;diag.addr=0x50;diag.online=true;diag.type=type;
+    for(uint16_t mask:{uint16_t(0x0800),uint16_t(0x1000),uint16_t(0x2000),uint16_t(0x3800)}) {
+      diag.output_fault_mask=mask;
+      for(bool muted:{false,true}) {
+        diag.connection_warnings_muted=muted;
+        auto alarm=ofe_module_alarm::evaluate(diag,0,0);
+        assert(alarm.warning()==bool(!muted || (mask & (uint16_t)~ofe_local_diag::RESPONSE_TIMEOUT)));
+        assert(!alarm.error());
+        diag.output_fault_mask=mask|1;
+        alarm=ofe_module_alarm::evaluate(diag,diag.addr,0);
+        assert(alarm.error()&&alarm.connection_error);
+        diag.output_fault_mask=mask;
+      }
+    }
+  }
+  check_bridge_link(MODULE_UNIVERSAL_RS232, UniversalRs232Module::last_local_rx_ms,
+    UniversalRs232Module::fault_mask, UniversalRs232Module::local_device_online_now,
+    UniversalRs232Module::update_local_fault_state, UniversalRs232Module::local_diagnostics);
+  check_bridge_link(MODULE_MODBUS_RTU, ModbusRtuModule::last_local_rx_ms,
+    ModbusRtuModule::fault_mask, ModbusRtuModule::local_device_online_now,
+    ModbusRtuModule::update_local_fault_state, ModbusRtuModule::local_diagnostics);
   MasterScheduler scheduler;
   assert(scheduler.registry_.begin());
   auto& rec = *scheduler.registry_.upsert(0x30);

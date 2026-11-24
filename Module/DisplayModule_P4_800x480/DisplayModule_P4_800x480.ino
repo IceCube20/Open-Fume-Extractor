@@ -331,7 +331,7 @@ static const uint16_t HW_VERSION = 0x0200;
 
 #define OFE_MODULE_FW_MAJOR 1
 #define OFE_MODULE_FW_MINOR 0
-#define OFE_MODULE_FW_PATCH 18
+#define OFE_MODULE_FW_PATCH 21
 #define OFE_MODULE_FW_SUFFIX "RC"
 #define OFE_MODULE_FW_VERSION OFE_STR(OFE_MODULE_FW_MAJOR) "." OFE_STR(OFE_MODULE_FW_MINOR) "." OFE_STR(OFE_MODULE_FW_PATCH) OFE_MODULE_FW_SUFFIX
 
@@ -2347,7 +2347,11 @@ static String fault_name(uint16_t value, uint8_t module_type = MODULE_UNKNOWN) {
     if (out.length()) out += ", ";
     out += tr(en, de);
   };
-  if (value & 0x0001) add_tr(module_type == MODULE_WELLER_ZERO_SMOG ? "Weller device bus error" : "No speed feedback", module_type == MODULE_WELLER_ZERO_SMOG ? "Weller Ger\303\244tebus Fehler" : "Drehzahlr\303\274ckmeldung fehlt");
+  if (value & 0x0001) {
+    if (module_type == MODULE_UNIVERSAL_RS232 || module_type == MODULE_MODBUS_RTU)
+      add_tr("Local connection disconnected", "Lokale Verbindung getrennt");
+    else add_tr(module_type == MODULE_WELLER_ZERO_SMOG ? "Weller device bus error" : "No speed feedback", module_type == MODULE_WELLER_ZERO_SMOG ? "Weller Ger\303\244tebus Fehler" : "Drehzahlr\303\274ckmeldung fehlt");
+  }
   if (value & 0x0100) add_tr("No speed feedback", "Drehzahlr\303\274ckmeldung fehlt");
   if (value & 0x0004) add_tr("Filter full", "Filter voll");
   else if (value & 0x0002) add_tr("Filter warn", "Filterwarnung");
@@ -2355,6 +2359,11 @@ static String fault_name(uint16_t value, uint8_t module_type = MODULE_UNKNOWN) {
   if (value & 0x0010) add_tr("Sensor fault", "Sensorfehler");
   if (value & 0x0200) add("Timeout");
   if (value & 0x0400) add_tr("Low RPM", "Drehzahl zu gering");
+  if (module_type == MODULE_UNIVERSAL_RS232 || module_type == MODULE_MODBUS_RTU) {
+    if (value & 0x0800) add_tr("Repeated response timeouts", "Wiederholte Antwort-Timeouts");
+    if (value & 0x1000) add_tr("Repeated checksum errors", "Gehaeufte Pruefsummenfehler");
+    if (value & 0x2000) add_tr("Repeated Modbus exceptions", "Wiederholte Modbus-Exceptions");
+  }
   if (!out.length()) out = String("0x") + String(value, HEX);
   return out;
 }
@@ -5977,8 +5986,8 @@ static void lv_create_app_screens() {
   ofe_display_ui::flat(ui_alarm_screen, ofe_display_ui::background(), 0);
   lv_add_header(ui_alarm_screen, "alarms");
   ui_alarm_list = lv_obj_create(ui_alarm_screen);
-  lv_obj_set_pos(ui_alarm_list, 10, 58);
-  lv_obj_set_size(ui_alarm_list, 780, 330);
+  lv_obj_set_pos(ui_alarm_list, 10, 44);
+  lv_obj_set_size(ui_alarm_list, 780, 378);
   lv_obj_set_style_bg_opa(ui_alarm_list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(ui_alarm_list, 0, 0);
   lv_obj_set_style_pad_all(ui_alarm_list, 0, 0);

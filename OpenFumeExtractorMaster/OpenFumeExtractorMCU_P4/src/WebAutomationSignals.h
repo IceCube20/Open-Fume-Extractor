@@ -139,6 +139,10 @@ function ofeRoutingSignals(d,lang){
         const bit=Number(e.id)-40;
         addOutput(bit<2?'io:'+addr+':'+(bit+2):'io:'+addr+':out:'+bit,group+' - '+alias(true,bit,e),group,3,addr,Number(e.id));
       }
+      for(const e of entries.filter(e=>Number(e.id)>=100&&Number(e.id)<132&&e.type==='switch'&&e.mode.includes('w'))){
+        addOutput('uni:'+addr+':switch:'+e.id,group+' - '+entityName(e),group,3,addr,Number(e.id));
+        addInput('uni:'+addr+':entity:'+e.id,group+' - '+entityName(e),group,3,addr,Number(e.id),false);
+      }
       continue;
     }
     if((caps&2048)&&!(caps&65536))for(let bit=0;bit<2;bit++)addInput('io:'+addr+':'+bit,group+' - '+alias(false,bit),group,2,addr,bit,true);
